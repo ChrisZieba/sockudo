@@ -210,27 +210,28 @@ impl IggyTransport {
                         received = consumer.next() => {
                             match received {
                                 Some(Ok(received)) => {
-                                    process_consumer_message(
-                                        &mut consumer,
+                                    let mut pending_offsets = PendingOffsets::default();
+                                    let completed = process_consumer_message(
                                         &metrics,
                                         kind,
                                         &handler,
                                         received,
                                     )
                                     .await;
+                                    pending_offsets.record(completed);
 
                                     let mut consumer_exhausted = false;
                                     while is_running.load(Ordering::Relaxed) {
                                         match consumer.next().now_or_never() {
                                             Some(Some(Ok(received))) => {
-                                                process_consumer_message(
-                                                    &mut consumer,
+                                                let completed = process_consumer_message(
                                                     &metrics,
                                                     kind,
                                                     &handler,
                                                     received,
                                                 )
                                                 .await;
+                                                pending_offsets.record(completed);
                                             }
                                             Some(Some(Err(error))) => {
                                                 warn!(adapter = "iggy", kind = kind, error = %error, "consumer message failed");
@@ -242,6 +243,7 @@ impl IggyTransport {
                                             None => break,
                                         }
                                     }
+                                    commit_offsets(&consumer, &pending_offsets, kind).await;
                                     if consumer_exhausted {
                                         break;
                                     }
@@ -363,29 +365,34 @@ impl IggyTransport {
                         received = consumer.next() => {
                             match received {
                                 Some(Ok(received)) => {
-                                    process_request_message(
+                                    let mut pending_offsets = PendingOffsets::default();
+                                    if let Some(completed) = process_request_message(
                                         &config,
-                                        &mut consumer,
                                         &response_producer,
                                         &metrics,
                                         &handler,
                                         received,
                                     )
-                                    .await;
+                                    .await
+                                    {
+                                        pending_offsets.record(completed);
+                                    }
 
                                     let mut consumer_exhausted = false;
                                     while is_running.load(Ordering::Relaxed) {
                                         match consumer.next().now_or_never() {
                                             Some(Some(Ok(received))) => {
-                                                process_request_message(
+                                                if let Some(completed) = process_request_message(
                                                     &config,
-                                                    &mut consumer,
                                                     &response_producer,
                                                     &metrics,
                                                     &handler,
                                                     received,
                                                 )
-                                                .await;
+                                                .await
+                                                {
+                                                    pending_offsets.record(completed);
+                                                }
                                             }
                                             Some(Some(Err(error))) => {
                                                 warn!(adapter = "iggy", error = %error, "request consumer message failed");
@@ -397,6 +404,7 @@ impl IggyTransport {
                                             None => break,
                                         }
                                     }
+                                    commit_offsets(&consumer, &pending_offsets, "request").await;
                                     if consumer_exhausted {
                                         break;
                                     }
@@ -432,12 +440,12 @@ impl IggyTransport {
 }
 
 async fn process_consumer_message<T>(
-    consumer: &mut iggy::prelude::IggyConsumer,
     metrics: &OnceLock<Arc<dyn MetricsInterface + Send + Sync>>,
     kind: &'static str,
     handler: &Arc<dyn Fn(T) -> crate::horizontal_transport::BoxFuture<'static, ()> + Send + Sync>,
     received: iggy::prelude::ReceivedMessage,
-) where
+) -> (u32, u64)
+where
     T: serde::de::DeserializeOwned + Send + 'static,
 {
     let partition_id = received.partition_id;
@@ -451,14 +459,11 @@ async fn process_consumer_message<T>(
             warn!(adapter = "iggy", kind = kind, error = %error, "transport message parse failed");
         }
     }
-    if let Err(error) = consumer.store_offset(offset, Some(partition_id)).await {
-        warn!(adapter = "iggy", kind = kind, error = %error, "offset commit failed");
-    }
+    (partition_id, offset)
 }
 
 async fn process_request_message(
     config: &IggyConfig,
-    consumer: &mut iggy::prelude::IggyConsumer,
     response_producer: &IggyProducer,
     metrics: &OnceLock<Arc<dyn MetricsInterface + Send + Sync>>,
     handler: &Arc<
@@ -467,7 +472,7 @@ async fn process_request_message(
             + Sync,
     >,
     received: iggy::prelude::ReceivedMessage,
-) {
+) -> Option<(u32, u64)> {
     let partition_id = received.partition_id;
     let offset = received.message.header.offset;
     let mut should_commit = false;
@@ -492,8 +497,39 @@ async fn process_request_message(
             should_commit = true;
         }
     }
-    if should_commit && let Err(error) = consumer.store_offset(offset, Some(partition_id)).await {
-        warn!(adapter = "iggy", error = %error, "request offset commit failed");
+    should_commit.then_some((partition_id, offset))
+}
+
+#[derive(Default)]
+struct PendingOffsets {
+    offsets: Vec<(u32, u64)>,
+}
+
+impl PendingOffsets {
+    fn record(&mut self, (partition_id, offset): (u32, u64)) {
+        if let Some((_, pending_offset)) = self
+            .offsets
+            .iter_mut()
+            .find(|(pending_partition, _)| *pending_partition == partition_id)
+        {
+            *pending_offset = (*pending_offset).max(offset);
+        } else {
+            self.offsets.push((partition_id, offset));
+        }
+    }
+}
+
+async fn commit_offsets(
+    consumer: &iggy::prelude::IggyConsumer,
+    pending_offsets: &PendingOffsets,
+    kind: &'static str,
+) {
+    // Commit only after every completed handler in this poll batch. A crash can replay the
+    // uncommitted batch, preserving the adapter's at-least-once delivery behavior.
+    for &(partition_id, offset) in &pending_offsets.offsets {
+        if let Err(error) = consumer.store_offset(offset, Some(partition_id)).await {
+            warn!(adapter = "iggy", kind = kind, error = %error, "offset commit failed");
+        }
     }
 }
 
@@ -858,4 +894,21 @@ fn normalize_name(value: &str, fallback: &str) -> String {
 
 fn to_iggy_error(error: IggyError) -> Error {
     Error::Internal(format!("Apache Iggy error: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PendingOffsets;
+
+    #[test]
+    fn pending_offsets_keep_only_highest_offset_per_partition() {
+        let mut pending = PendingOffsets::default();
+
+        pending.record((2, 10));
+        pending.record((1, 20));
+        pending.record((2, 15));
+        pending.record((1, 18));
+
+        assert_eq!(pending.offsets, vec![(2, 15), (1, 20)]);
+    }
 }

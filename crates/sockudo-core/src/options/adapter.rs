@@ -290,7 +290,7 @@ impl Default for IggyConfig {
             queue_topic_prefix: "sockudo-queue".to_string(),
             consumer_group_prefix: "sockudo-workers".to_string(),
             request_timeout_ms: 5000,
-            poll_interval_ms: 50,
+            poll_interval_ms: 5,
             poll_batch_size: 100,
             partitions_count: 1,
             partition_id: 0,
@@ -298,5 +298,15 @@ impl Default for IggyConfig {
             start_from_latest: true,
             nodes_number: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IggyConfig;
+
+    #[test]
+    fn iggy_polling_defaults_to_low_latency_interval() {
+        assert_eq!(IggyConfig::default().poll_interval_ms, 5);
     }
 }

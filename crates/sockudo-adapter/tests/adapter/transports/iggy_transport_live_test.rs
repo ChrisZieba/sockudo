@@ -1,3 +1,4 @@
+use futures_util::future::join_all;
 use sockudo_adapter::horizontal_transport::HorizontalTransport;
 use sockudo_adapter::transports::IggyTransport;
 use sockudo_core::error::Result;
@@ -43,6 +44,32 @@ async fn live_iggy_transport_broadcasts_requests_and_responses() -> Result<()> {
     let received = collector.wait_for_broadcast(5_000).await;
     assert!(received.is_some(), "Iggy broadcast was not received");
     assert!(received.unwrap().message.contains("iggy-live-broadcast"));
+
+    collector.clear().await;
+    let publish_results = join_all((0..64).map(|index| {
+        let publisher = &publisher;
+        async move {
+            publisher
+                .publish_broadcast(&create_test_broadcast(&format!("iggy-live-batch-{index}")))
+                .await
+        }
+    }))
+    .await;
+    for result in publish_results {
+        result?;
+    }
+    let received_batch = wait_for_condition(
+        || {
+            let collector = collector.clone();
+            async move { collector.get_broadcasts().await.len() == 64 }
+        },
+        5_000,
+    )
+    .await;
+    assert!(
+        received_batch,
+        "Iggy concurrent broadcast batch was not fully received"
+    );
 
     let request = create_test_request();
     let request_id = request.request_id.clone();
