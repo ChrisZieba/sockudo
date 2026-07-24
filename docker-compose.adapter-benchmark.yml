@@ -1,0 +1,162 @@
+name: sockudo-adapter-benchmark
+
+x-sockudo-environment: &sockudo-environment
+  RUST_LOG: "warn"
+  DEBUG: "false"
+  HOST: "0.0.0.0"
+  APP_MANAGER_DRIVER: "memory"
+  ADAPTER_DRIVER: "${ADAPTER_DRIVER:-redis}"
+  ADAPTER_FALLBACK_TO_LOCAL: "false"
+  REDIS_URL: "redis://redis:6379/0"
+  CACHE_DRIVER: "memory"
+  QUEUE_DRIVER: "memory"
+  RATE_LIMITER_DRIVER: "memory"
+  IDEMPOTENCY_ENABLED: "false"
+  SOCKUDO_ABLY_COMPAT_ENABLED: "false"
+  METRICS_ENABLED: "true"
+  METRICS_HOST: "0.0.0.0"
+  METRICS_PROMETHEUS_PREFIX: "sockudo_"
+  CLUSTER_HEALTH_ENABLED: "false"
+  CORS_CREDENTIALS: "false"
+  IGGY_CONNECTION_STRING: "iggy://iggy:iggy@iggy:8090"
+  IGGY_STREAM: "sockudo-benchmark"
+  IGGY_TOPIC_PREFIX: "sockudo-adapter-benchmark"
+  IGGY_REQUEST_TIMEOUT_MS: "5000"
+  IGGY_POLL_INTERVAL_MS: "${IGGY_POLL_INTERVAL_MS:-5}"
+  IGGY_POLL_BATCH_SIZE: "${IGGY_POLL_BATCH_SIZE:-100}"
+  ADAPTER_IGGY_PARTITIONS_COUNT: "1"
+  IGGY_AUTO_CREATE: "true"
+  IGGY_START_FROM_LATEST: "false"
+  IGGY_NODES_NUMBER: "3"
+  SHUTDOWN_GRACE_PERIOD: "2"
+  SOCKUDO_DEFAULT_APP_ID: "bench-app"
+  SOCKUDO_DEFAULT_APP_KEY: "bench-key"
+  SOCKUDO_DEFAULT_APP_SECRET: "bench-secret"
+  SOCKUDO_DEFAULT_APP_ENABLED: "true"
+  SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS: "5000"
+  SOCKUDO_DEFAULT_APP_MAX_BACKEND_EVENTS_PER_SECOND: "10000"
+  SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND: "10000"
+  SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND: "10000"
+
+x-sockudo-node: &sockudo-node
+  image: sockudo-adapter-benchmark:local
+  restart: "no"
+  environment:
+    <<: *sockudo-environment
+  healthcheck:
+    test: ["CMD-SHELL", "curl -fsS http://localhost:$${PORT}/up/bench-app >/dev/null"]
+    interval: 2s
+    timeout: 2s
+    retries: 30
+    start_period: 5s
+  networks:
+    - adapter-benchmark
+
+services:
+  redis:
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    profiles: ["redis"]
+    restart: "no"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    ports:
+      - "16379:6379"
+    networks:
+      - adapter-benchmark
+
+  iggy:
+    image: apache/iggy:latest@sha256:99b42016a898381d4bab3c2d4613456eb04ad06a7a0688314823d798a685636b
+    profiles: ["iggy"]
+    restart: "no"
+    cap_add:
+      - SYS_NICE
+    security_opt:
+      - seccomp:unconfined
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    environment:
+      IGGY_ROOT_USERNAME: "iggy"
+      IGGY_ROOT_PASSWORD: "iggy"
+      IGGY_TCP_ADDRESS: "0.0.0.0:8090"
+      IGGY_HTTP_ENABLED: "true"
+      IGGY_HTTP_ADDRESS: "0.0.0.0:3000"
+      IGGY_QUIC_ADDRESS: "0.0.0.0:8080"
+      IGGY_SYSTEM_PATH: "/local_data"
+    volumes:
+      - iggy-benchmark-data:/local_data
+    ports:
+      - "18090:8090"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "iggy",
+          "--transport",
+          "tcp",
+          "--credentials-username",
+          "iggy",
+          "--credentials-password",
+          "iggy",
+          "ping",
+          "--count",
+          "1",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 5s
+    networks:
+      - adapter-benchmark
+
+  sockudo-node1:
+    <<: *sockudo-node
+    container_name: sockudo-bench-node1
+    environment:
+      <<: *sockudo-environment
+      INSTANCE_PROCESS_ID: "sockudo-bench-node1"
+      IGGY_CONSUMER_NAME: "sockudo-bench-node1"
+      PORT: "6001"
+      METRICS_PORT: "9601"
+    ports:
+      - "6001:6001"
+      - "9601:9601"
+
+  sockudo-node2:
+    <<: *sockudo-node
+    container_name: sockudo-bench-node2
+    environment:
+      <<: *sockudo-environment
+      INSTANCE_PROCESS_ID: "sockudo-bench-node2"
+      IGGY_CONSUMER_NAME: "sockudo-bench-node2"
+      PORT: "6002"
+      METRICS_PORT: "9602"
+    ports:
+      - "6002:6002"
+      - "9602:9602"
+
+  sockudo-node3:
+    <<: *sockudo-node
+    container_name: sockudo-bench-node3
+    environment:
+      <<: *sockudo-environment
+      INSTANCE_PROCESS_ID: "sockudo-bench-node3"
+      IGGY_CONSUMER_NAME: "sockudo-bench-node3"
+      PORT: "6003"
+      METRICS_PORT: "9603"
+    ports:
+      - "6003:6003"
+      - "9603:9603"
+
+networks:
+  adapter-benchmark:
+    driver: bridge
+
+volumes:
+  iggy-benchmark-data:
+    driver: local

@@ -61,6 +61,10 @@ RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook
     done && \
     mkdir -p crates/sockudo-push/examples && \
     echo "fn main() {}" > crates/sockudo-push/examples/webpush_send.rs && \
+    mkdir -p crates/sockudo-ably-compat/benches && \
+    for bench in wire_codec compatibility_hot_paths fanout_grouping realtime_retry_id stats_recording ably_vcdiff; do \
+        echo "fn main() {}" > crates/sockudo-ably-compat/benches/$bench.rs; \
+    done && \
     mkdir -p crates/sockudo-simulator/src && \
     echo "fn main() {}" > crates/sockudo-simulator/src/main.rs && \
     mkdir -p benches/ai/src && \
@@ -90,6 +94,7 @@ RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook
         rm -rf crates/sockudo-$dir/src; \
     done && \
     rm -rf crates/sockudo-push/examples && \
+    rm -rf crates/sockudo-ably-compat/benches && \
     rm -rf benches/ai/src benches/ai/benches && \
     rm -f target/release/deps/sockudo* target/release/deps/libsockudo* target/release/sockudo
 
