@@ -29,6 +29,19 @@ pub struct ConnectionQuery {
     token: Option<String>,
 }
 
+fn websocket_config_for_protocol(
+    server_options: &sockudo_core::options::ServerOptions,
+    protocol_version: ProtocolVersion,
+) -> sockudo_ws::Config {
+    server_options
+        .websocket
+        .to_sockudo_ws_config_with_native_heartbeat(
+            server_options.websocket_max_payload_kb,
+            server_options.activity_timeout,
+            protocol_version == ProtocolVersion::V2,
+        )
+}
+
 // WebSocket upgrade handler
 pub async fn handle_ws_upgrade(
     Path(app_key): Path<String>,
@@ -83,13 +96,7 @@ pub async fn handle_ws_upgrade(
     } else {
         AppendMode::Full
     };
-    let ws_cfg = server_options
-        .websocket
-        .to_sockudo_ws_config_with_native_heartbeat(
-            server_options.websocket_max_payload_kb,
-            server_options.activity_timeout,
-            protocol_version == ProtocolVersion::V2,
-        );
+    let ws_cfg = websocket_config_for_protocol(server_options, protocol_version);
 
     ws.config(ws_cfg)
         .on_upgrade(move |socket| async move {
@@ -145,6 +152,19 @@ mod tests {
         };
 
         assert_eq!(wire_format, WireFormat::Json);
+    }
+
+    #[test]
+    fn websocket_heartbeat_ownership_follows_protocol_version() {
+        let server_options = sockudo_core::options::ServerOptions::default();
+
+        let v2 = websocket_config_for_protocol(&server_options, ProtocolVersion::V2);
+        assert!(v2.auto_ping);
+        assert_eq!(v2.pong_timeout_close_code, 4201);
+
+        let v1 = websocket_config_for_protocol(&server_options, ProtocolVersion::V1);
+        assert!(!v1.auto_ping);
+        assert_eq!(v1.idle_timeout, 0);
     }
 
     #[test]

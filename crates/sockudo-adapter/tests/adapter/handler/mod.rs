@@ -1,3 +1,4 @@
+pub mod activity_timeout_test;
 pub mod annotations_test;
 pub mod auth_token_user_index_tests;
 pub mod authentication_test;
