@@ -43,7 +43,7 @@ use sockudo_core::presence_history::{NoopPresenceHistoryStore, PresenceHistorySt
 use sockudo_core::presence_registry::{PresenceRegistry, PresenceReplication};
 use sockudo_core::rate_limiter::RateLimiter;
 use sockudo_core::version_store::{NoopVersionStore, VersionStore};
-use sockudo_core::websocket::SocketId;
+use sockudo_core::websocket::{DisconnectCause, SocketId};
 use sockudo_protocol::constants::CLIENT_EVENT_PREFIX;
 use sockudo_protocol::messages::{MessageData, PusherMessage, is_ai_event};
 use sockudo_protocol::{AppendMode, ProtocolVersion, WireFormat};
@@ -57,7 +57,7 @@ use sonic_rs::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 type FastDashMap<K, V> = DashMap<K, V, ahash::RandomState>;
 type SharedRateLimiter = Arc<dyn RateLimiter + Send + Sync>;
@@ -905,6 +905,29 @@ impl ConnectionHandler {
 
             let message = match next {
                 Ok(m) => m,
+                Err(e)
+                    if matches!(
+                        &e,
+                        sockudo_ws::Error::HeartbeatTimeout | sockudo_ws::Error::IdleTimeout
+                    ) =>
+                {
+                    if let Some(connection) = self
+                        .connection_manager
+                        .get_connection(socket_id, &app_config.id)
+                        .await
+                    {
+                        let mut connection = connection.inner.lock().await;
+                        connection
+                            .state
+                            .record_disconnect_cause(DisconnectCause::ActivityTimeout);
+                    }
+                    warn!(
+                        socket_id = %socket_id,
+                        error = %e,
+                        "native websocket activity timeout reached"
+                    );
+                    break;
+                }
                 Err(e) => return Err(Error::WebSocket(e)),
             };
             match message {
@@ -936,8 +959,8 @@ impl ConnectionHandler {
                         }
                     }
                 }
-                _ => {
-                    warn!(socket_id = %socket_id, "unsupported socket message type");
+                Message::Ping(_) | Message::Pong(_) => {
+                    trace!(socket_id = %socket_id, "websocket control frame handled");
                 }
             }
         }

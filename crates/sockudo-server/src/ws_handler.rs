@@ -83,10 +83,13 @@ pub async fn handle_ws_upgrade(
     } else {
         AppendMode::Full
     };
-    let ws_cfg = server_options.websocket.to_sockudo_ws_config(
-        server_options.websocket_max_payload_kb,
-        server_options.activity_timeout,
-    );
+    let ws_cfg = server_options
+        .websocket
+        .to_sockudo_ws_config_with_native_heartbeat(
+            server_options.websocket_max_payload_kb,
+            server_options.activity_timeout,
+            protocol_version == ProtocolVersion::V2,
+        );
 
     ws.config(ws_cfg)
         .on_upgrade(move |socket| async move {

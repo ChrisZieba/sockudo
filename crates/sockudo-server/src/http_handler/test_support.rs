@@ -5,6 +5,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     response::IntoResponse,
 };
+use futures_util::StreamExt;
 use sockudo_adapter::ConnectionHandler;
 use sockudo_adapter::ConnectionHandlerBuilder;
 use sockudo_adapter::local_adapter::LocalAdapter;
@@ -458,17 +459,30 @@ pub(crate) async fn test_websocket_writer() -> WebSocketWriter {
             .await
             .unwrap();
         let ws = sockudo_ws::axum_integration::WebSocket::from_tcp(stream, WsConfig::default());
-        let (_reader, writer) = ws.split();
+        let (mut reader, writer) = ws.split();
+        tokio::spawn(async move {
+            while let Some(result) = reader.next().await {
+                if result.is_err() {
+                    break;
+                }
+            }
+        });
         writer
     });
 
     let client_stream = TcpStream::connect(addr).await.unwrap();
     let client = WebSocketClient::<Http1>::new(WsConfig::default());
-    let (client_ws, _): (WebSocketStream<WsStream<Http1>>, _) = client
+    let (mut client_ws, _): (WebSocketStream<WsStream<Http1>>, _) = client
         .connect(client_stream, &addr.to_string(), "/", None)
         .await
         .unwrap();
-    let (_reader, _writer) = client_ws.split();
+    tokio::spawn(async move {
+        while let Some(result) = client_ws.next().await {
+            if result.is_err() {
+                break;
+            }
+        }
+    });
 
     server_task.await.unwrap()
 }

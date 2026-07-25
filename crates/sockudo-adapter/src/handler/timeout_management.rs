@@ -2,6 +2,7 @@ use super::ConnectionHandler;
 use bytes::Bytes;
 use sockudo_core::error::Result;
 use sockudo_core::websocket::SocketId;
+use sockudo_protocol::ProtocolVersion;
 use sockudo_protocol::constants::PONG_TIMEOUT;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::Message;
@@ -33,13 +34,21 @@ impl ConnectionHandler {
         // Clear any existing timeout
         self.clear_activity_timeout(app_id, socket_id).await?;
 
-        let Some(_connection) = self
+        let Some(connection) = self
             .connection_manager
             .get_connection(socket_id, app_id)
             .await
         else {
             return Ok(());
         };
+
+        if connection.protocol_version == ProtocolVersion::V2 {
+            debug!(
+                socket_id = %socket_id,
+                "native websocket heartbeat handles v2 activity timeout"
+            );
+            return Ok(());
+        }
 
         let socket_id_clone = *socket_id;
         let app_id_clone = app_id.to_string();

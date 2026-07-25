@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
+use sockudo_protocol::constants::PONG_TIMEOUT;
 
 use super::{CacheDriver, MetricsDriver, RedisConfig};
+
+const PONG_TIMEOUT_CLOSE_REASON: &str = "Pong reply not received in time";
 
 // Custom deserializer for octal permission mode (string format only, like chmod)
 fn deserialize_octal_permission<'de, D>(deserializer: D) -> Result<u32, D::Error>
@@ -141,11 +144,34 @@ impl WebSocketConfig {
         }
     }
 
-    /// Convert to native sockudo-ws runtime configuration.
+    /// Convert to native sockudo-ws runtime configuration with native
+    /// heartbeat settings enabled.
+    ///
+    /// This keeps the existing two-argument API available. Protocol-aware
+    /// server call sites should use
+    /// [`Self::to_sockudo_ws_config_with_native_heartbeat`] instead.
     pub fn to_sockudo_ws_config(
         &self,
         websocket_max_payload_kb: u32,
         activity_timeout: u64,
+    ) -> sockudo_ws::Config {
+        self.to_sockudo_ws_config_with_native_heartbeat(
+            websocket_max_payload_kb,
+            activity_timeout,
+            true,
+        )
+    }
+
+    /// Convert to native sockudo-ws runtime configuration with explicit
+    /// heartbeat ownership.
+    ///
+    /// `use_native_heartbeat` is enabled for Protocol V2. Protocol V1 and
+    /// compatibility protocols keep their application-level heartbeat loops.
+    pub fn to_sockudo_ws_config_with_native_heartbeat(
+        &self,
+        websocket_max_payload_kb: u32,
+        activity_timeout: u64,
+        use_native_heartbeat: bool,
     ) -> sockudo_ws::Config {
         use sockudo_ws::Compression;
 
@@ -161,6 +187,13 @@ impl WebSocketConfig {
             "window32kb" => Compression::Window32KB,
             _ => Compression::Disabled,
         };
+        let minimum_ping_interval =
+            u32::try_from((activity_timeout / 2).max(5)).unwrap_or(u32::MAX);
+        let ping_interval = if self.ping_interval == 0 {
+            0
+        } else {
+            self.ping_interval.max(minimum_ping_interval)
+        };
 
         sockudo_ws::Config::builder()
             .max_payload_length(
@@ -171,11 +204,60 @@ impl WebSocketConfig {
             .max_frame_size(self.max_frame_size)
             .write_buffer_size(self.write_buffer_size)
             .max_backpressure(self.max_backpressure)
-            .idle_timeout(self.idle_timeout)
-            .auto_ping(self.auto_ping)
-            .ping_interval(self.ping_interval.max((activity_timeout / 2).max(5) as u32))
+            .idle_timeout(if use_native_heartbeat {
+                self.idle_timeout
+            } else {
+                0
+            })
+            .auto_ping(use_native_heartbeat && self.auto_ping)
+            .ping_interval(ping_interval)
+            .pong_timeout(PONG_TIMEOUT as u32)
+            .pong_timeout_close(
+                crate::error::Error::PongNotReceived.close_code(),
+                PONG_TIMEOUT_CLOSE_REASON,
+            )
             .compression(compression)
             .build()
+    }
+}
+
+#[cfg(test)]
+mod websocket_config_tests {
+    use super::*;
+
+    #[test]
+    fn native_heartbeat_uses_sockudo_timeout_contract() {
+        let config = WebSocketConfig::default().to_sockudo_ws_config(64, 120);
+
+        assert!(config.auto_ping);
+        assert_eq!(config.ping_interval, 60);
+        assert_eq!(config.idle_timeout, 120);
+        assert_eq!(config.pong_timeout, PONG_TIMEOUT as u32);
+        assert_eq!(
+            config.pong_timeout_close_code,
+            crate::error::Error::PongNotReceived.close_code()
+        );
+        assert_eq!(config.pong_timeout_close_reason, PONG_TIMEOUT_CLOSE_REASON);
+    }
+
+    #[test]
+    fn application_heartbeat_disables_native_deadlines() {
+        let config =
+            WebSocketConfig::default().to_sockudo_ws_config_with_native_heartbeat(64, 120, false);
+
+        assert!(!config.auto_ping);
+        assert_eq!(config.idle_timeout, 0);
+    }
+
+    #[test]
+    fn zero_ping_interval_remains_disabled() {
+        let websocket = WebSocketConfig {
+            ping_interval: 0,
+            ..WebSocketConfig::default()
+        };
+        let config = websocket.to_sockudo_ws_config(64, 120);
+
+        assert_eq!(config.ping_interval, 0);
     }
 }
 

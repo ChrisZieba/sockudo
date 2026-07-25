@@ -28,7 +28,7 @@ use sockudo_protocol::{ProtocolVersion, WireFormat};
 use sockudo_ws::axum_integration::{WebSocket, WebSocketWriter};
 use sockudo_ws::client::WebSocketClient;
 use sockudo_ws::{
-    Config as WsConfig, Http1, Message as WsMessage, SplitReader, Stream as WsStream,
+    Config as WsConfig, Http1, Message as WsMessage, SplitReader, SplitWriter, Stream as WsStream,
     WebSocketStream,
 };
 use sonic_rs::{JsonValueTrait, Value, json};
@@ -42,6 +42,7 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 type ClientReader = SplitReader<WsStream<Http1>>;
+type ClientWriter = SplitWriter<WsStream<Http1>>;
 
 struct ReadGate {
     started_tx: Option<oneshot::Sender<()>>,
@@ -278,7 +279,10 @@ async fn wait_for_cluster_ready(nodes: &[&Arc<RedisAdapter>], expected_nodes: us
     }
 }
 
-async fn connect_v2_socket(node: &ClusterNode, app: &App) -> (SocketId, ClientReader) {
+async fn connect_v2_socket(
+    node: &ClusterNode,
+    app: &App,
+) -> (SocketId, ClientReader, ClientWriter) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -288,7 +292,14 @@ async fn connect_v2_socket(node: &ClusterNode, app: &App) -> (SocketId, ClientRe
             .await
             .unwrap();
         let ws = WebSocket::from_tcp(stream, WsConfig::default());
-        let (_reader, writer) = ws.split();
+        let (mut reader, writer) = ws.split();
+        tokio::spawn(async move {
+            while let Some(result) = reader.next().await {
+                if result.is_err() {
+                    break;
+                }
+            }
+        });
         writer
     });
 
@@ -298,7 +309,7 @@ async fn connect_v2_socket(node: &ClusterNode, app: &App) -> (SocketId, ClientRe
         .connect(client_stream, &addr.to_string(), "/", None)
         .await
         .unwrap();
-    let (reader, _writer) = client_ws.split();
+    let (reader, writer) = client_ws.split();
     let server_writer: WebSocketWriter = server_task.await.unwrap();
 
     let socket_id = SocketId::new();
@@ -317,7 +328,7 @@ async fn connect_v2_socket(node: &ClusterNode, app: &App) -> (SocketId, ClientRe
         .await
         .unwrap();
 
-    (socket_id, reader)
+    (socket_id, reader, writer)
 }
 
 fn live_message(channel: &str, event: &str, message_id: &str) -> PusherMessage {
@@ -492,7 +503,8 @@ async fn run_cross_node_cold_recovery_test(history_store: Arc<dyn HistoryStore +
     .await;
     wait_for_cluster_ready(&[&node_a.adapter, &node_b.adapter], 2).await;
 
-    let (source_socket_id, mut source_reader) = connect_v2_socket(&node_b, &app).await;
+    let (source_socket_id, mut source_reader, _source_writer) =
+        connect_v2_socket(&node_b, &app).await;
     node_b
         .handler
         .handle_subscribe_request(
@@ -542,7 +554,8 @@ async fn run_cross_node_cold_recovery_test(history_store: Arc<dyn HistoryStore +
     .await;
     wait_for_cluster_ready(&[&node_a.adapter, &restarted_node_b.adapter], 2).await;
 
-    let (resume_socket_id, mut resume_reader) = connect_v2_socket(&restarted_node_b, &app).await;
+    let (resume_socket_id, mut resume_reader, _resume_writer) =
+        connect_v2_socket(&restarted_node_b, &app).await;
     let resume_payload = json!({
         "channel_positions": {
             "cold": {
