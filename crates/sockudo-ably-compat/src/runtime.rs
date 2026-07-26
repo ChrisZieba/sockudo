@@ -1499,7 +1499,7 @@ impl RealtimeEgressTap for AblyCompatHub {
                     action: ACTION_ANNOTATION,
                     timestamp: Some(event.timestamp),
                     channel: Some(channel.to_string()),
-                    channel_serial,
+                    channel_serial: channel_serial.clone(),
                     annotations: Some(vec![ably_annotation_from_native_event(event)]),
                     ..empty_protocol_message(ACTION_ANNOTATION)
                 },
@@ -1527,7 +1527,7 @@ impl RealtimeEgressTap for AblyCompatHub {
                     action: ACTION_MESSAGE,
                     timestamp: Some(now_ms()),
                     channel: Some(channel.to_string()),
-                    channel_serial,
+                    channel_serial: channel_serial.clone(),
                     messages: Some(vec![AblyMessage {
                         serial: Some(serial.to_string()),
                         action: Some(MESSAGE_SUMMARY),
@@ -1555,15 +1555,6 @@ impl RealtimeEgressTap for AblyCompatHub {
                     return Ok(());
                 }
             };
-        let aggregate = (envelope.action
-            == Some(sockudo_core::versioned_messages::MessageAction::Append))
-        .then(|| envelope_to_ably_message(envelope, message, AblyMessageProjection::Aggregate))
-        .transpose()
-        .ok()
-        .flatten();
-        let aggregate_channel_serial = aggregate
-            .as_ref()
-            .and_then(|_| channel_serial.as_ref().cloned());
         self.broadcast(
             app_id,
             channel,
@@ -1571,14 +1562,17 @@ impl RealtimeEgressTap for AblyCompatHub {
                 action: ACTION_MESSAGE,
                 timestamp: Some(now_ms()),
                 channel: Some(channel.to_string()),
-                channel_serial,
+                channel_serial: channel_serial.clone(),
                 messages: Some(vec![ably_message]),
                 ..empty_protocol_message(ACTION_MESSAGE)
             },
             envelope.publisher_connection_id.as_deref(),
             envelope.extras.as_ref().and_then(|extras| extras.echo),
         );
-        if let Some(aggregate) = aggregate {
+        if envelope.action == Some(sockudo_core::versioned_messages::MessageAction::Append)
+            && let Ok(aggregate) =
+                envelope_to_ably_message(envelope, message, AblyMessageProjection::Aggregate)
+        {
             self.broadcast(
                 app_id,
                 channel,
@@ -1586,7 +1580,7 @@ impl RealtimeEgressTap for AblyCompatHub {
                     action: ACTION_MESSAGE,
                     timestamp: Some(now_ms()),
                     channel: Some(channel.to_string()),
-                    channel_serial: aggregate_channel_serial,
+                    channel_serial,
                     messages: Some(vec![aggregate]),
                     ..empty_protocol_message(ACTION_MESSAGE)
                 },
