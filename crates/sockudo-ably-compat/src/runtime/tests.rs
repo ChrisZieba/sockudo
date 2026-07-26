@@ -3,7 +3,9 @@
 use super::*;
 use base64::engine::general_purpose;
 use sockudo_cache::{MemoryCacheManager, RedisCacheManager};
-use sockudo_core::{app::AppPolicy, options::MemoryCacheOptions};
+use sockudo_core::{
+    app::AppPolicy, options::MemoryCacheOptions, versioned_messages::MessageAction,
+};
 use sockudo_protocol::messages::{AiExtras, MessageExtras};
 use sockudo_protocol::versioned_messages::apply_runtime_metadata;
 use sockudo_ws::{
@@ -1456,6 +1458,89 @@ async fn duplicate_remote_delivery_position_reaches_local_ably_subscriber_once()
     assert_eq!(hub.metrics.snapshot().fanout, 1);
     assert_eq!(hub.metrics.snapshot().data_encoded, 1);
     assert_eq!(hub.metrics.snapshot().duplicate_suppression, 1);
+}
+
+#[tokio::test]
+async fn append_delivery_preserves_channel_serial_across_both_projections() {
+    let hub = AblyCompatHub::default();
+    let (sender, mut receiver) = AblyOutbound::channel(
+        AblyFormat::Json,
+        OutboundLimits::default(),
+        Arc::clone(&hub.metrics),
+    );
+    let channel = AblyChannelName::parse("append-room".to_string()).unwrap();
+    hub.attach_clean(
+        "app",
+        &channel,
+        AblyAttachment {
+            connection_id: "subscriber-connection",
+            session_id: "subscriber-session",
+            sender,
+            filter: None,
+            params: HashMap::new(),
+            mode_flags: ABLY_DEFAULT_MODE_FLAGS,
+            echo: true,
+            presence: Vec::new(),
+        },
+        None,
+        Vec::new(),
+    );
+    let attached = receiver.recv().await.expect("ATTACHED frame");
+    assert_eq!(
+        decode_protocol_bytes(attached.bytes.as_ref(), AblyFormat::Json)
+            .unwrap()
+            .action,
+        ACTION_ATTACHED
+    );
+
+    let message = PusherMessage {
+        event: Some("sockudo:message.append".to_string()),
+        channel: Some(channel.base().to_string()),
+        data: Some(MessageData::String("hello".to_string())),
+        name: Some("ai-output".to_string()),
+        user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
+        message_id: Some("message-1".to_string()),
+        stream_id: Some("stream-1".to_string()),
+        serial: Some(7),
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
+    };
+    let mut envelope = MessageEnvelope::from_message(&message, None, None, 1).unwrap();
+    envelope.set_commit_positions(Some("stream-1".to_string()), Some(7), Some(7));
+    envelope.action = Some(MessageAction::Append);
+
+    RealtimeEgressTap::deliver(&hub, "app", channel.base(), &message, &envelope).unwrap();
+
+    let mutation = receiver.recv().await.expect("append mutation");
+    let mutation = decode_protocol_bytes(mutation.bytes.as_ref(), AblyFormat::Json).unwrap();
+    let aggregate = receiver.recv().await.expect("append aggregate");
+    let aggregate = decode_protocol_bytes(aggregate.bytes.as_ref(), AblyFormat::Json).unwrap();
+    assert_eq!(mutation.channel_serial.as_deref(), Some("stream-1:7"));
+    assert_eq!(
+        aggregate.channel_serial.as_deref(),
+        mutation.channel_serial.as_deref()
+    );
+    assert_eq!(
+        mutation
+            .messages
+            .as_ref()
+            .and_then(|messages| messages.first())
+            .and_then(|message| message.action),
+        Some(MESSAGE_APPEND)
+    );
+    assert_eq!(
+        aggregate
+            .messages
+            .as_ref()
+            .and_then(|messages| messages.first())
+            .and_then(|message| message.action),
+        Some(MESSAGE_UPDATE)
+    );
 }
 
 #[test]
