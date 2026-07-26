@@ -1,17 +1,21 @@
 use crate::ArcJobProcessorFn;
 use async_trait::async_trait;
 use aws_sdk_sqs as sqs;
+use aws_sdk_sqs::types::{QueueAttributeName, SendMessageBatchRequestEntry};
+use futures_util::{StreamExt, stream};
 use sockudo_core::error::{Error, Result};
-use sockudo_core::options::SqsQueueConfig;
-use sockudo_core::queue::QueueInterface;
+use sockudo_core::options::{QueueReliabilityConfig, SqsQueueConfig};
+use sockudo_core::queue::{
+    QueueBackendKind, QueueCapabilities, QueueInterface, QueueJobId, QueueJobOptions,
+    QueueJobRequest, QueueStats,
+};
 use sockudo_core::webhook_types::{JobData, JobProcessorFnAsync};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Duration;
-use tokio::time::interval;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// SQS-based implementation of the QueueInterface
 pub struct SqsQueueManager {
@@ -26,11 +30,20 @@ pub struct SqsQueueManager {
     worker_handles: Arc<Mutex<HashMap<String, Vec<tokio::task::JoinHandle<()>>>>>,
     /// Flag to control worker shutdown
     shutdown: Arc<AtomicBool>,
+    reliability: QueueReliabilityConfig,
 }
 
 impl SqsQueueManager {
     /// Create a new SQS queue manager
     pub async fn new(config: SqsQueueConfig) -> Result<Self> {
+        Self::new_with_reliability(config, QueueReliabilityConfig::default()).await
+    }
+
+    pub async fn new_with_reliability(
+        config: SqsQueueConfig,
+        reliability: QueueReliabilityConfig,
+    ) -> Result<Self> {
+        reliability.validate().map_err(Error::Config)?;
         let mut aws_config_builder = aws_config::from_env();
 
         aws_config_builder =
@@ -49,6 +62,7 @@ impl SqsQueueManager {
             queue_urls: Arc::new(RwLock::new(HashMap::new())),
             worker_handles: Arc::new(Mutex::new(HashMap::new())),
             shutdown: Arc::new(AtomicBool::new(false)),
+            reliability,
         })
     }
 
@@ -124,8 +138,6 @@ impl SqsQueueManager {
 
         let mut attributes = HashMap::new();
 
-        use aws_sdk_sqs::types::QueueAttributeName;
-
         attributes.insert(
             QueueAttributeName::VisibilityTimeout,
             self.config.visibility_timeout.to_string(),
@@ -162,6 +174,106 @@ impl SqsQueueManager {
         }
     }
 
+    async fn send_jobs(
+        &self,
+        queue_name: &str,
+        jobs: Vec<(JobData, QueueJobOptions)>,
+    ) -> Result<Vec<QueueJobId>> {
+        if jobs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let queue_url = self.get_queue_url(queue_name).await?;
+        let mut prepared = Vec::with_capacity(jobs.len());
+
+        for (mut data, options) in jobs {
+            if options.max_attempts.is_some() {
+                return Err(Error::Queue(
+                    "SQS max_attempts is configured by the queue redrive policy, not per job"
+                        .to_string(),
+                ));
+            }
+            if options.delay_ms > 900_000 {
+                return Err(Error::Queue(
+                    "SQS delay_ms must not exceed 900000 (15 minutes)".to_string(),
+                ));
+            }
+            if self.config.fifo && options.delay_ms > 0 {
+                return Err(Error::Queue(
+                    "SQS FIFO queues do not support per-message delay".to_string(),
+                ));
+            }
+            if !self.config.fifo && options.deduplication_key.is_some() {
+                return Err(Error::Queue(
+                    "SQS deduplication keys require a FIFO queue".to_string(),
+                ));
+            }
+
+            let supplied_job_id = options.job_id.is_some() || data.job_id.is_some();
+            let id = QueueJobId(
+                options
+                    .job_id
+                    .or_else(|| data.job_id.clone())
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()),
+            );
+            data.job_id = Some(id.0.clone());
+            let deduplication_id = options
+                .deduplication_key
+                .or_else(|| supplied_job_id.then(|| id.0.clone()));
+            let body = sonic_rs::to_string(&data)
+                .map_err(|e| Error::Queue(format!("Failed to serialize SQS job data: {e}")))?;
+            prepared.push((id, body, options.delay_ms, deduplication_id));
+        }
+
+        let batch_size = self.reliability.max_batch_size.min(10);
+        for chunk in prepared.chunks(batch_size) {
+            let entries = chunk
+                .iter()
+                .enumerate()
+                .map(|(index, (_, body, delay_ms, deduplication_id))| {
+                    let mut builder = SendMessageBatchRequestEntry::builder()
+                        .id(format!("job-{index}"))
+                        .message_body(body)
+                        .set_delay_seconds(
+                            (*delay_ms > 0).then(|| delay_ms.div_ceil(1_000).min(900) as i32),
+                        );
+                    if self.config.fifo {
+                        builder = builder
+                            .set_message_group_id(self.config.message_group_id.clone())
+                            .set_message_deduplication_id(deduplication_id.clone());
+                    }
+                    builder
+                        .build()
+                        .map_err(|e| Error::Queue(format!("Failed to build SQS batch entry: {e}")))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let response = self
+                .client
+                .send_message_batch()
+                .queue_url(&queue_url)
+                .set_entries(Some(entries))
+                .send()
+                .await
+                .map_err(|e| {
+                    Error::Queue(format!(
+                        "Failed to send message batch to SQS queue {queue_name}: {e}"
+                    ))
+                })?;
+            if !response.failed().is_empty() {
+                let failures = response
+                    .failed()
+                    .iter()
+                    .map(|failure| format!("{}:{}", failure.id(), failure.code()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(Error::Queue(format!(
+                    "SQS accepted the batch request but rejected entries: {failures}"
+                )));
+            }
+        }
+
+        Ok(prepared.into_iter().map(|(id, ..)| id).collect())
+    }
+
     /// Start a worker for processing messages from the queue
     async fn start_worker(
         &self,
@@ -174,15 +286,12 @@ impl SqsQueueManager {
         let config = self.config.clone();
         let shutdown = self.shutdown.clone();
         let queue_name = queue_name.to_string();
+        let worker_prefetch = self.reliability.worker_prefetch;
 
         tokio::spawn(async move {
             debug!(worker_id = %worker_id, queue = %queue_name, "starting sqs worker");
 
-            let mut interval = interval(Duration::from_secs(1));
-
             loop {
-                interval.tick().await;
-
                 if shutdown.load(Ordering::Relaxed) {
                     debug!(worker_id = %worker_id, queue = %queue_name, "sqs worker shutting down");
                     break;
@@ -204,44 +313,23 @@ impl SqsQueueManager {
                         if !messages.is_empty() {
                             debug!(worker_id = %worker_id, queue = %queue_name, message_count = messages.len(), "sqs worker received messages");
 
-                            for message in messages {
-                                if let Some(body) = message.body() {
-                                    match sonic_rs::from_str::<JobData>(body) {
-                                        Ok(job_data) => match processor(job_data).await {
-                                            Ok(_) => {
-                                                if let Some(receipt_handle) =
-                                                    message.receipt_handle()
-                                                    && let Err(e) = client
-                                                        .delete_message()
-                                                        .queue_url(&queue_url)
-                                                        .receipt_handle(receipt_handle)
-                                                        .send()
-                                                        .await
-                                                {
-                                                    error!(queue = %queue_name, error = %e, "failed to delete message from sqs queue");
-                                                }
-                                            }
-                                            Err(e) => {
-                                                error!(queue = %queue_name, error = %e, "error processing sqs queue message");
-                                            }
-                                        },
-                                        Err(e) => {
-                                            error!(queue = %queue_name, error = %e, "failed to deserialize sqs queue message");
-
-                                            if let Some(receipt_handle) = message.receipt_handle()
-                                                && let Err(e) = client
-                                                    .delete_message()
-                                                    .queue_url(&queue_url)
-                                                    .receipt_handle(receipt_handle)
-                                                    .send()
-                                                    .await
-                                            {
-                                                error!(queue = %queue_name, error = %e, "failed to delete malformed sqs queue message");
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            let message_concurrency = if config.fifo {
+                                1
+                            } else {
+                                worker_prefetch.min(messages.len()).max(1)
+                            };
+                            stream::iter(messages.iter().cloned())
+                                .for_each_concurrent(message_concurrency, |message| {
+                                    process_sqs_message(
+                                        client.clone(),
+                                        queue_url.clone(),
+                                        queue_name.clone(),
+                                        config.visibility_timeout,
+                                        processor.clone(),
+                                        message,
+                                    )
+                                })
+                                .await;
                         }
                     }
                     Err(e) => {
@@ -257,32 +345,47 @@ impl SqsQueueManager {
 #[async_trait]
 impl QueueInterface for SqsQueueManager {
     async fn add_to_queue(&self, queue_name: &str, data: JobData) -> Result<()> {
-        let queue_url = self.get_queue_url(queue_name).await?;
-
-        let data_json = sonic_rs::to_string(&data)
-            .map_err(|e| Error::Queue(format!("Failed to serialize job data: {e}")))?;
-
-        let mut send_message_request = self
-            .client
-            .send_message()
-            .queue_url(queue_url)
-            .message_body(data_json);
-
-        if self.config.fifo
-            && let Some(group_id) = &self.config.message_group_id
-        {
-            send_message_request = send_message_request.message_group_id(group_id);
-        }
-
-        let result = send_message_request.send().await.map_err(|e| {
-            Error::Queue(format!(
-                "Failed to send message to SQS queue {queue_name}: {e}"
-            ))
-        })?;
-
-        debug!(queue = %queue_name, message_id = %result.message_id().unwrap_or("unknown"), "added job to sqs queue");
-
+        self.send_jobs(queue_name, vec![(data, QueueJobOptions::default())])
+            .await?;
         Ok(())
+    }
+
+    async fn enqueue(
+        &self,
+        queue_name: &str,
+        data: JobData,
+        options: QueueJobOptions,
+    ) -> Result<QueueJobId> {
+        self.send_jobs(queue_name, vec![(data, options)])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::Queue("SQS enqueue returned no job ID".to_string()))
+    }
+
+    async fn add_batch_to_queue(&self, queue_name: &str, data: Vec<JobData>) -> Result<()> {
+        self.send_jobs(
+            queue_name,
+            data.into_iter()
+                .map(|data| (data, QueueJobOptions::default()))
+                .collect(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn enqueue_batch(
+        &self,
+        queue_name: &str,
+        jobs: Vec<QueueJobRequest>,
+    ) -> Result<Vec<QueueJobId>> {
+        self.send_jobs(
+            queue_name,
+            jobs.into_iter()
+                .map(|job| (job.data, job.options))
+                .collect(),
+        )
+        .await
     }
 
     async fn process_queue(&self, queue_name: &str, callback: JobProcessorFnAsync) -> Result<()> {
@@ -317,8 +420,17 @@ impl QueueInterface for SqsQueueManager {
         for (queue_name, workers) in worker_handles {
             info!(queue = %queue_name, "waiting for sqs queue workers to shutdown");
 
-            for handle in workers {
-                handle.abort();
+            for mut handle in workers {
+                if tokio::time::timeout(
+                    Duration::from_millis(self.reliability.shutdown_timeout_ms),
+                    &mut handle,
+                )
+                .await
+                .is_err()
+                {
+                    handle.abort();
+                    let _ = handle.await;
+                }
             }
         }
 
@@ -332,6 +444,171 @@ impl QueueInterface for SqsQueueManager {
             .await
             .map_err(|e| Error::Queue(format!("Queue SQS connection failed: {e}")))?;
         Ok(())
+    }
+
+    fn backend(&self) -> QueueBackendKind {
+        QueueBackendKind::Sqs
+    }
+
+    fn capabilities(&self) -> QueueCapabilities {
+        QueueCapabilities {
+            consume: true,
+            acknowledgements: true,
+            delayed_delivery: true,
+            retries: true,
+            dead_letter: false,
+            deduplication: self.config.fifo,
+            leasing: true,
+            durable: true,
+            batch_enqueue: true,
+            observable_lag: true,
+        }
+    }
+
+    async fn stats(&self, queue_name: &str) -> Result<QueueStats> {
+        let queue_url = self.get_queue_url(queue_name).await?;
+        let output = self
+            .client
+            .get_queue_attributes()
+            .queue_url(queue_url)
+            .attribute_names(QueueAttributeName::ApproximateNumberOfMessages)
+            .attribute_names(QueueAttributeName::ApproximateNumberOfMessagesNotVisible)
+            .attribute_names(QueueAttributeName::ApproximateNumberOfMessagesDelayed)
+            .send()
+            .await
+            .map_err(|e| Error::Queue(format!("Failed to read SQS queue stats: {e}")))?;
+        let attributes = output.attributes();
+        let parse = |name: &QueueAttributeName| {
+            attributes
+                .and_then(|values| values.get(name))
+                .and_then(|value| value.parse::<u64>().ok())
+        };
+        Ok(QueueStats {
+            ready: parse(&QueueAttributeName::ApproximateNumberOfMessages),
+            active: parse(&QueueAttributeName::ApproximateNumberOfMessagesNotVisible),
+            delayed: parse(&QueueAttributeName::ApproximateNumberOfMessagesDelayed),
+            ..QueueStats::default()
+        })
+    }
+}
+
+async fn process_sqs_message(
+    client: sqs::Client,
+    queue_url: String,
+    queue_name: String,
+    visibility_timeout: i32,
+    processor: ArcJobProcessorFn,
+    message: sqs::types::Message,
+) {
+    let Some(body) = message.body() else {
+        return;
+    };
+    let job_data = match sonic_rs::from_str::<JobData>(body) {
+        Ok(job_data) => job_data,
+        Err(error) => {
+            error!(
+                queue = %queue_name,
+                error = %error,
+                "failed to deserialize sqs queue message"
+            );
+            if let Some(receipt_handle) = message.receipt_handle()
+                && let Err(error) = client
+                    .delete_message()
+                    .queue_url(&queue_url)
+                    .receipt_handle(receipt_handle)
+                    .send()
+                    .await
+            {
+                error!(
+                    queue = %queue_name,
+                    error = %error,
+                    "failed to delete malformed sqs queue message"
+                );
+            }
+            return;
+        }
+    };
+
+    match process_with_visibility_renewal(
+        &client,
+        &queue_url,
+        message.receipt_handle(),
+        visibility_timeout,
+        processor(job_data),
+    )
+    .await
+    {
+        Ok(()) => {
+            if let Some(receipt_handle) = message.receipt_handle()
+                && let Err(error) = client
+                    .delete_message()
+                    .queue_url(&queue_url)
+                    .receipt_handle(receipt_handle)
+                    .send()
+                    .await
+            {
+                error!(
+                    queue = %queue_name,
+                    error = %error,
+                    "failed to delete sqs queue message"
+                );
+            }
+        }
+        Err(_) => {
+            warn!(queue = %queue_name, "sqs queue processor failed");
+            if let Some(receipt_handle) = message.receipt_handle()
+                && let Err(change_error) = client
+                    .change_message_visibility()
+                    .queue_url(&queue_url)
+                    .receipt_handle(receipt_handle)
+                    .visibility_timeout(0)
+                    .send()
+                    .await
+            {
+                error!(
+                    queue = %queue_name,
+                    error = %change_error,
+                    "failed to release sqs queue message"
+                );
+            }
+        }
+    }
+}
+
+async fn process_with_visibility_renewal<F>(
+    client: &sqs::Client,
+    queue_url: &str,
+    receipt_handle: Option<&str>,
+    visibility_timeout: i32,
+    future: F,
+) -> Result<()>
+where
+    F: std::future::Future<Output = Result<()>>,
+{
+    let Some(receipt_handle) = receipt_handle else {
+        return future.await;
+    };
+    tokio::pin!(future);
+    let renew_seconds = u64::try_from(visibility_timeout.max(2) / 2).unwrap_or(1);
+    let mut interval = tokio::time::interval(Duration::from_secs(renew_seconds));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval.tick().await;
+    loop {
+        tokio::select! {
+            result = &mut future => return result,
+            _ = interval.tick() => {
+                client
+                    .change_message_visibility()
+                    .queue_url(queue_url)
+                    .receipt_handle(receipt_handle)
+                    .visibility_timeout(visibility_timeout)
+                    .send()
+                    .await
+                    .map_err(|error| Error::Queue(format!(
+                        "failed to renew SQS message visibility: {error}"
+                    )))?;
+            }
+        }
     }
 }
 

@@ -72,6 +72,15 @@ impl QueueManager {
         self.driver.add_to_queue(queue_name, data).await
     }
 
+    pub async fn enqueue(
+        &self,
+        queue_name: &str,
+        data: JobData,
+        options: sockudo_core::queue::QueueJobOptions,
+    ) -> Result<sockudo_core::queue::QueueJobId> {
+        self.driver.enqueue(queue_name, data, options).await
+    }
+
     pub async fn add_batch_to_queue(&self, queue_name: &str, data: Vec<JobData>) -> Result<()> {
         self.driver.add_batch_to_queue(queue_name, data).await
     }
@@ -90,6 +99,10 @@ impl QueueManager {
 
     pub async fn check_health(&self) -> Result<()> {
         self.driver.check_health().await
+    }
+
+    pub async fn replay_dead_letters(&self, queue_name: &str, limit: u32) -> Result<u64> {
+        self.driver.replay_dead_letters(queue_name, limit).await
     }
 }
 
@@ -208,7 +221,7 @@ impl WebhookIntegration {
         if self.config.batching.enabled {
             self.batched_webhooks.lock().push(job_data);
         } else if let Some(qm) = &self.queue_manager {
-            job_data.job_id = Some(uuid::Uuid::new_v4().to_string());
+            job_data.job_id = Some(uuid::Uuid::new_v4().simple().to_string());
             qm.add_to_queue(WEBHOOK_QUEUE_NAME, job_data).await?;
         } else {
             return Err(Error::Internal(
@@ -271,7 +284,7 @@ impl WebhookIntegration {
         }
 
         for job in &mut merged {
-            job.job_id = Some(uuid::Uuid::new_v4().to_string());
+            job.job_id = Some(uuid::Uuid::new_v4().simple().to_string());
         }
 
         merged

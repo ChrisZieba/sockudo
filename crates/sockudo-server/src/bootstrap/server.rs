@@ -215,7 +215,12 @@ impl SockudoServer {
 
         let queue_manager_opt = match config.queue.driver {
             QueueDriver::Sqs => {
-                match QueueManagerFactory::create_sqs(config.queue.sqs.clone()).await {
+                match QueueManagerFactory::create_sqs_with_reliability(
+                    config.queue.sqs.clone(),
+                    config.queue.reliability.clone(),
+                )
+                .await
+                {
                     Ok(queue_driver_impl) => {
                         info!(queue_driver = "sqs", "queue manager initialized");
                         Some(Arc::new(QueueManager::new(queue_driver_impl)))
@@ -227,7 +232,12 @@ impl SockudoServer {
                 }
             }
             QueueDriver::Sns => {
-                match QueueManagerFactory::create_sns(config.queue.sns.clone()).await {
+                match QueueManagerFactory::create_sns_with_reliability(
+                    config.queue.sns.clone(),
+                    config.queue.reliability.clone(),
+                )
+                .await
+                {
                     Ok(queue_driver_impl) => {
                         info!(queue_driver = "sns", "queue manager initialized");
                         Some(Arc::new(QueueManager::new(queue_driver_impl)))
@@ -239,7 +249,12 @@ impl SockudoServer {
                 }
             }
             QueueDriver::Nats => {
-                match QueueManagerFactory::create_nats(config.queue.nats.clone()).await {
+                match QueueManagerFactory::create_nats_with_reliability(
+                    config.queue.nats.clone(),
+                    config.queue.reliability.clone(),
+                )
+                .await
+                {
                     Ok(queue_driver_impl) => {
                         info!(queue_driver = "nats", "queue manager initialized");
                         Some(Arc::new(QueueManager::new(queue_driver_impl)))
@@ -251,7 +266,12 @@ impl SockudoServer {
                 }
             }
             QueueDriver::RabbitMq => {
-                match QueueManagerFactory::create_rabbitmq(config.queue.rabbitmq.clone()).await {
+                match QueueManagerFactory::create_rabbitmq_with_reliability(
+                    config.queue.rabbitmq.clone(),
+                    config.queue.reliability.clone(),
+                )
+                .await
+                {
                     Ok(queue_driver_impl) => {
                         info!(queue_driver = "rabbitmq", "queue manager initialized");
                         Some(Arc::new(QueueManager::new(queue_driver_impl)))
@@ -263,7 +283,12 @@ impl SockudoServer {
                 }
             }
             QueueDriver::Kafka => {
-                match QueueManagerFactory::create_kafka(config.queue.kafka.clone()).await {
+                match QueueManagerFactory::create_kafka_with_reliability(
+                    config.queue.kafka.clone(),
+                    config.queue.reliability.clone(),
+                )
+                .await
+                {
                     Ok(queue_driver_impl) => {
                         info!(queue_driver = "kafka", "queue manager initialized");
                         Some(Arc::new(QueueManager::new(queue_driver_impl)))
@@ -275,7 +300,12 @@ impl SockudoServer {
                 }
             }
             QueueDriver::Iggy => {
-                match QueueManagerFactory::create_iggy(config.queue.iggy.clone()).await {
+                match QueueManagerFactory::create_iggy_with_reliability(
+                    config.queue.iggy.clone(),
+                    config.queue.reliability.clone(),
+                )
+                .await
+                {
                     Ok(queue_driver_impl) => {
                         info!(queue_driver = "iggy", "queue manager initialized");
                         Some(Arc::new(QueueManager::new(queue_driver_impl)))
@@ -287,7 +317,12 @@ impl SockudoServer {
                 }
             }
             QueueDriver::Pulsar => {
-                match QueueManagerFactory::create_pulsar(config.queue.pulsar.clone()).await {
+                match QueueManagerFactory::create_pulsar_with_reliability(
+                    config.queue.pulsar.clone(),
+                    config.queue.reliability.clone(),
+                )
+                .await
+                {
                     Ok(queue_driver_impl) => {
                         info!(queue_driver = "pulsar", "queue manager initialized");
                         Some(Arc::new(QueueManager::new(queue_driver_impl)))
@@ -299,8 +334,11 @@ impl SockudoServer {
                 }
             }
             QueueDriver::GooglePubSub => {
-                match QueueManagerFactory::create_google_pubsub(config.queue.google_pubsub.clone())
-                    .await
+                match QueueManagerFactory::create_google_pubsub_with_reliability(
+                    config.queue.google_pubsub.clone(),
+                    config.queue.reliability.clone(),
+                )
+                .await
                 {
                     Ok(queue_driver_impl) => {
                         info!(queue_driver = "google_pubsub", "queue manager initialized");
@@ -374,12 +412,21 @@ impl SockudoServer {
                     _ => (None, "sockudo_queue:", 5, None),
                 };
 
-                match QueueManagerFactory::create(
+                let queue_sentinel = match config.queue.driver {
+                    QueueDriver::Redis if config.queue.redis.url_override.is_none() => {
+                        config.database.redis.sentinel_spec()
+                    }
+                    _ => None,
+                };
+
+                match QueueManagerFactory::create_with_reliability(
                     config.queue.driver.as_ref(),
                     queue_redis_url_or_nodes.as_deref(),
                     Some(queue_prefix),
                     Some(queue_concurrency),
                     queue_response_timeout_ms,
+                    config.queue.reliability.clone(),
+                    queue_sentinel,
                 )
                 .await
                 {
