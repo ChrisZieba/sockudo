@@ -3,7 +3,8 @@ use super::types::*;
 use crate::error::{Error, Result};
 use crate::history::now_ms;
 use crate::versioned_messages::{
-    MessageAction, MessageSerial, validate_replay_continuity, validate_version_chain,
+    MessageAction, MessageSerial, validate_replay_continuity_iter, validate_version_chain,
+    validate_version_chain_iter,
 };
 use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,8 +20,8 @@ pub struct MemoryVersionStore {
 struct MemoryVersionChannel {
     stream_id: String,
     next_delivery_serial: u64,
-    messages: BTreeMap<String, Vec<StoredVersionRecord>>,
-    replay: BTreeMap<u64, StoredVersionRecord>,
+    messages: BTreeMap<String, Vec<Arc<StoredVersionRecord>>>,
+    replay: BTreeMap<u64, Arc<StoredVersionRecord>>,
     // Parallel map: `delivery_serial -> server-side append time (ms)`.
     // Used by `purge_before` for TTL eviction without touching read paths.
     created_at: BTreeMap<u64, i64>,
@@ -115,30 +116,30 @@ impl VersionStore for MemoryVersionStore {
             )));
         }
 
-        let tentative_chain = channel_state
-            .messages
-            .get(record.message_serial().as_str())
-            .cloned()
-            .unwrap_or_default();
-        let mut validated_chain = tentative_chain;
-        validated_chain.push(record.clone());
-        validate_version_chain(
-            &validated_chain
-                .iter()
-                .map(|entry| entry.message.clone())
-                .collect::<Vec<_>>(),
-        )?;
+        let message_serial = record.message_serial().as_str().to_owned();
+        if let Some(chain) = channel_state.messages.get(&message_serial) {
+            validate_version_chain_iter(
+                chain
+                    .iter()
+                    .map(|entry| &entry.message)
+                    .chain(std::iter::once(&record.message)),
+            )?;
+        } else {
+            validate_version_chain(std::slice::from_ref(&record.message))?;
+        }
 
-        channel_state.messages.insert(
-            record.message_serial().as_str().to_string(),
-            validated_chain,
-        );
+        let record = Arc::new(record);
+        channel_state
+            .messages
+            .entry(message_serial)
+            .or_default()
+            .push(Arc::clone(&record));
         channel_state
             .created_at
             .insert(record.delivery_serial(), now_ms());
         channel_state
             .replay
-            .insert(record.delivery_serial(), record.clone());
+            .insert(record.delivery_serial(), Arc::clone(&record));
         channel_state.next_delivery_serial = channel_state
             .next_delivery_serial
             .max(record.delivery_serial().saturating_add(1));
@@ -161,7 +162,7 @@ impl VersionStore for MemoryVersionStore {
             })
         {
             return Ok(VersionCreateResult::Conflict {
-                current: Some(current.clone()),
+                current: Some(current.as_ref().clone()),
             });
         }
         if let Some(limit) = request.limits.max_accumulated_message_bytes
@@ -201,12 +202,13 @@ impl VersionStore for MemoryVersionStore {
                 "duplicate delivery_serial {delivery_serial} in version replay log"
             )));
         }
+        let stored_record = Arc::new(record.clone());
         channel_state.messages.insert(
             record.message_serial().as_str().to_string(),
-            vec![record.clone()],
+            vec![Arc::clone(&stored_record)],
         );
         channel_state.created_at.insert(delivery_serial, now_ms());
-        channel_state.replay.insert(delivery_serial, record.clone());
+        channel_state.replay.insert(delivery_serial, stored_record);
         channel_state.next_delivery_serial = delivery_serial.saturating_add(1);
 
         Ok(VersionCreateResult::Applied {
@@ -250,7 +252,7 @@ impl VersionStore for MemoryVersionStore {
                 return Err(Error::IdempotencyConflict);
             }
             return Ok(VersionMutationResult::Duplicate {
-                record: existing.clone(),
+                record: existing.as_ref().clone(),
                 stream_id: channel_state.stream_id.clone(),
             });
         }
@@ -258,18 +260,17 @@ impl VersionStore for MemoryVersionStore {
         let current = chain
             .iter()
             .max_by(|left, right| left.version_serial().cmp(right.version_serial()))
-            .cloned()
             .ok_or_else(|| {
                 Error::InvalidMessageFormat("version chain must not be empty".to_string())
             })?;
-        if !request.expected.matches(&current) {
+        if !request.expected.matches(current) {
             return Ok(VersionMutationResult::Conflict {
-                current: Some(current),
+                current: Some(current.as_ref().clone()),
             });
         }
 
         if matches!(request.mutation, VersionMutation::Append(_)) {
-            if request.limits.reject_append_after_terminal && Self::is_terminal(&current) {
+            if request.limits.reject_append_after_terminal && Self::is_terminal(current) {
                 return Ok(VersionMutationResult::Rejected(
                     VersionMutationRejection::TerminalMessage,
                 ));
@@ -319,13 +320,11 @@ impl VersionStore for MemoryVersionStore {
             }
         }
 
-        let mut validated_chain = chain.clone();
-        validated_chain.push(record.clone());
-        validate_version_chain(
-            &validated_chain
+        validate_version_chain_iter(
+            chain
                 .iter()
-                .map(|entry| entry.message.clone())
-                .collect::<Vec<_>>(),
+                .map(|entry| &entry.message)
+                .chain(std::iter::once(&record.message)),
         )?;
         if channel_state.replay.contains_key(&delivery_serial) {
             return Err(Error::InvalidMessageFormat(format!(
@@ -333,11 +332,16 @@ impl VersionStore for MemoryVersionStore {
             )));
         }
 
+        let stored_record = Arc::new(record.clone());
         channel_state
             .messages
-            .insert(request.message_serial.as_str().to_string(), validated_chain);
+            .get_mut(request.message_serial.as_str())
+            .ok_or_else(|| {
+                Error::Internal("version chain disappeared during mutation".to_string())
+            })?
+            .push(Arc::clone(&stored_record));
         channel_state.created_at.insert(delivery_serial, now_ms());
-        channel_state.replay.insert(delivery_serial, record.clone());
+        channel_state.replay.insert(delivery_serial, stored_record);
         channel_state.next_delivery_serial = delivery_serial.saturating_add(1);
 
         Ok(VersionMutationResult::Applied {
@@ -364,10 +368,9 @@ impl VersionStore for MemoryVersionStore {
         let latest = chain
             .iter()
             .max_by(|left, right| left.version_serial().cmp(right.version_serial()))
-            .cloned()
             .ok_or_else(|| Error::InvalidMessageFormat("version chain must not be empty".into()))?;
 
-        Ok(Some(latest))
+        Ok(Some(latest.as_ref().clone()))
     }
 
     async fn get_latest_batch(
@@ -398,8 +401,7 @@ impl VersionStore for MemoryVersionStore {
                 chain
                     .iter()
                     .max_by(|left, right| left.version_serial().cmp(right.version_serial()))
-                    .cloned()
-                    .map(|record| (message_serial.clone(), record))
+                    .map(|record| (message_serial.clone(), record.as_ref().clone()))
                     .ok_or_else(|| {
                         Error::InvalidMessageFormat("version chain must not be empty".into())
                     })
@@ -426,13 +428,13 @@ impl VersionStore for MemoryVersionStore {
             });
         };
 
-        let mut items = chain.clone();
+        let mut items = chain.iter().collect::<Vec<_>>();
         items.sort_by(|left, right| left.version_serial().cmp(right.version_serial()));
         if matches!(request.direction, VersionStoreDirection::NewestFirst) {
             items.reverse();
         }
 
-        let filtered: Vec<StoredVersionRecord> = items
+        let filtered = items
             .into_iter()
             .filter(|item| {
                 request
@@ -448,10 +450,14 @@ impl VersionStore for MemoryVersionStore {
                     })
             })
             .take(request.limit + 1)
-            .collect();
+            .collect::<Vec<_>>();
 
         let has_more = filtered.len() > request.limit;
-        let items: Vec<StoredVersionRecord> = filtered.into_iter().take(request.limit).collect();
+        let items = filtered
+            .into_iter()
+            .take(request.limit)
+            .map(|item| item.as_ref().clone())
+            .collect::<Vec<_>>();
         let next_cursor = if has_more {
             items.last().map(|item| VersionStoreCursor {
                 version: 1,
@@ -480,22 +486,22 @@ impl VersionStore for MemoryVersionStore {
             return Ok(Vec::new());
         };
 
-        let items: Vec<StoredVersionRecord> = channel_state
+        let stored_items = channel_state
             .replay
             .range((request.after_delivery_serial.saturating_add(1))..)
-            .map(|(_, value)| value.clone())
+            .map(|(_, value)| value)
             .take(request.limit)
-            .collect();
+            .collect::<Vec<_>>();
 
-        validate_replay_continuity(
-            &items
-                .iter()
-                .map(|entry| entry.message.clone())
-                .collect::<Vec<_>>(),
+        validate_replay_continuity_iter(
+            stored_items.iter().map(|entry| &entry.message),
             request.after_delivery_serial,
         )?;
 
-        Ok(items)
+        Ok(stored_items
+            .into_iter()
+            .map(|item| item.as_ref().clone())
+            .collect())
     }
 
     async fn latest_by_history(
@@ -516,7 +522,7 @@ impl VersionStore for MemoryVersionStore {
                 chain
                     .iter()
                     .max_by(|left, right| left.version_serial().cmp(right.version_serial()))
-                    .cloned()
+                    .map(|record| record.as_ref().clone())
             })
             .collect::<Vec<_>>();
 

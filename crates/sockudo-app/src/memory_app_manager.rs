@@ -36,23 +36,23 @@ impl AppManager for MemoryAppManager {
 
     async fn create_app(&self, config: App) -> Result<()> {
         let mut state = self.state.write().unwrap();
-        if let Some(previous) = state.apps_by_id.insert(config.id.clone(), config.clone()) {
+        let id = config.id.clone();
+        let key = config.key.clone();
+        if let Some(previous) = state.apps_by_id.insert(id.clone(), config) {
             state.app_id_by_key.remove(&previous.key);
         }
-        state
-            .app_id_by_key
-            .insert(config.key.clone(), config.id.clone());
+        state.app_id_by_key.insert(key, id);
         Ok(())
     }
 
     async fn update_app(&self, config: App) -> Result<()> {
         let mut state = self.state.write().unwrap();
-        if let Some(previous) = state.apps_by_id.insert(config.id.clone(), config.clone()) {
+        let id = config.id.clone();
+        let key = config.key.clone();
+        if let Some(previous) = state.apps_by_id.insert(id.clone(), config) {
             state.app_id_by_key.remove(&previous.key);
         }
-        state
-            .app_id_by_key
-            .insert(config.key.clone(), config.id.clone());
+        state.app_id_by_key.insert(key, id);
         Ok(())
     }
 

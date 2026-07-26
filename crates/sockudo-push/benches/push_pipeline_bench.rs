@@ -1,6 +1,8 @@
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use aws_lc_rs::pbkdf2 as aws_lc_pbkdf2;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
@@ -25,6 +27,56 @@ const BENCH_NOW_MS: u64 = 1_778_070_000_000;
 const PBKDF2_BENCH_ITERATIONS: u32 = 120_000;
 
 type HmacSha256 = Hmac<Sha256>;
+
+struct CountingAllocator;
+
+static COUNT_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
+static ALLOCATION_COUNT: AtomicU64 = AtomicU64::new(0);
+static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
+
+// SAFETY: every allocation operation delegates to the process system allocator.
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller provided a valid allocation layout.
+        let pointer = unsafe { System.alloc(layout) };
+        if COUNT_ALLOCATIONS.load(Ordering::Relaxed) && !pointer.is_null() {
+            ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            ALLOCATED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+        }
+        pointer
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        // SAFETY: the pointer and layout came from the delegated system allocator.
+        unsafe { System.dealloc(pointer, layout) };
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: the pointer and layout came from the delegated system allocator.
+        let pointer = unsafe { System.realloc(pointer, layout, new_size) };
+        if COUNT_ALLOCATIONS.load(Ordering::Relaxed) && !pointer.is_null() {
+            ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            ALLOCATED_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
+        }
+        pointer
+    }
+}
+
+#[global_allocator]
+static GLOBAL_ALLOCATOR: CountingAllocator = CountingAllocator;
+
+fn measure_allocations<T>(operation: impl FnOnce() -> T) -> (T, u64, u64) {
+    ALLOCATION_COUNT.store(0, Ordering::Relaxed);
+    ALLOCATED_BYTES.store(0, Ordering::Relaxed);
+    COUNT_ALLOCATIONS.store(true, Ordering::SeqCst);
+    let output = operation();
+    COUNT_ALLOCATIONS.store(false, Ordering::SeqCst);
+    (
+        output,
+        ALLOCATION_COUNT.load(Ordering::Relaxed),
+        ALLOCATED_BYTES.load(Ordering::Relaxed),
+    )
+}
 
 fn bench_admission(c: &mut Criterion) {
     let mut group = c.benchmark_group("push_admission");
@@ -247,6 +299,28 @@ fn bench_queue(c: &mut Criterion) {
 }
 
 fn bench_provider_dispatch(c: &mut Criterion) {
+    let runtime = Runtime::new().expect("tokio runtime");
+    let queue = Arc::new(MemoryPushQueue::new());
+    runtime.block_on(async {
+        let batch = sample_delivery_batch("dispatch-allocation-profile".to_owned(), 500);
+        queue
+            .produce(
+                PushQueueStage::DeliveryJobs(PushProviderKind::Fcm),
+                batch.queue_key(),
+                PushQueuePayload::DeliveryBatch(Box::new(batch)),
+            )
+            .await
+            .unwrap();
+    });
+    let dispatcher = Arc::new(AcceptAllDispatcher::new(PushProviderKind::Fcm));
+    let mut worker = ProviderDispatchWorker::new(PushProviderKind::Fcm, queue, dispatcher);
+    let (processed, allocations, allocated_bytes) =
+        measure_allocations(|| runtime.block_on(worker.run_once("bench-provider")));
+    assert_eq!(processed.unwrap(), 1);
+    eprintln!(
+        "allocation_profile name=push_provider_dispatch_500 allocations={allocations} allocated_bytes={allocated_bytes}"
+    );
+
     let mut group = c.benchmark_group("push_provider_dispatch");
     group.throughput(Throughput::Elements(500));
     group.bench_function("mock_accept_all_dispatch_500_jobs", |b| {

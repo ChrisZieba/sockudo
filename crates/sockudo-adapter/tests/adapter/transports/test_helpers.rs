@@ -248,7 +248,7 @@ pub fn create_test_handlers(
 
     let broadcast_collector = collector.clone();
     let request_collector = collector.clone();
-    let response_collector = collector.clone();
+    let response_collector = collector;
 
     sockudo_adapter::horizontal_transport::TransportHandlers {
         node_id: "test-node".to_string(),

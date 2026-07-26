@@ -322,6 +322,27 @@ impl DeltaCompressionManager {
         is_full_message: bool,
         channel_settings: Option<&ChannelDeltaSettings>,
     ) -> Result<()> {
+        self.store_shared_sent_message(
+            socket_id,
+            channel,
+            event_name,
+            Arc::new(sent_message_bytes),
+            is_full_message,
+            channel_settings,
+        )
+        .await
+    }
+
+    /// Store immutable message bytes already shared by a broadcast fanout.
+    pub async fn store_shared_sent_message(
+        &self,
+        socket_id: &SocketId,
+        channel: &str,
+        event_name: &str,
+        sent_message_bytes: Arc<Vec<u8>>,
+        is_full_message: bool,
+        channel_settings: Option<&ChannelDeltaSettings>,
+    ) -> Result<()> {
         let socket_state = match self.socket_states.get(socket_id) {
             Some(state) => state,
             None => return Ok(()),
@@ -374,7 +395,7 @@ impl DeltaCompressionManager {
             }
         };
 
-        cache.add_message(sent_message_bytes).await?;
+        cache.add_shared_message(sent_message_bytes).await?;
         tracing::trace!(socket_id = %socket_id, channel, cache_existed, "store_sent_message: added message to cache");
 
         if is_full_message {
@@ -482,7 +503,7 @@ impl DeltaCompressionManager {
                         .entry(key)
                         .and_modify(|existing| {
                             if messages.len() > existing.len() {
-                                *existing = messages.clone();
+                                existing.clone_from(&messages);
                             }
                         })
                         .or_insert(messages);

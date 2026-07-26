@@ -498,7 +498,7 @@ async fn cached_queue_producer(
     topic: &str,
 ) -> Result<Arc<IggyProducer>> {
     if let Some(producer) = producers.lock().await.get(topic).cloned() {
-        return Ok(producer.clone());
+        return Ok(producer);
     }
 
     let producer = Arc::new(build_queue_producer(client, config, stream, topic).await?);

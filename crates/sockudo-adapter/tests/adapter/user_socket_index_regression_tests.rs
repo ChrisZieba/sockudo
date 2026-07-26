@@ -82,7 +82,7 @@ async fn wait_for_close_frame(client: &mut ClientWs) -> Option<(u16, String)> {
         loop {
             match client.next().await {
                 Some(Ok(sockudo_ws::Message::Close(Some(reason)))) => {
-                    return Some((reason.code, reason.reason.to_string()));
+                    return Some((reason.code, reason.reason));
                 }
                 Some(Ok(sockudo_ws::Message::Close(None))) => return None,
                 Some(Ok(_)) => continue,

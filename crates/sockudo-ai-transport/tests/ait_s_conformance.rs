@@ -305,7 +305,7 @@ fn ait_s026_to_s030_history_cursor_and_bounds_validation_are_strict() {
         direction: HistoryDirection::NewestFirst,
         limit: 10,
         cursor: Some(cursor.clone()),
-        bounds: cursor.bounds.clone(),
+        bounds: cursor.bounds,
     };
     valid.validate().unwrap();
 

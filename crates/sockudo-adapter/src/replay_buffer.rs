@@ -279,7 +279,7 @@ impl ReplayBuffer {
         if state.current_stream_id != incoming_stream_id {
             state.messages.clear();
         }
-        state.current_stream_id = incoming_stream_id.clone();
+        state.current_stream_id.clone_from(&incoming_stream_id);
         state.last_touched = now;
         Self::raise_next_serial(entry.value(), serial.saturating_add(1));
         // Evict oldest if at capacity

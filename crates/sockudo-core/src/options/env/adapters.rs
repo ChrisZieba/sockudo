@@ -134,30 +134,38 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
 
     // --- Apache Iggy Adapter / Queue ---
     if let Ok(connection_string) = std::env::var("IGGY_CONNECTION_STRING") {
-        options.adapter.iggy.connection_string = connection_string.clone();
+        options
+            .adapter
+            .iggy
+            .connection_string
+            .clone_from(&connection_string);
         options.queue.iggy.connection_string = connection_string;
     }
     if let Ok(username) = std::env::var("IGGY_USERNAME") {
         let username = (!username.is_empty()).then_some(username);
-        options.adapter.iggy.username = username.clone();
+        options.adapter.iggy.username.clone_from(&username);
         options.queue.iggy.username = username;
     }
     if let Ok(password) = std::env::var("IGGY_PASSWORD") {
         let password = (!password.is_empty()).then_some(password);
-        options.adapter.iggy.password = password.clone();
+        options.adapter.iggy.password.clone_from(&password);
         options.queue.iggy.password = password;
     }
     if let Ok(consumer_name) = std::env::var("IGGY_CONSUMER_NAME") {
         let consumer_name = (!consumer_name.is_empty()).then_some(consumer_name);
-        options.adapter.iggy.consumer_name = consumer_name.clone();
+        options
+            .adapter
+            .iggy
+            .consumer_name
+            .clone_from(&consumer_name);
         options.queue.iggy.consumer_name = consumer_name;
     } else if let Ok(process_id) = std::env::var("INSTANCE_PROCESS_ID") {
         let process_id = (!process_id.is_empty()).then_some(process_id);
-        options.adapter.iggy.consumer_name = process_id.clone();
+        options.adapter.iggy.consumer_name.clone_from(&process_id);
         options.queue.iggy.consumer_name = process_id;
     }
     if let Ok(stream) = std::env::var("IGGY_STREAM") {
-        options.adapter.iggy.stream = stream.clone();
+        options.adapter.iggy.stream.clone_from(&stream);
         options.queue.iggy.stream = stream;
     }
     if let Ok(prefix) = std::env::var("IGGY_TOPIC_PREFIX") {

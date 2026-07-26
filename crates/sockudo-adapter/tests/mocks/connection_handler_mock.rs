@@ -469,7 +469,7 @@ pub fn create_test_connection_handler_with_app_manager(
     app_manager: MockAppManager,
 ) -> ConnectionHandler {
     let builder = ConnectionHandler::builder(
-        Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
+        Arc::new(app_manager) as Arc<dyn AppManager + Send + Sync>,
         Arc::new(MockAdapter::new()) as Arc<dyn ConnectionManager + Send + Sync>,
         Arc::new(MockCacheManager::new()),
         ServerOptions::default(),

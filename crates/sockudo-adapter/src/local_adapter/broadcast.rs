@@ -26,84 +26,37 @@ fn hash_cached_base_message(base: &[u8]) -> u64 {
 #[cfg(feature = "delta")]
 /// Parameters for sending a message to a socket with compression
 #[allow(dead_code)]
-struct SocketMessageParams<'a> {
+struct SocketMessageParams {
     socket_ref: WebSocketRef,
-    base_message: PusherMessage,
-    base_message_bytes: Vec<u8>,
-    channel: &'a str,
-    event_name: &'a str,
+    base_message: Arc<PusherMessage>,
+    base_message_bytes: Arc<Vec<u8>>,
+    channel: Arc<str>,
+    event_name: Arc<str>,
     delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
-    channel_settings: Option<&'a sockudo_delta::ChannelDeltaSettings>,
+    channel_settings: Option<Arc<sockudo_delta::ChannelDeltaSettings>>,
     tag_filtering_enabled: bool,
 }
 
 #[cfg(feature = "delta")]
 /// Parameters for sending a message with pre-computed delta
 #[allow(dead_code)]
-struct PrecomputedDeltaParams<'a> {
+struct PrecomputedDeltaParams {
     socket_ref: WebSocketRef,
-    base_message: PusherMessage,
-    base_message_bytes: Vec<u8>,
-    channel: &'a str,
-    event_name: &'a str,
+    base_message: Arc<PusherMessage>,
+    base_message_bytes: Arc<Vec<u8>>,
+    channel: Arc<str>,
+    event_name: Arc<str>,
     delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
-    channel_settings: Option<&'a sockudo_delta::ChannelDeltaSettings>,
+    channel_settings: Option<Arc<sockudo_delta::ChannelDeltaSettings>>,
     tag_filtering_enabled: bool,
     /// Pre-computed delta bytes and the sequence number of the base message used to compute it
     precomputed_delta: Option<(Arc<Vec<u8>>, u32)>,
-    conflation_key: String,
+    conflation_key: Arc<str>,
     /// Hash of the base message used to compute the precomputed delta (for verification)
     base_hash: u64,
 }
 
 impl LocalAdapter {
-    pub(super) async fn send_protocol_messages_concurrent(
-        &self,
-        target_socket_refs: Vec<WebSocketRef>,
-        message: PusherMessage,
-    ) -> Vec<Result<()>> {
-        use futures::stream::{self, StreamExt};
-
-        let socket_count = target_socket_refs.len();
-        let target_chunks = socket_count.div_ceil(self.max_concurrent).clamp(1, 8);
-        let socket_chunk_size = (socket_count / target_chunks)
-            .min(self.max_concurrent)
-            .max(1);
-
-        let mut results = Vec::with_capacity(socket_count);
-
-        for socket_chunk in target_socket_refs.chunks(socket_chunk_size) {
-            let chunk_size = socket_chunk.len();
-            match self
-                .broadcast_semaphore
-                .acquire_many(chunk_size as u32)
-                .await
-            {
-                Ok(_permits) => {
-                    let chunk_vec: Vec<_> = socket_chunk.to_vec();
-                    let chunk_results: Vec<Result<()>> = stream::iter(chunk_vec)
-                        .map(|socket_ref| {
-                            let msg = message.clone();
-                            async move { socket_ref.send_message(&msg) }
-                        })
-                        .buffer_unordered(chunk_size)
-                        .collect()
-                        .await;
-                    results.extend(chunk_results);
-                }
-                Err(_) => {
-                    for _ in 0..chunk_size {
-                        results.push(Err(Error::Connection(
-                            "Broadcast semaphore unavailable".to_string(),
-                        )));
-                    }
-                }
-            }
-        }
-
-        results
-    }
-
     /// Send messages using chunked processing with semaphore-controlled concurrency
     pub(super) async fn send_messages_concurrent(
         &self,
@@ -372,6 +325,12 @@ impl LocalAdapter {
             }
         }
 
+        let base_message = Arc::new(base_message);
+        let base_message_bytes = Arc::new(base_message_bytes);
+        let channel: Arc<str> = Arc::from(channel);
+        let event_name: Arc<str> = Arc::from(event_name);
+        let channel_settings = channel_settings.cloned().map(Arc::new);
+
         // Determine target number of chunks (1-8 based on socket count vs max concurrency)
         let target_chunks = socket_count.div_ceil(self.max_concurrent).clamp(1, 8);
 
@@ -402,25 +361,25 @@ impl LocalAdapter {
                     Ok(_permits) => {
                         // Process sockets in this chunk using buffered unordered streaming
                         let chunk_vec: Vec<_> = socket_chunk.to_vec();
-                        let base_msg = base_message.clone();
-                        let base_bytes = base_message_bytes.clone();
-                        let channel_str = channel.to_string();
-                        let event_str = event_name.to_string();
+                        let base_msg = Arc::clone(&base_message);
+                        let base_bytes = Arc::clone(&base_message_bytes);
+                        let channel_str = Arc::clone(&channel);
+                        let event_str = Arc::clone(&event_name);
                         let delta_comp = Arc::clone(&delta_compression);
-                        let ch_settings = channel_settings.cloned();
+                        let ch_settings = channel_settings.clone();
                         let precomp_delta = precomputed_delta.clone();
-                        let conf_key = conflation_key.clone();
+                        let conf_key: Arc<str> = Arc::from(conflation_key.as_str());
 
                         let chunk_results: Vec<Result<()>> = stream::iter(chunk_vec)
                             .map(|socket_ref| {
-                                let msg = base_msg.clone();
-                                let bytes = base_bytes.clone();
-                                let ch = channel_str.clone();
-                                let ev = event_str.clone();
+                                let msg = Arc::clone(&base_msg);
+                                let bytes = Arc::clone(&base_bytes);
+                                let ch = Arc::clone(&channel_str);
+                                let ev = Arc::clone(&event_str);
                                 let dc = Arc::clone(&delta_comp);
                                 let settings = ch_settings.clone();
                                 let delta = precomp_delta.clone();
-                                let ck = conf_key.clone();
+                                let ck = Arc::clone(&conf_key);
 
                                 async move {
                                     Self::send_to_socket_with_precomputed_delta(
@@ -428,10 +387,10 @@ impl LocalAdapter {
                                             socket_ref,
                                             base_message: msg,
                                             base_message_bytes: bytes,
-                                            channel: &ch,
-                                            event_name: &ev,
+                                            channel: ch,
+                                            event_name: ev,
                                             delta_compression: dc,
-                                            channel_settings: settings.as_ref(),
+                                            channel_settings: settings,
                                             tag_filtering_enabled: tag_filtering,
                                             precomputed_delta: delta,
                                             conflation_key: ck,
@@ -470,19 +429,19 @@ impl LocalAdapter {
             {
                 Ok(_permits) => {
                     let chunk_vec: Vec<_> = socket_chunk.to_vec();
-                    let base_msg = base_message.clone();
-                    let base_bytes = base_message_bytes.clone();
-                    let channel_str = channel.to_string();
-                    let event_str = event_name.to_string();
+                    let base_msg = Arc::clone(&base_message);
+                    let base_bytes = Arc::clone(&base_message_bytes);
+                    let channel_str = Arc::clone(&channel);
+                    let event_str = Arc::clone(&event_name);
                     let delta_comp = Arc::clone(&delta_compression);
-                    let ch_settings = channel_settings.cloned();
+                    let ch_settings = channel_settings.clone();
 
                     let chunk_results: Vec<Result<()>> = stream::iter(chunk_vec)
                         .map(|socket_ref| {
-                            let msg = base_msg.clone();
-                            let bytes = base_bytes.clone();
-                            let ch = channel_str.clone();
-                            let ev = event_str.clone();
+                            let msg = Arc::clone(&base_msg);
+                            let bytes = Arc::clone(&base_bytes);
+                            let ch = Arc::clone(&channel_str);
+                            let ev = Arc::clone(&event_str);
                             let dc = Arc::clone(&delta_comp);
                             let settings = ch_settings.clone();
 
@@ -491,10 +450,10 @@ impl LocalAdapter {
                                     socket_ref,
                                     base_message: msg,
                                     base_message_bytes: bytes,
-                                    channel: &ch,
-                                    event_name: &ev,
+                                    channel: ch,
+                                    event_name: ev,
                                     delta_compression: dc,
-                                    channel_settings: settings.as_ref(),
+                                    channel_settings: settings,
                                     tag_filtering_enabled: tag_filtering,
                                 })
                                 .await
@@ -524,7 +483,7 @@ impl LocalAdapter {
     ///
     /// # Arguments
     /// * `params` - Parameters for sending the message
-    async fn send_to_socket_with_compression(params: SocketMessageParams<'_>) -> Result<()> {
+    async fn send_to_socket_with_compression(params: SocketMessageParams) -> Result<()> {
         use sockudo_delta::CompressionResult;
 
         let SocketMessageParams {
@@ -537,6 +496,9 @@ impl LocalAdapter {
             channel_settings,
             tag_filtering_enabled: _,
         } = params;
+        let channel = channel.as_ref();
+        let event_name = event_name.as_ref();
+        let channel_settings = channel_settings.as_deref();
 
         // Get socket ID and filter for this channel subscription (lock-free)
         let socket_id = socket_ref.get_socket_id_sync();
@@ -544,77 +506,25 @@ impl LocalAdapter {
         // NOTE: Tag filtering already applied at broadcast level - no redundant check needed
 
         // Only process delta compression if it's enabled for this socket
-        let (compression_result, message_with_sequence) = if !delta_compression
-            .is_enabled_for_socket_channel(socket_id, channel)
-        {
-            (CompressionResult::Uncompressed, base_message_bytes.clone())
-        } else {
-            // First, we need to determine what sequence number this message will have
-            // and add it to the message BEFORE computing delta compression
-            let conflation_key_path = channel_settings
-                .and_then(|s| s.conflation_key.as_ref())
-                .or(delta_compression.get_conflation_key_path());
-            let conflation_key = if let Some(path) = conflation_key_path {
-                delta_compression.extract_conflation_key_from_path(&base_message_bytes, path)
+        let compression_result =
+            if !delta_compression.is_enabled_for_socket_channel(socket_id, channel) {
+                CompressionResult::Uncompressed
             } else {
-                String::new()
+                // Compute compression WITHOUT sequence metadata
+                // Sequence changes every message and should not be part of delta base
+                delta_compression
+                    .compress_message(
+                        socket_id,
+                        channel,
+                        event_name,
+                        base_message_bytes.as_slice(),
+                        channel_settings,
+                    )
+                    .await?
             };
-
-            // Create composite cache key: event_name:conflation_key
-            let cache_key = if conflation_key.is_empty() {
-                event_name.to_string()
-            } else {
-                format!("{}:{}", event_name, conflation_key)
-            };
-
-            // Compute compression WITHOUT sequence metadata
-            // Sequence changes every message and should not be part of delta base
-            let result = delta_compression
-                .compress_message(
-                    socket_id,
-                    channel,
-                    event_name,
-                    &base_message_bytes,
-                    channel_settings,
-                )
-                .await?;
-
-            // Get the sequence number that will be used for this message
-            let next_sequence = delta_compression.get_next_sequence(socket_id, channel, &cache_key);
-
-            // Add sequence metadata to the message AFTER delta compression for sending to client
-            // IMPORTANT: Use string manipulation instead of JSON parse/re-serialize
-            // to preserve exact byte ordering. JSON re-serialization can change key order,
-            // causing checksum mismatches when computing deltas.
-            let msg_with_seq = if let Ok(base_str) = std::str::from_utf8(&base_message_bytes) {
-                if let Some(last_brace) = base_str.rfind('}') {
-                    let mut result = String::with_capacity(base_str.len() + 100);
-                    result.push_str(&base_str[..last_brace]);
-                    if last_brace > 1
-                        && base_str[..last_brace]
-                            .trim_end()
-                            .ends_with(|c| c != '{' && c != ',')
-                    {
-                        result.push(',');
-                    }
-                    result.push_str(&format!("\"__delta_seq\":{}", next_sequence));
-                    if !conflation_key.is_empty() {
-                        result.push_str(&format!(",\"__conflation_key\":\"{}\"", conflation_key));
-                    }
-                    result.push('}');
-                    result.into_bytes()
-                } else {
-                    base_message_bytes.clone()
-                }
-            } else {
-                base_message_bytes.clone()
-            };
-
-            (result, msg_with_seq)
-        };
 
         match compression_result {
-            CompressionResult::Uncompressed => socket_ref.send_message(&base_message),
+            CompressionResult::Uncompressed => socket_ref.send_message(base_message.as_ref()),
             CompressionResult::FullMessage {
                 sequence,
                 conflation_key,
@@ -627,16 +537,12 @@ impl LocalAdapter {
                     len_bytes = base_message_bytes.len(),
                     "storing full base message"
                 );
-                info!(
-                    len_bytes = message_with_sequence.len(),
-                    "sending full message"
-                );
                 if let Err(e) = delta_compression
-                    .store_sent_message(
+                    .store_shared_sent_message(
                         socket_id,
                         channel,
                         event_name,
-                        base_message_bytes.clone(),
+                        Arc::clone(&base_message_bytes),
                         true,
                         channel_settings,
                     )
@@ -645,7 +551,7 @@ impl LocalAdapter {
                     warn!(error = %e, "failed to store full message for delta state");
                 }
 
-                let mut full_message = base_message;
+                let mut full_message = base_message.as_ref().clone();
                 full_message.delta_sequence = Some(sequence.into());
                 full_message.delta_conflation_key = conflation_key;
                 socket_ref.send_message(&full_message)
@@ -715,11 +621,11 @@ impl LocalAdapter {
                 // Store the ORIGINAL message bytes (without sequence/conflation_key metadata) for future delta computation
                 // The sequence changes every message, so it should not be part of the delta base
                 if let Err(e) = delta_compression
-                    .store_sent_message(
+                    .store_shared_sent_message(
                         socket_id,
                         channel,
                         event_name,
-                        base_message_bytes.clone(),
+                        Arc::clone(&base_message_bytes),
                         false,
                         channel_settings,
                     )
@@ -737,9 +643,7 @@ impl LocalAdapter {
     ///
     /// This is used when delta has been computed once at the broadcast level and can be
     /// reused for multiple sockets with the same base message.
-    async fn send_to_socket_with_precomputed_delta(
-        params: PrecomputedDeltaParams<'_>,
-    ) -> Result<()> {
+    async fn send_to_socket_with_precomputed_delta(params: PrecomputedDeltaParams) -> Result<()> {
         let PrecomputedDeltaParams {
             socket_ref,
             base_message,
@@ -753,6 +657,9 @@ impl LocalAdapter {
             conflation_key,
             base_hash,
         } = params;
+        let channel = channel.as_ref();
+        let event_name = event_name.as_ref();
+        let channel_settings = channel_settings.as_deref();
 
         // Get socket ID (lock-free sync access)
         let socket_id = socket_ref.get_socket_id_sync();
@@ -845,7 +752,7 @@ impl LocalAdapter {
 
             // Add conflation key and base index
             if !conflation_key.is_empty() {
-                delta_data["conflation_key"] = sonic_rs::Value::from(&conflation_key);
+                delta_data["conflation_key"] = sonic_rs::Value::from(conflation_key.as_ref());
             }
             delta_data["base_index"] = sonic_rs::Value::from(base_index as u64);
 
@@ -876,11 +783,11 @@ impl LocalAdapter {
             // store the same sanitized version for consistent delta computation.
             // base_message_bytes IS the new message - no reconstruction needed.
             let _ = delta_compression
-                .store_sent_message(
+                .store_shared_sent_message(
                     socket_id,
                     channel,
                     event_name,
-                    base_message_bytes.clone(),
+                    Arc::clone(&base_message_bytes),
                     false,
                     channel_settings,
                 )
@@ -895,36 +802,6 @@ impl LocalAdapter {
                 size_bytes = base_message_bytes.len(),
                 "sending full message to socket"
             );
-            // Create message with metadata for sending to client
-            // IMPORTANT: Use string manipulation instead of JSON parse/re-serialize
-            // to preserve exact byte ordering. JSON re-serialization can change key order,
-            // causing checksum mismatches when computing deltas.
-            let _msg_with_seq = if let Ok(base_str) = std::str::from_utf8(&base_message_bytes) {
-                // Find the last '}' and inject metadata before it
-                if let Some(last_brace) = base_str.rfind('}') {
-                    let mut result = String::with_capacity(base_str.len() + 100);
-                    result.push_str(&base_str[..last_brace]);
-                    // Add comma if there's content before the brace
-                    if last_brace > 1
-                        && base_str[..last_brace]
-                            .trim_end()
-                            .ends_with(|c| c != '{' && c != ',')
-                    {
-                        result.push(',');
-                    }
-                    result.push_str(&format!("\"__delta_seq\":{}", sequence));
-                    if !conflation_key.is_empty() {
-                        result.push_str(&format!(",\"__conflation_key\":\"{}\"", conflation_key));
-                    }
-                    result.push('}');
-                    result.into_bytes()
-                } else {
-                    base_message_bytes.clone()
-                }
-            } else {
-                base_message_bytes.clone()
-            };
-
             // CRITICAL: Store the message WITHOUT metadata (base_message_bytes).
             // The client strips __delta_seq and __conflation_key before storing, creating a
             // "sanitized" base. We must store the same sanitized version so that when we
@@ -932,11 +809,11 @@ impl LocalAdapter {
             // Previously we stored msg_with_seq (with metadata), causing delta decode failures
             // because the server's base had metadata but the client's base did not.
             match delta_compression
-                .store_sent_message(
+                .store_shared_sent_message(
                     socket_id,
                     channel,
                     event_name,
-                    base_message_bytes.clone(),
+                    Arc::clone(&base_message_bytes),
                     true,
                     channel_settings,
                 )
@@ -960,10 +837,10 @@ impl LocalAdapter {
                 }
             }
 
-            let mut full_message = base_message;
+            let mut full_message = base_message.as_ref().clone();
             full_message.delta_sequence = Some(sequence.into());
             if !conflation_key.is_empty() {
-                full_message.delta_conflation_key = Some(conflation_key);
+                full_message.delta_conflation_key = Some(conflation_key.to_string());
             }
             socket_ref.send_message(&full_message)
         }

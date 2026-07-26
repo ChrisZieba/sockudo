@@ -118,7 +118,7 @@ impl WatchlistManager {
                         watchers: HashSet::new(),
                         watching: watching_set.clone(),
                     });
-                user_entry.watching = watching_set.clone();
+                user_entry.watching.clone_from(&watching_set);
                 user_entry.watchers.clone()
             };
 

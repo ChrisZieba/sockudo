@@ -15,8 +15,9 @@ pub struct MemoryAnnotationStore {
 #[derive(Default)]
 pub(super) struct MemoryAnnotationState {
     pub(super) events_by_projection:
-        BTreeMap<String, BTreeMap<AnnotationSerial, StoredAnnotationEvent>>,
-    pub(super) raw_by_channel: BTreeMap<String, BTreeMap<AnnotationSerial, StoredAnnotationEvent>>,
+        BTreeMap<String, BTreeMap<AnnotationSerial, Arc<StoredAnnotationEvent>>>,
+    pub(super) raw_by_channel:
+        BTreeMap<String, BTreeMap<AnnotationSerial, Arc<StoredAnnotationEvent>>>,
     pub(super) projections: BTreeMap<String, StoredAnnotationProjection>,
 }
 
@@ -74,7 +75,7 @@ impl MemoryAnnotationStore {
     fn projection_events(
         state: &MemoryAnnotationState,
         projection_key: &str,
-    ) -> Vec<StoredAnnotationEvent> {
+    ) -> Vec<Arc<StoredAnnotationEvent>> {
         state
             .events_by_projection
             .get(projection_key)
@@ -84,14 +85,14 @@ impl MemoryAnnotationStore {
 
     fn build_projection(
         request: &AnnotationProjectionRequest,
-        events: Vec<StoredAnnotationEvent>,
+        events: Vec<Arc<StoredAnnotationEvent>>,
         options: AnnotationProjectionOptions,
     ) -> Result<StoredAnnotationProjection> {
-        let projection = AnnotationProjection::rebuild_with_options(
+        let projection = AnnotationProjection::rebuild_from_refs_with_options(
             request.channel_id.clone(),
             request.message_serial.clone(),
             request.annotation_type.clone(),
-            events.into_iter().map(|record| record.annotation),
+            events.iter().map(|record| &record.annotation),
             options,
         )?;
         Ok(StoredAnnotationProjection::from_projection(
@@ -161,6 +162,7 @@ impl AnnotationStore for MemoryAnnotationStore {
         };
         let projection_key = Self::event_projection_key(&record);
         let channel_key = Self::channel_key(&record.app_id, &record.channel_id);
+        let record = Arc::new(record);
 
         {
             let mut state = self.state.write().await;
@@ -170,7 +172,7 @@ impl AnnotationStore for MemoryAnnotationStore {
                 .or_default();
             events
                 .entry(record.annotation_serial().clone())
-                .or_insert_with(|| record.clone());
+                .or_insert_with(|| Arc::clone(&record));
             state
                 .raw_by_channel
                 .entry(channel_key)
@@ -212,6 +214,7 @@ impl AnnotationStore for MemoryAnnotationStore {
         };
         let projection_key = Self::event_projection_key(&record);
         let channel_key = Self::channel_key(&record.app_id, &record.channel_id);
+        let record = Arc::new(record);
         let canonical_serial = {
             let mut state = self.state.write().await;
             if let Some(existing) =
@@ -242,12 +245,12 @@ impl AnnotationStore for MemoryAnnotationStore {
                     .events_by_projection
                     .entry(projection_key.clone())
                     .or_default()
-                    .insert(record.annotation_serial().clone(), record.clone());
+                    .insert(record.annotation_serial().clone(), Arc::clone(&record));
                 state
                     .raw_by_channel
                     .entry(channel_key)
                     .or_default()
-                    .insert(record.annotation_serial().clone(), record.clone());
+                    .insert(record.annotation_serial().clone(), Arc::clone(&record));
                 None
             }
         };
@@ -282,7 +285,12 @@ impl AnnotationStore for MemoryAnnotationStore {
         Ok(state
             .events_by_projection
             .get(&key)
-            .map(|events| events.values().cloned().collect())
+            .map(|events| {
+                events
+                    .values()
+                    .map(|record| record.as_ref().clone())
+                    .collect()
+            })
             .unwrap_or_default())
     }
 
@@ -311,7 +319,7 @@ impl AnnotationStore for MemoryAnnotationStore {
                     .as_ref()
                     .is_none_or(|message_serial| record.message_serial() == message_serial)
             })
-            .map(|(_, record)| record.clone())
+            .map(|(_, record)| record.as_ref().clone())
             .take(request.limit)
             .collect();
         Ok(items)
@@ -327,7 +335,8 @@ impl AnnotationStore for MemoryAnnotationStore {
         Ok(state
             .raw_by_channel
             .get(&key)
-            .and_then(|events| events.get(&request.annotation_serial).cloned()))
+            .and_then(|events| events.get(&request.annotation_serial))
+            .map(|record| record.as_ref().clone()))
     }
 
     async fn get_projection(

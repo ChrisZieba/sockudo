@@ -61,7 +61,7 @@ impl RealPushHarness {
     pub(crate) fn new() -> Self {
         let store = Arc::new(MemoryPushStore::new());
         let queue = Arc::new(MemoryPushQueue::new());
-        let pipeline = PushPipeline::new(store.clone(), queue.clone(), FanoutConfig::default())
+        let pipeline = PushPipeline::new(store.clone(), queue, FanoutConfig::default())
             .with_max_publish_log_lag(u64::MAX);
         Self {
             store,

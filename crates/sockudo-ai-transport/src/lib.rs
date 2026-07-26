@@ -186,31 +186,29 @@ impl PendingBatch {
     }
 
     fn capture_fragment(&mut self) {
-        let next_fragment =
-            extract_runtime_append_fragment(&self.latest_message).map(str::to_string);
-        if let Some(next_fragment) = next_fragment {
+        if let Some(next_fragment) = extract_runtime_append_fragment(&self.latest_message) {
             match self.pending_fragment.as_mut() {
-                Some(pending) => pending.push_str(&next_fragment),
-                None => self.pending_fragment = Some(next_fragment),
-            }
-            if let Some(pending) = self.pending_fragment.as_ref() {
-                set_runtime_append_fragment(&mut self.latest_message, pending.clone());
+                Some(pending) => pending.push_str(next_fragment),
+                None => self.pending_fragment = Some(next_fragment.to_owned()),
             }
         } else {
             self.pending_fragment = None;
         }
         self.appended_count += 1;
-        if let Some(envelope) = self.context.envelope.as_mut() {
-            envelope.extras = self.latest_message.extras.clone();
-        }
     }
 
     fn into_delivery(
-        self,
+        mut self,
         reason: RollupDeliveryReason,
         app_id: &str,
         channel: &str,
     ) -> RollupDelivery {
+        if let Some(pending_fragment) = self.pending_fragment.take() {
+            set_runtime_append_fragment(&mut self.latest_message, pending_fragment);
+        }
+        if let Some(envelope) = self.context.envelope.as_mut() {
+            envelope.extras.clone_from(&self.latest_message.extras);
+        }
         let coalesced = self.appended_count.max(1);
         RollupDelivery {
             app_id: app_id.to_string(),

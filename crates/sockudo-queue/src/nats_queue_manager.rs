@@ -124,7 +124,7 @@ impl NatsJetStreamQueueManager {
             return Ok(());
         }
         self.ensure_stream_once(queue_name).await?;
-        let subject = self.subject_name(queue_name);
+        let subject = async_nats::Subject::from(self.subject_name(queue_name));
 
         for chunk in jobs.chunks(self.reliability.max_batch_size) {
             let mut acknowledgements = Vec::with_capacity(chunk.len());

@@ -16,18 +16,73 @@ use sockudo_protocol::messages::{
     AI_EVENT_INPUT, AiExtras, MessageData, MessageExtras, PusherMessage, is_ai_event,
 };
 use sockudo_protocol::versioned_messages::{
-    MessageAction, MessageVersionMetadata, apply_runtime_metadata,
+    MessageAction, MessageVersionMetadata, apply_runtime_metadata, set_runtime_append_fragment,
 };
 use sonic_rs::json;
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::HashMap;
 use std::hint::black_box;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Once;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 const APP_ID: &str = "app";
 const CHANNEL: &str = "ai:bench";
 const MESSAGE_SERIAL: &str = "msg:bench";
+const ROLLUP_ALLOCATION_FRAGMENTS: usize = 256;
+
+struct CountingAllocator;
+
+static TRACK_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
+static ALLOCATION_COUNT: AtomicU64 = AtomicU64::new(0);
+static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
+static ROLLUP_ALLOCATION_REPORT: Once = Once::new();
+
+// SAFETY: every allocation operation delegates to the process system allocator.
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller provided a valid allocation layout.
+        let pointer = unsafe { System.alloc(layout) };
+        if !pointer.is_null() && TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
+            ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            ALLOCATED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+        }
+        pointer
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        // SAFETY: the pointer and layout came from the delegated system allocator.
+        unsafe { System.dealloc(pointer, layout) };
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: the pointer and layout came from the delegated system allocator.
+        let pointer = unsafe { System.realloc(pointer, layout, new_size) };
+        if !pointer.is_null() && TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
+            ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            ALLOCATED_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
+        }
+        pointer
+    }
+}
+
+#[global_allocator]
+static GLOBAL_ALLOCATOR: CountingAllocator = CountingAllocator;
+
+fn measure_allocations<T>(operation: impl FnOnce() -> T) -> (T, u64, u64) {
+    TRACK_ALLOCATIONS.store(false, Ordering::SeqCst);
+    ALLOCATION_COUNT.store(0, Ordering::SeqCst);
+    ALLOCATED_BYTES.store(0, Ordering::SeqCst);
+    TRACK_ALLOCATIONS.store(true, Ordering::SeqCst);
+    let result = operation();
+    TRACK_ALLOCATIONS.store(false, Ordering::SeqCst);
+    (
+        result,
+        ALLOCATION_COUNT.load(Ordering::SeqCst),
+        ALLOCATED_BYTES.load(Ordering::SeqCst),
+    )
+}
 
 struct CountingBlockVersionStore {
     inner: MemoryVersionStore,
@@ -194,6 +249,12 @@ fn append_wire_message(serial: &str, data: String, now: i64, terminal: bool) -> 
     message
 }
 
+fn append_rollup_fragment_message(serial: &str, fragment: String, now: i64) -> PusherMessage {
+    let mut message = append_wire_message(serial, "latest".to_string(), now, false);
+    set_runtime_append_fragment(&mut message, fragment);
+    message
+}
+
 fn rollup_engine() -> RollupEngine {
     RollupEngine::new(RollupConfig {
         max_active_streams_per_channel: 50_000,
@@ -351,6 +412,58 @@ fn bench_rollup(c: &mut Criterion) {
             let message = append_wire_message(MESSAGE_SERIAL, "x".repeat(64), serial, false);
             serial = serial.wrapping_add(1);
             black_box(engine.ingest(APP_ID, CHANNEL, message, 1));
+        });
+    });
+
+    ROLLUP_ALLOCATION_REPORT.call_once(|| {
+        let (deliveries, allocations, allocated_bytes) = measure_allocations(|| {
+            let engine = RollupEngine::new(RollupConfig::default());
+            let _ = engine.ingest(
+                APP_ID,
+                CHANNEL,
+                append_rollup_fragment_message(MESSAGE_SERIAL, "x".repeat(256), 0),
+                0,
+            );
+            for index in 1..=ROLLUP_ALLOCATION_FRAGMENTS {
+                let _ = engine.ingest(
+                    APP_ID,
+                    CHANNEL,
+                    append_rollup_fragment_message(
+                        MESSAGE_SERIAL,
+                        "x".repeat(256),
+                        index as i64,
+                    ),
+                    1,
+                );
+            }
+            engine.flush_due(40)
+        });
+        assert_eq!(deliveries.len(), 1);
+        eprintln!(
+            "allocation_profile name=ai_rollup_256x256b allocations={allocations} allocated_bytes={allocated_bytes}"
+        );
+        black_box(deliveries);
+    });
+
+    group.throughput(Throughput::Elements(ROLLUP_ALLOCATION_FRAGMENTS as u64));
+    group.bench_function("rollup_coalesce_256x256b", |b| {
+        b.iter(|| {
+            let engine = RollupEngine::new(RollupConfig::default());
+            let _ = engine.ingest(
+                APP_ID,
+                CHANNEL,
+                append_rollup_fragment_message(MESSAGE_SERIAL, "x".repeat(256), 0),
+                0,
+            );
+            for index in 1..=ROLLUP_ALLOCATION_FRAGMENTS {
+                let _ = engine.ingest(
+                    APP_ID,
+                    CHANNEL,
+                    append_rollup_fragment_message(MESSAGE_SERIAL, "x".repeat(256), index as i64),
+                    1,
+                );
+            }
+            black_box(engine.flush_due(40))
         });
     });
 

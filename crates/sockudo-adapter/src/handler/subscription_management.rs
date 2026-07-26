@@ -1464,7 +1464,7 @@ mod tests {
                 presence_member.user_id.clone(),
                 PresenceMemberInfo {
                     user_id: presence_member.user_id.clone(),
-                    user_info: Some(presence_member.user_info.clone()),
+                    user_info: Some(presence_member.user_info),
                 },
             );
         }
@@ -1504,7 +1504,7 @@ mod tests {
                 presence_member.user_id.clone(),
                 PresenceMemberInfo {
                     user_id: presence_member.user_id.clone(),
-                    user_info: Some(presence_member.user_info.clone()),
+                    user_info: Some(presence_member.user_info),
                 },
             );
         }

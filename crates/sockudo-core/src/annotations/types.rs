@@ -4,6 +4,7 @@ use crate::versioned_messages::{MAX_VERSIONED_SERIAL_LENGTH, MessageSerial};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sonic_rs::Value;
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, HashSet};
 
 pub const MAX_ANNOTATION_TYPE_LENGTH: usize = 256;
@@ -259,15 +260,56 @@ impl AnnotationProjection {
     where
         I: IntoIterator<Item = Annotation>,
     {
-        let summarizer = annotation_type.summarizer()?;
-        let mut engine = crate::annotation_summarizers::new_engine(summarizer, options);
         let mut sorted_events: Vec<_> = events.into_iter().collect();
         sorted_events.sort_by(|left, right| left.serial.cmp(&right.serial));
+        Self::rebuild_sorted(
+            channel_id.into(),
+            message_serial,
+            annotation_type,
+            &sorted_events,
+            options,
+        )
+    }
+
+    pub(crate) fn rebuild_from_refs_with_options<'a, I>(
+        channel_id: impl Into<String>,
+        message_serial: MessageSerial,
+        annotation_type: AnnotationType,
+        events: I,
+        options: AnnotationProjectionOptions,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = &'a Annotation>,
+    {
+        let mut sorted_events = events.into_iter().collect::<Vec<_>>();
+        sorted_events.sort_by(|left, right| left.serial.cmp(&right.serial));
+        Self::rebuild_sorted(
+            channel_id.into(),
+            message_serial,
+            annotation_type,
+            &sorted_events,
+            options,
+        )
+    }
+
+    fn rebuild_sorted<E>(
+        channel_id: String,
+        message_serial: MessageSerial,
+        annotation_type: AnnotationType,
+        sorted_events: &[E],
+        options: AnnotationProjectionOptions,
+    ) -> Result<Self>
+    where
+        E: Borrow<Annotation>,
+    {
+        let summarizer = annotation_type.summarizer()?;
+        let mut engine = crate::annotation_summarizers::new_engine(summarizer, options);
 
         let create_ids = sorted_events
             .iter()
+            .map(Borrow::borrow)
             .filter(|event| event.action == AnnotationAction::Create)
-            .map(|event| event.id.clone())
+            .map(|event| &event.id)
             .collect::<HashSet<_>>();
         let mut seen_serials = HashSet::new();
         let mut seen_create_ids = HashSet::new();
@@ -276,39 +318,40 @@ impl AnnotationProjection {
         let mut applied_events = 0;
 
         for event in sorted_events {
-            validate_event_key(&event, &message_serial, &annotation_type)?;
-            if !seen_serials.insert(event.serial.as_str().to_string()) {
+            let event = event.borrow();
+            validate_event_key(event, &message_serial, &annotation_type)?;
+            if !seen_serials.insert(event.serial.as_str()) {
                 continue;
             }
 
-            last_serial = Some(event.serial.clone());
+            last_serial = Some(&event.serial);
             match event.action {
                 AnnotationAction::Create => {
                     if deleted_create_ids.contains(&event.id) {
                         continue;
                     }
-                    seen_create_ids.insert(event.id.clone());
+                    seen_create_ids.insert(&event.id);
                 }
                 AnnotationAction::Delete if create_ids.contains(&event.id) => {
-                    deleted_create_ids.insert(event.id.clone());
+                    deleted_create_ids.insert(&event.id);
                     if !seen_create_ids.contains(&event.id) {
                         continue;
                     }
                 }
                 AnnotationAction::Delete => {}
             }
-            engine.apply(&event)?;
+            engine.apply(event)?;
             applied_events += 1;
         }
 
         Ok(Self {
             key: AnnotationProjectionKey {
-                channel_id: channel_id.into(),
+                channel_id,
                 message_serial,
                 annotation_type,
             },
             summary: engine.finish(),
-            last_serial,
+            last_serial: last_serial.cloned(),
             applied_events,
         })
     }
