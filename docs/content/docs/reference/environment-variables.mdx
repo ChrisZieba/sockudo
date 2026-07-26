@@ -334,9 +334,9 @@ See [Logging](/docs/reference/logging) for level policy, stable lifecycle fields
 | `WEBSOCKET_MAX_FRAME_SIZE` | WebSocket frame size limit. |
 | `WEBSOCKET_WRITE_BUFFER_SIZE` | WebSocket write buffer size. |
 | `WEBSOCKET_MAX_BACKPRESSURE` | WebSocket backpressure limit. |
-| `WEBSOCKET_AUTO_PING` | Enables automatic WebSocket ping frames. |
-| `WEBSOCKET_PING_INTERVAL` | WebSocket ping interval. |
-| `WEBSOCKET_IDLE_TIMEOUT` | WebSocket idle timeout. |
+| `WEBSOCKET_AUTO_PING` | Enables native WebSocket Ping/Pong keepalive for Protocol V2. Protocol V1 retains its Pusher-compatible application heartbeat. |
+| `WEBSOCKET_PING_INTERVAL` | Inbound inactivity in seconds before a Protocol V2 native Ping. `0` disables proactive native Ping frames; nonzero values are bounded to at least half of `ACTIVITY_TIMEOUT` (and at least 5 seconds). |
+| `WEBSOCKET_IDLE_TIMEOUT` | Hard inbound-idle timeout in seconds for Protocol V2 native connections. `0` disables the hard idle deadline. |
 | `WEBSOCKET_COMPRESSION` | WebSocket compression mode. |
 | `CONNECTION_RECOVERY_ENABLED` | Enables Protocol V2 connection recovery. |
 | `CONNECTION_RECOVERY_BUFFER_TTL` | Recovery buffer TTL. |

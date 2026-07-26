@@ -44,8 +44,8 @@ impl ConnectionHandler {
 
         if connection.protocol_version == ProtocolVersion::V2 {
             debug!(
-                "Skipping app-level activity timeout loop for V2 socket {} (native WebSocket ping/pong handles heartbeats)",
-                socket_id
+                socket_id = %socket_id,
+                "native websocket heartbeat handles v2 activity timeout"
             );
             return Ok(());
         }

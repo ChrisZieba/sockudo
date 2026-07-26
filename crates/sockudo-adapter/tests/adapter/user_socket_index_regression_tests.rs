@@ -21,7 +21,14 @@ async fn create_ws_pair() -> (axum_integration::WebSocketWriter, ClientWs) {
             .await
             .unwrap();
         let ws = axum_integration::WebSocket::from_tcp(stream, WsConfig::default());
-        let (_reader, writer) = ws.split();
+        let (mut reader, writer) = ws.split();
+        tokio::spawn(async move {
+            while let Some(result) = reader.next().await {
+                if result.is_err() {
+                    break;
+                }
+            }
+        });
         writer
     });
 

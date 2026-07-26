@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use sockudo_core::app::{App, AppManager, AppPolicy};
 use sockudo_core::namespace::Namespace;
 use sockudo_core::websocket::{SocketId, WebSocketBufferConfig};
@@ -86,16 +87,30 @@ async fn create_server_writer() -> WebSocketWriter {
             .await
             .unwrap();
         let ws = WebSocket::from_tcp(stream, WsConfig::default());
-        let (_reader, writer) = ws.split();
+        let (mut reader, writer) = ws.split();
+        tokio::spawn(async move {
+            while let Some(result) = reader.next().await {
+                if result.is_err() {
+                    break;
+                }
+            }
+        });
         writer
     });
 
     let client_stream = TcpStream::connect(local_addr).await.unwrap();
     let client = WebSocketClient::<Http1>::new(WsConfig::default());
-    let (_client_ws, _): (WebSocketStream<sockudo_ws::Stream<Http1>>, _) = client
+    let (mut client_ws, _): (WebSocketStream<sockudo_ws::Stream<Http1>>, _) = client
         .connect(client_stream, &local_addr.to_string(), "/", None)
         .await
         .unwrap();
+    tokio::spawn(async move {
+        while let Some(result) = client_ws.next().await {
+            if result.is_err() {
+                break;
+            }
+        }
+    });
 
     server_task.await.unwrap()
 }

@@ -128,10 +128,14 @@ pub async fn handle_ably_realtime_upgrade(
             if error.status != StatusCode::UNAUTHORIZED {
                 return ably_error_response_format(error.status, error.code, error.message, format);
             }
-            let ws_cfg = handler.server_options().websocket.to_sockudo_ws_config(
-                handler.server_options().websocket_max_payload_kb,
-                handler.server_options().activity_timeout,
-            );
+            let ws_cfg = handler
+                .server_options()
+                .websocket
+                .to_sockudo_ws_config_with_native_heartbeat(
+                    handler.server_options().websocket_max_payload_kb,
+                    handler.server_options().activity_timeout,
+                    false,
+                );
             return ws
                 .config(ws_cfg)
                 .on_upgrade(move |socket| send_fatal_ably_socket_error(socket, format, error))
@@ -155,10 +159,14 @@ pub async fn handle_ably_realtime_upgrade(
         }
     }
 
-    let ws_cfg = handler.server_options().websocket.to_sockudo_ws_config(
-        handler.server_options().websocket_max_payload_kb,
-        handler.server_options().activity_timeout,
-    );
+    let ws_cfg = handler
+        .server_options()
+        .websocket
+        .to_sockudo_ws_config_with_native_heartbeat(
+            handler.server_options().websocket_max_payload_kb,
+            handler.server_options().activity_timeout,
+            false,
+        );
     if runtime.hub.config.realtime_admission == AblyRealtimeAdmission::PlacementConstraint {
         return ws
             .config(ws_cfg)
@@ -268,7 +276,10 @@ pub(super) async fn send_ably_socket_failure(
         Ok(Some(Ok(Message::Close(_))))
     );
     if peer_started_close {
-        let _ = writer.flush().await;
+        // Keep the split halves alive until the connection-scoped writer
+        // driver flushes the queued peer-Close response and reports terminal
+        // state. Dropping either half earlier cancels the driver.
+        let _ = tokio::time::timeout(Duration::from_millis(250), reader.next()).await;
     } else {
         let _ = writer.close(1000, "Ably protocol error").await;
     }

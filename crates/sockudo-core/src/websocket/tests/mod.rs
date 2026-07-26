@@ -381,7 +381,14 @@ async fn create_server_writer_with_client() -> (WebSocketWriter, ClientWs) {
             .await
             .unwrap();
         let ws = WebSocket::from_tcp(stream, WsConfig::default());
-        let (_reader, writer) = ws.split();
+        let (mut reader, writer) = ws.split();
+        tokio::spawn(async move {
+            while let Some(result) = reader.next().await {
+                if result.is_err() {
+                    break;
+                }
+            }
+        });
         writer
     });
 

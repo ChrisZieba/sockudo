@@ -33,7 +33,7 @@ use sockudo_protocol::{ProtocolVersion, WireFormat};
 use sockudo_ws::axum_integration::{WebSocket, WebSocketWriter};
 use sockudo_ws::client::WebSocketClient;
 use sockudo_ws::{
-    Config as WsConfig, Http1, Message as WsMessage, SplitReader, Stream as WsStream,
+    Config as WsConfig, Http1, Message as WsMessage, SplitReader, SplitWriter, Stream as WsStream,
     WebSocketStream,
 };
 use sonic_rs::{JsonValueTrait, Value, json};
@@ -47,7 +47,26 @@ use tokio::sync::{Mutex, RwLock, oneshot};
 use tokio::time::timeout;
 use uuid::Uuid;
 
-type ClientReader = SplitReader<WsStream<Http1>>;
+struct ClientReader {
+    reader: SplitReader<WsStream<Http1>>,
+    _writer_guard: SplitWriter<WsStream<Http1>>,
+}
+
+impl ClientReader {
+    fn new(
+        reader: SplitReader<WsStream<Http1>>,
+        writer_guard: SplitWriter<WsStream<Http1>>,
+    ) -> Self {
+        Self {
+            reader,
+            _writer_guard: writer_guard,
+        }
+    }
+
+    async fn next(&mut self) -> Option<sockudo_ws::Result<WsMessage>> {
+        self.reader.next().await
+    }
+}
 
 struct ReadGate {
     started_tx: Option<oneshot::Sender<()>>,
@@ -448,7 +467,14 @@ async fn connect_v2_socket(node: &ClusterNode, app: &App) -> (SocketId, ClientRe
             .await
             .unwrap();
         let ws = WebSocket::from_tcp(stream, WsConfig::default());
-        let (_reader, writer) = ws.split();
+        let (mut reader, writer) = ws.split();
+        tokio::spawn(async move {
+            while let Some(result) = reader.next().await {
+                if result.is_err() {
+                    break;
+                }
+            }
+        });
         writer
     });
 
@@ -458,7 +484,8 @@ async fn connect_v2_socket(node: &ClusterNode, app: &App) -> (SocketId, ClientRe
         .connect(client_stream, &addr.to_string(), "/", None)
         .await
         .unwrap();
-    let (reader, _writer) = client_ws.split();
+    let (reader, writer_guard) = client_ws.split();
+    let reader = ClientReader::new(reader, writer_guard);
     let server_writer: WebSocketWriter = server_task.await.unwrap();
 
     let socket_id = SocketId::new();

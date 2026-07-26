@@ -155,6 +155,8 @@ impl MessageSender {
             sockudo_ws::Error::ConnectionClosed
                 | sockudo_ws::Error::ConnectionReset
                 | sockudo_ws::Error::Closed(_)
+                | sockudo_ws::Error::HeartbeatTimeout
+                | sockudo_ws::Error::IdleTimeout
                 | sockudo_ws::Error::Io(_)
         )
     }
