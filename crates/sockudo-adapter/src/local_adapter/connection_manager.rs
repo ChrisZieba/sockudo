@@ -12,7 +12,7 @@ use sockudo_protocol::messages::{PusherMessage, generate_message_id};
 use sockudo_ws::axum_integration::WebSocketWriter;
 use std::any::Any;
 use std::sync::Arc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 fn partition_by_append_mode(sockets: Vec<WebSocketRef>) -> (Vec<WebSocketRef>, Vec<WebSocketRef>) {
     sockets
@@ -109,10 +109,7 @@ impl ConnectionManager for LocalAdapter {
         echo_messages: bool,
         append_mode: sockudo_protocol::AppendMode,
     ) -> Result<()> {
-        debug!(
-            "LocalAdapter::add_socket: adding socket {} for app {}",
-            &socket_id, app_id
-        );
+        debug!(socket_id = %socket_id, app_id = %app_id, "local adapter add_socket adding socket");
         let namespace = self.get_or_create_namespace(app_id).await;
         let socket_id_clone = socket_id;
         namespace
@@ -129,28 +126,17 @@ impl ConnectionManager for LocalAdapter {
                 },
             )
             .await?;
-        debug!(
-            "LocalAdapter::add_socket: successfully added socket {} for app {}",
-            socket_id_clone, app_id
-        );
+        debug!(socket_id = %socket_id_clone, app_id = %app_id, "local adapter add_socket added socket");
         Ok(())
     }
 
     // Updated to return WebSocketRef instead of Arc<Mutex<WebSocket>>
     async fn get_connection(&self, socket_id: &SocketId, app_id: &str) -> Option<WebSocketRef> {
-        debug!(
-            "LocalAdapter::get_connection: looking for socket {} in app {}",
-            socket_id, app_id
-        );
+        debug!(socket_id = %socket_id, app_id = %app_id, "local adapter get_connection looking for socket");
         let result = self
             .existing_namespace(app_id)
             .and_then(|namespace| namespace.get_connection(socket_id));
-        debug!(
-            "LocalAdapter::get_connection: socket {} in app {} found: {}",
-            socket_id,
-            app_id,
-            result.is_some()
-        );
+        debug!(socket_id = %socket_id, app_id = %app_id, found = result.is_some(), "local adapter get_connection result");
         result
     }
 
@@ -262,7 +248,7 @@ impl ConnectionManager for LocalAdapter {
         // Get target socket references based on channel type
         let (v1_all_sockets, v2_target_sockets) = if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");
-            let socket_refs = namespace.get_user_sockets(user_id).await?;
+            let socket_refs = namespace.get_user_sockets(user_id)?;
 
             let mut target_refs = Vec::new();
             for socket_ref in socket_refs.iter() {
@@ -326,7 +312,7 @@ impl ConnectionManager for LocalAdapter {
         // Get target socket references based on channel type
         let (v1_all_sockets, v2_target_sockets) = if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");
-            let socket_refs = namespace.get_user_sockets(user_id).await?;
+            let socket_refs = namespace.get_user_sockets(user_id)?;
 
             let mut target_refs = Vec::new();
             for socket_ref in socket_refs.iter() {
@@ -418,10 +404,7 @@ impl ConnectionManager for LocalAdapter {
             && namespace.users.is_empty()
         {
             self.namespaces.remove(app_id);
-            debug!(
-                "Removed empty namespace for app_id: {} after channel removal",
-                app_id
-            );
+            debug!(app_id = %app_id, "removed empty namespace after channel removal");
         }
     }
 
@@ -438,7 +421,7 @@ impl ConnectionManager for LocalAdapter {
 
     async fn get_user_sockets(&self, user_id: &str, app_id: &str) -> Result<Vec<WebSocketRef>> {
         match self.existing_namespace(app_id) {
-            Some(namespace) => namespace.get_user_sockets(user_id).await,
+            Some(namespace) => namespace.get_user_sockets(user_id),
             None => Ok(Vec::new()),
         }
     }
@@ -452,14 +435,14 @@ impl ConnectionManager for LocalAdapter {
             && namespace.users.is_empty()
         {
             self.namespaces.remove(app_id);
-            debug!("Removed empty namespace for app_id: {}", app_id);
+            debug!(app_id = %app_id, "removed empty namespace");
         }
     }
 
     async fn terminate_connection(&self, app_id: &str, user_id: &str) -> Result<()> {
         let namespace = self.get_or_create_namespace(app_id).await;
         if let Err(e) = namespace.terminate_user_connections(user_id).await {
-            error!("Failed to terminate adapter: {}", e);
+            error!(error = %e, "failed to terminate adapter");
         }
         Ok(())
     }
@@ -502,12 +485,12 @@ impl ConnectionManager for LocalAdapter {
         let t_after_add = t_start.elapsed().as_micros();
 
         debug!(
-            "PERF[LOCAL_ADD_CHAN] channel={} socket={} total={}μs get_ns={}μs add={}μs",
-            channel,
-            socket_id,
-            t_after_add,
-            t_after_ns - t_before_ns,
-            t_after_add - t_before_add
+            channel = %channel,
+            socket_id = %socket_id,
+            total_us = t_after_add,
+            get_ns_us = t_after_ns - t_before_ns,
+            add_us = t_after_add - t_before_add,
+            "perf local add_to_channel"
         );
 
         Ok(result)
@@ -622,7 +605,15 @@ impl ConnectionManager for LocalAdapter {
     async fn terminate_user_connections(&self, app_id: &str, user_id: &str) -> Result<()> {
         let namespace = self.get_or_create_namespace(app_id).await;
         if let Err(e) = namespace.terminate_user_connections(user_id).await {
-            error!("Failed to terminate user connections: {}", e);
+            error!(error = %e, "failed to terminate user connections");
+        }
+        Ok(())
+    }
+
+    async fn force_reconnect_user(&self, app_id: &str, user_id: &str) -> Result<()> {
+        let namespace = self.get_or_create_namespace(app_id).await;
+        if let Err(e) = namespace.force_reconnect_user_connections(user_id).await {
+            warn!(error = %e, "failed to force reconnect user connections");
         }
         Ok(())
     }
@@ -658,7 +649,7 @@ impl ConnectionManager for LocalAdapter {
         app_id: &str,
     ) -> Result<()> {
         match self.existing_namespace(app_id) {
-            Some(namespace) => namespace.remove_user_socket(user_id, socket_id).await,
+            Some(namespace) => namespace.remove_user_socket(user_id, socket_id),
             None => Ok(()),
         }
     }

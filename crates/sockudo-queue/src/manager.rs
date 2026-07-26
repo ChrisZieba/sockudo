@@ -94,8 +94,10 @@ impl QueueManagerFactory {
                 let concurrency_val = concurrency.unwrap_or(5);
                 let response_timeout_ms = response_timeout_ms.unwrap_or(5000);
                 info!(
-                    "Creating Redis queue manager (Prefix: {}, Concurrency: {}, Response timeout: {}ms)",
-                    prefix_str, concurrency_val, response_timeout_ms
+                    queue_driver = "redis",
+                    concurrency_count = concurrency_val,
+                    response_timeout_ms = response_timeout_ms,
+                    "queue factory initialized"
                 );
                 let manager = RedisQueueManager::new_with_config(
                     url,
@@ -120,8 +122,10 @@ impl QueueManagerFactory {
                 let response_timeout_ms = response_timeout_ms.unwrap_or(5000);
 
                 info!(
-                    "Creating Redis Cluster queue manager (Prefix: {}, Concurrency: {}, Request timeout: {}ms)",
-                    prefix_str, concurrency_val, response_timeout_ms
+                    queue_driver = "redis-cluster",
+                    concurrency_count = concurrency_val,
+                    request_timeout_ms = response_timeout_ms,
+                    "queue factory initialized"
                 );
                 let manager = RedisClusterQueueManager::new_with_config(
                     cluster_nodes,
@@ -140,7 +144,7 @@ impl QueueManagerFactory {
                 ))
             }
             "memory" => {
-                info!("{}", "Creating Memory queue manager".to_string());
+                info!(queue_driver = "memory", "queue factory initialized");
                 let manager = MemoryQueueManager::new_with_config(reliability)?;
                 manager.start_processing();
                 Ok(Box::new(manager))
@@ -201,12 +205,12 @@ impl QueueManagerFactory {
         reliability: QueueReliabilityConfig,
     ) -> Result<Box<dyn QueueInterface>> {
         info!(
-            "Creating SQS queue manager (Region: {}, Concurrency: {}, FIFO: {})",
-            config.region, config.concurrency, config.fifo
+            queue_driver = "sqs",
+            region = %config.region,
+            concurrency_count = config.concurrency,
+            fifo = config.fifo,
+            "queue factory initialized"
         );
-        if let Some(ref url_prefix) = config.queue_url_prefix {
-            debug!("SQS queue URL prefix: {}", url_prefix);
-        }
         let manager = SqsQueueManager::new_with_reliability(config, reliability).await?;
         Ok(Box::new(manager))
     }
@@ -241,8 +245,9 @@ impl QueueManagerFactory {
         reliability: QueueReliabilityConfig,
     ) -> Result<Box<dyn QueueInterface>> {
         info!(
-            "Creating SNS queue manager (Region: {}, Topic: {})",
-            config.region, config.topic_arn
+            queue_driver = "sns",
+            region = %config.region,
+            "queue factory initialized"
         );
         let manager = SnsQueueManager::new_with_reliability(config, reliability).await?;
         Ok(Box::new(manager))

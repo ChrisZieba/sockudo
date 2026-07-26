@@ -63,7 +63,11 @@ impl CleanupWorker {
         receiver: super::CleanupReceiverHandle,
         cancel_token: CancellationToken,
     ) {
-        info!("Cleanup worker started with config: {:?}", self.config);
+        info!(
+            batch_size = self.config.batch_size,
+            batch_timeout_ms = self.config.batch_timeout_ms,
+            "cleanup worker started"
+        );
 
         let mut batch = Vec::with_capacity(self.config.batch_size);
         let mut last_batch_time = Instant::now();
@@ -74,10 +78,10 @@ impl CleanupWorker {
 
                 _ = cancel_token.cancelled() => {
                     if !batch.is_empty() {
-                        info!("Processing final batch of {} tasks before cancellation shutdown", batch.len());
+                        info!(task_count = batch.len(), shutdown_reason = "cancelled", "processing final cleanup batch");
                         self.process_batch(&mut batch).await;
                     }
-                    info!("Cleanup worker shutting down due to cancellation");
+                    info!(shutdown_reason = "cancelled", "cleanup worker stopping");
                     break;
                 }
 
@@ -87,7 +91,7 @@ impl CleanupWorker {
                 ) => {
                     match recv_result {
                         Ok(Ok(task)) => {
-                            debug!("Received disconnect task for socket: {}", task.socket_id);
+                            debug!(socket_id = %task.socket_id, "disconnect cleanup task received");
                             batch.push(task);
 
                             if batch.len() >= self.config.batch_size
@@ -98,15 +102,15 @@ impl CleanupWorker {
                         }
                         Ok(Err(_)) => {
                             if !batch.is_empty() {
-                                info!("Processing final batch of {} tasks before shutdown", batch.len());
+                                info!(task_count = batch.len(), shutdown_reason = "channel_closed", "processing final cleanup batch");
                                 self.process_batch(&mut batch).await;
                             }
-                            info!("Cleanup worker shutting down (channel closed)");
+                            info!(shutdown_reason = "channel_closed", "cleanup worker stopping");
                             break;
                         }
                         Err(_) => {
                             if !batch.is_empty() && last_batch_time.elapsed() >= Duration::from_millis(self.config.batch_timeout_ms) {
-                                debug!("Processing batch due to timeout: {} tasks", batch.len());
+                                debug!(task_count = batch.len(), trigger = "timeout", "processing cleanup batch");
                                 self.process_batch(&mut batch).await;
                                 last_batch_time = Instant::now();
                             }
@@ -121,7 +125,7 @@ impl CleanupWorker {
         let batch_start = Instant::now();
         let batch_size = batch.len();
 
-        debug!("Processing cleanup batch of {} tasks", batch_size);
+        debug!(task_count = batch_size, "processing cleanup batch");
 
         let mut channel_operations: AHashMap<(String, String), Vec<SocketId>> = AHashMap::new();
         let mut webhook_events = Vec::new();
@@ -154,7 +158,11 @@ impl CleanupWorker {
 
         batch.clear();
 
-        debug!("Completed cleanup batch in {:?}", batch_start.elapsed());
+        debug!(
+            task_count = batch_size,
+            elapsed_ms = batch_start.elapsed().as_millis(),
+            "cleanup batch completed"
+        );
     }
 
     async fn batch_channel_cleanup(
@@ -166,8 +174,8 @@ impl CleanupWorker {
         }
 
         debug!(
-            "Processing {} channel cleanup operations",
-            channel_operations.len()
+            operation_count = channel_operations.len(),
+            "processing channel cleanup operations"
         );
 
         let mut total_success = 0;
@@ -188,9 +196,9 @@ impl CleanupWorker {
 
         for (app_id, operations) in operations_by_app {
             debug!(
-                "Processing batch unsubscribe for app {} with {} operations",
-                app_id,
-                operations.len()
+                app_id = %app_id,
+                operation_count = operations.len(),
+                "processing batch unsubscribe"
             );
 
             match ChannelManager::batch_unsubscribe(&self.connection_manager, operations).await {
@@ -208,24 +216,22 @@ impl CleanupWorker {
                             }
                             Err(e) => {
                                 total_errors += 1;
-                                warn!(
-                                    "Batch unsubscribe operation failed for app {}: {}",
-                                    app_id, e
-                                );
+                                warn!(app_id = %app_id, error = %e, "batch unsubscribe operation failed");
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    warn!("Batch unsubscribe failed for app {}: {}", app_id, e);
+                    warn!(app_id = %app_id, error = %e, "batch unsubscribe failed");
                     total_errors += 1;
                 }
             }
         }
 
         debug!(
-            "Individual channel cleanup completed: {} successful, {} errors",
-            total_success, total_errors
+            success_count = total_success,
+            error_count = total_errors,
+            "individual channel cleanup completed"
         );
     }
 
@@ -234,32 +240,22 @@ impl CleanupWorker {
             return;
         }
 
-        debug!("Removing {} connections", connections.len());
+        debug!(connection_count = connections.len(), "removing connections");
 
-        for (socket_id, app_id, user_id) in connections.into_iter() {
-            let result = {
-                let remove_result = self
-                    .connection_manager
-                    .remove_connection(&socket_id, &app_id)
-                    .await;
-
-                if let Some(uid) = &user_id
-                    && let Err(e) = self
-                        .connection_manager
-                        .remove_user_socket(uid, &socket_id, &app_id)
-                        .await
-                {
-                    warn!(
-                        "Failed to remove user socket mapping for {}: {}",
-                        socket_id, e
-                    );
-                }
-
-                remove_result
-            };
+        for (socket_id, app_id, _user_id) in connections {
+            // Comprehensive: handles shutdown, user-socket mappings, channels, and presence.
+            let result = self
+                .connection_manager
+                .remove_connection(&socket_id, &app_id)
+                .await;
 
             if let Err(e) = result {
-                warn!("Failed to remove connection {}: {}", socket_id, e);
+                warn!(
+                    app_id = %app_id,
+                    socket_id = %socket_id,
+                    error = %e,
+                    "connection removal failed"
+                );
             }
         }
     }
@@ -316,7 +312,10 @@ impl CleanupWorker {
 
     async fn process_webhooks_async(&self, webhook_events: Vec<WebhookEvent>) {
         if let Some(webhook_integration) = &self.webhook_integration {
-            debug!("Processing {} webhook events", webhook_events.len());
+            debug!(
+                event_count = webhook_events.len(),
+                "processing cleanup webhook events"
+            );
 
             let mut events_by_app: AHashMap<String, Vec<WebhookEvent>> = AHashMap::new();
             for event in webhook_events {
@@ -338,11 +337,11 @@ impl CleanupWorker {
                     let app_config = match app_manager.find_by_id(&app_id).await {
                         Ok(Some(app)) => app,
                         Ok(None) => {
-                            warn!("App {} not found for webhook events", app_id);
+                            warn!(app_id = %app_id, "app not found for cleanup webhook events");
                             return;
                         }
                         Err(e) => {
-                            error!("Failed to get app config for {}: {}", app_id, e);
+                            error!(app_id = %app_id, error = %e, "app lookup failed for cleanup webhook events");
                             return;
                         }
                     };
@@ -358,7 +357,12 @@ impl CleanupWorker {
                         )
                         .await
                         {
-                            error!("Failed to send webhook event {}: {}", event.event_type, e);
+                            error!(
+                                app_id = %app_id,
+                                event = %event.event_type,
+                                error = %e,
+                                "cleanup webhook event send failed"
+                            );
                         }
                     }
                 });
@@ -368,7 +372,7 @@ impl CleanupWorker {
 
             for handle in webhook_handles {
                 if let Err(e) = handle.await {
-                    error!("Webhook task panicked or was cancelled: {}", e);
+                    error!(error = %e, "cleanup webhook task failed");
                 }
             }
         }
@@ -383,8 +387,10 @@ impl CleanupWorker {
         event: &WebhookEvent,
     ) -> sockudo_core::error::Result<()> {
         debug!(
-            "Sending {} webhook for app {} channel {}",
-            event.event_type, app_config.id, event.channel
+            app_id = %app_config.id,
+            channel = %event.channel,
+            event = %event.event_type,
+            "sending cleanup webhook"
         );
 
         match event.event_type.as_str() {
@@ -417,8 +423,10 @@ impl CleanupWorker {
                         )
                         .await?;
                     debug!(
-                        "Processed centralized member_removed for user {} in channel {}",
-                        user_id, event.channel
+                        app_id = %app_config.id,
+                        channel = %event.channel,
+                        user_id = %user_id,
+                        "centralized member removal processed"
                     );
                 }
             }
@@ -426,13 +434,325 @@ impl CleanupWorker {
                 webhook_integration
                     .send_channel_vacated(app_config, &event.channel)
                     .await?;
-                debug!("Sent channel_vacated webhook for channel {}", event.channel);
+                debug!(
+                    app_id = %app_config.id,
+                    channel = %event.channel,
+                    event = "channel_vacated",
+                    "cleanup webhook sent"
+                );
             }
             _ => {
-                warn!("Unknown webhook event type: {}", event.event_type);
+                warn!(event = %event.event_type, "unknown cleanup webhook event type");
             }
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossfire::mpsc;
+    use sockudo_adapter::cleanup::{CleanupSender, DisconnectTask};
+    use sockudo_adapter::handler::ConnectionHandler;
+    use sockudo_adapter::local_adapter::LocalAdapter;
+    use sockudo_app::memory_app_manager::MemoryAppManager;
+    use sockudo_cache::MemoryCacheManager;
+    use sockudo_core::app::{App, AppManager, AppPolicy};
+    use sockudo_core::channel::PresenceMemberInfo;
+    use sockudo_core::options::{MemoryCacheOptions, PresenceHistoryConfig, ServerOptions};
+    use sockudo_core::presence_history::NoopPresenceHistoryStore;
+    use sockudo_core::websocket::{SocketId, WebSocketBufferConfig};
+    use sockudo_protocol::{ProtocolVersion, WireFormat};
+    use sockudo_ws::axum_integration::{WebSocket, WebSocketWriter};
+    use sockudo_ws::client::WebSocketClient;
+    use sockudo_ws::{Config as WsConfig, Http1, Stream as WsStream, WebSocketStream};
+    use std::time::{Duration, Instant};
+    use tokio::net::{TcpListener, TcpStream};
+
+    const APP_ID: &str = "cleanup-worker-test";
+
+    fn make_app() -> App {
+        App::from_policy(
+            APP_ID.to_string(),
+            "test-key".to_string(),
+            "test-secret".to_string(),
+            true,
+            AppPolicy::default(),
+        )
+    }
+
+    async fn make_ws_pair() -> (WebSocketWriter, WebSocketStream<WsStream<Http1>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            sockudo_ws::handshake::server_handshake(&mut stream)
+                .await
+                .unwrap();
+            let ws = WebSocket::from_tcp(stream, WsConfig::default());
+            let (_reader, writer) = ws.split();
+            writer
+        });
+
+        let client_stream = TcpStream::connect(addr).await.unwrap();
+        let client = WebSocketClient::<Http1>::new(WsConfig::default());
+        let (client_ws, _): (WebSocketStream<WsStream<Http1>>, _) = client
+            .connect(client_stream, &addr.to_string(), "/", None)
+            .await
+            .unwrap();
+
+        let server_writer = server_task.await.unwrap();
+        (server_writer, client_ws)
+    }
+
+    fn make_worker(adapter: Arc<dyn ConnectionManager + Send + Sync>) -> CleanupWorker {
+        let app_manager = Arc::new(MemoryAppManager::new()) as Arc<dyn AppManager + Send + Sync>;
+        CleanupWorker::new(
+            adapter,
+            app_manager,
+            None,
+            Arc::new(NoopPresenceHistoryStore),
+            PresenceHistoryConfig::default(),
+            CleanupConfig {
+                batch_size: 64,
+                batch_timeout_ms: 50,
+                ..Default::default()
+            },
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn deferred_worker_completes_exhaustive_cleanup() {
+        // Arrange: socket with user identity and two channels
+        let adapter = Arc::new(LocalAdapter::new());
+        adapter.init().await;
+
+        let app_manager = Arc::new(MemoryAppManager::new());
+        app_manager.create_app(make_app()).await.unwrap();
+
+        let socket_id = SocketId::new();
+        let (writer, _client) = make_ws_pair().await;
+        adapter
+            .add_socket(
+                socket_id,
+                writer,
+                APP_ID,
+                app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
+                WebSocketBufferConfig::default(),
+                ProtocolVersion::V1,
+                WireFormat::Json,
+                true,
+                sockudo_protocol::AppendMode::Delta,
+            )
+            .await
+            .unwrap();
+
+        // Associate the same socket with two identities, as happens when a
+        // presence-derived identity is replaced by signin metadata.
+        let ws_ref = adapter.get_connection(&socket_id, APP_ID).await.unwrap();
+        {
+            let mut guard = ws_ref.inner.lock().await;
+            guard.set_user_info(sockudo_core::websocket::UserInfo {
+                id: "user-alpha".to_string(),
+                watchlist: None,
+                info: None,
+                capabilities: None,
+                meta: None,
+            });
+        }
+        adapter.add_user(ws_ref.clone()).await.unwrap();
+        {
+            let mut guard = ws_ref.inner.lock().await;
+            guard.state.user_id = Some("user-beta".to_string());
+        }
+        adapter.add_user(ws_ref.clone()).await.unwrap();
+
+        // Subscribe to two channels
+        adapter
+            .add_to_channel(APP_ID, "public-feed", &socket_id)
+            .await
+            .unwrap();
+        adapter
+            .add_to_channel(APP_ID, "presence-room", &socket_id)
+            .await
+            .unwrap();
+
+        // Confirm indexes are populated
+        assert!(adapter.get_connection(&socket_id, APP_ID).await.is_some());
+        assert!(
+            adapter
+                .is_in_channel(APP_ID, "public-feed", &socket_id)
+                .await
+                .unwrap()
+        );
+        assert!(
+            adapter
+                .is_in_channel(APP_ID, "presence-room", &socket_id)
+                .await
+                .unwrap()
+        );
+        let user_sockets = adapter
+            .get_user_sockets("user-alpha", APP_ID)
+            .await
+            .unwrap();
+        assert!(!user_sockets.is_empty());
+        assert_eq!(
+            adapter
+                .get_user_sockets("user-beta", APP_ID)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let namespace = adapter.get_namespace(APP_ID).await.unwrap();
+        namespace
+            .presence_data
+            .entry(socket_id)
+            .or_default()
+            .insert(
+                "presence-room".to_string(),
+                PresenceMemberInfo {
+                    user_id: "user-beta".to_string(),
+                    user_info: None,
+                },
+            );
+
+        // The real async handler must cancel before the task is consumed.
+        let token = ws_ref.cancellation_token();
+        let (tx, rx) = mpsc::bounded_async::<DisconnectTask>(8);
+        let cache = Arc::new(MemoryCacheManager::new(
+            "cleanup-worker-test".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+        let handler = ConnectionHandler::builder(
+            app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
+            adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
+            cache,
+            ServerOptions::default(),
+        )
+        .local_adapter(adapter.clone())
+        .cleanup_queue(CleanupSender::Direct(tx))
+        .build();
+
+        handler.handle_disconnect(APP_ID, &socket_id).await.unwrap();
+        assert!(token.is_cancelled());
+
+        let task = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("disconnect task must be queued")
+            .expect("cleanup queue must remain open");
+        let worker = make_worker(adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>);
+        let mut batch = vec![task];
+        worker.process_batch(&mut batch).await;
+
+        // Assert: all indexes cleaned by the comprehensive remove_connection path
+        assert!(
+            adapter.get_connection(&socket_id, APP_ID).await.is_none(),
+            "connection must be removed"
+        );
+        assert!(
+            !adapter
+                .is_in_channel(APP_ID, "public-feed", &socket_id)
+                .await
+                .unwrap(),
+            "socket must be removed from public-feed"
+        );
+        assert!(
+            !adapter
+                .is_in_channel(APP_ID, "presence-room", &socket_id)
+                .await
+                .unwrap(),
+            "socket must be removed from presence-room"
+        );
+        let user_sockets = adapter
+            .get_user_sockets("user-alpha", APP_ID)
+            .await
+            .unwrap();
+        assert!(
+            user_sockets.is_empty(),
+            "first user socket mapping must be empty after comprehensive removal"
+        );
+        assert!(
+            adapter
+                .get_user_sockets("user-beta", APP_ID)
+                .await
+                .unwrap()
+                .is_empty(),
+            "second user socket mapping must be empty after comprehensive removal"
+        );
+        assert!(
+            namespace.presence_data.get(&socket_id).is_none(),
+            "presence data must be removed by comprehensive cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_task_after_sync_fallback_is_harmless() {
+        // Arrange: socket already removed (sync fallback ran first)
+        let adapter = Arc::new(LocalAdapter::new());
+        adapter.init().await;
+
+        let app_manager = Arc::new(MemoryAppManager::new());
+        app_manager.create_app(make_app()).await.unwrap();
+
+        let socket_id = SocketId::new();
+        let (writer, _client) = make_ws_pair().await;
+        adapter
+            .add_socket(
+                socket_id,
+                writer,
+                APP_ID,
+                app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
+                WebSocketBufferConfig::default(),
+                ProtocolVersion::V1,
+                WireFormat::Json,
+                true,
+                sockudo_protocol::AppendMode::Delta,
+            )
+            .await
+            .unwrap();
+
+        // Remove connection synchronously (simulating the fallback path ran first)
+        adapter.remove_connection(&socket_id, APP_ID).await.unwrap();
+        assert!(adapter.get_connection(&socket_id, APP_ID).await.is_none());
+
+        // Build a stale task referencing the already-removed socket
+        let stale_task = DisconnectTask {
+            socket_id,
+            app_id: APP_ID.to_string(),
+            subscribed_channels: vec!["public-channel".to_string()],
+            user_id: Some("stale-user".to_string()),
+            cause: sockudo_core::websocket::DisconnectCause::Unknown,
+            timestamp: Instant::now(),
+            connection_info: None,
+            presence_ungraceful_timeout_seconds: 0,
+        };
+
+        let (tx, rx) = mpsc::bounded_async::<DisconnectTask>(8);
+        tx.try_send(stale_task).unwrap();
+        drop(tx);
+
+        let worker = make_worker(adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>);
+
+        // Act: worker processes the stale task — must not panic
+        tokio::time::timeout(Duration::from_secs(5), worker.run(rx))
+            .await
+            .expect("worker must not hang on stale tasks");
+
+        // Assert: no entries recreated
+        assert!(
+            adapter.get_connection(&socket_id, APP_ID).await.is_none(),
+            "stale task must not recreate connection"
+        );
+        let sockets_count = adapter.get_sockets_count(APP_ID).await.unwrap();
+        assert_eq!(
+            sockets_count, 0,
+            "no sockets should exist after stale task processing"
+        );
     }
 }

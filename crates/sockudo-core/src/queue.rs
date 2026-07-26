@@ -153,7 +153,7 @@ pub trait QueueInterface: Send + Sync {
     async fn enqueue(
         &self,
         queue_name: &str,
-        data: JobData,
+        mut data: JobData,
         options: QueueJobOptions,
     ) -> Result<QueueJobId> {
         if options.delay_ms > 0
@@ -165,7 +165,13 @@ pub trait QueueInterface: Send + Sync {
                 self.backend().as_str()
             )));
         }
-        let id = QueueJobId(options.job_id.unwrap_or_else(|| QueueJobId::new().0));
+        let id = QueueJobId(
+            options
+                .job_id
+                .or_else(|| data.job_id.clone())
+                .unwrap_or_else(|| QueueJobId::new().0),
+        );
+        data.job_id = Some(id.0.clone());
         self.add_to_queue(queue_name, data).await?;
         Ok(id)
     }

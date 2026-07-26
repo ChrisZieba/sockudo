@@ -4,8 +4,9 @@ use crate::http_handler::{
     channel_history_reset, channel_history_state, channel_message, channel_message_annotations,
     channel_message_versions, channel_presence_history, channel_presence_history_reset,
     channel_presence_history_snapshot, channel_presence_history_state, channel_users, channels,
-    delete_annotation, delete_message, events, fallback_404, live, metrics, publish_annotation,
-    revoke_capability_tokens, stats, terminate_user_connections, up, update_message, usage,
+    delete_annotation, delete_message, events, fallback_404, force_reconnect_user, live, metrics,
+    publish_annotation, revoke_capability_tokens, stats, terminate_user_connections, up,
+    update_message, usage,
 };
 use crate::middleware::pusher_api_auth_middleware;
 #[cfg(feature = "push")]
@@ -43,6 +44,16 @@ fn expose_ably_error_headers(cors: CorsLayer) -> CorsLayer {
         HeaderName::from_static("x-ably-errormessage"),
         HeaderName::from_static("link"),
     ])
+}
+
+#[cfg(feature = "ably-compat")]
+fn is_ably_stats_request(
+    query: &sockudo_ably_compat::AblyStatsQuery,
+    headers: &axum::http::HeaderMap,
+) -> bool {
+    query.key.is_some()
+        || query.access_token.is_some()
+        || headers.contains_key(axum::http::header::AUTHORIZATION)
 }
 
 impl SockudoServer {
@@ -102,15 +113,11 @@ impl SockudoServer {
         if use_allow_origin_any {
             cors_builder = cors_builder.allow_origin(AllowOrigin::any());
             if self.config.cors.credentials {
-                warn!(
-                    "CORS config: 'Access-Control-Allow-Credentials' was true but 'Access-Control-Allow-Origin' is '*'. Forcing credentials to false to comply with CORS specification."
-                );
+                warn!("cors allow_credentials forced to false because allow_origin is wildcard");
                 cors_builder = cors_builder.allow_credentials(false);
             }
             if self.config.cors.origin.len() > 1 {
-                warn!(
-                    "CORS config: Wildcard '*' or 'Any' is present in origins list along with other specific origins. Wildcard will take precedence, allowing all origins."
-                );
+                warn!("cors wildcard origin takes precedence over specific origins in list");
             }
         } else if !self.config.cors.origin.is_empty() {
             let allowed_origins = self.config.cors.origin.clone();
@@ -123,13 +130,9 @@ impl SockudoServer {
             ));
             cors_builder = cors_builder.allow_credentials(self.config.cors.credentials);
         } else {
-            warn!(
-                "CORS origins list is empty and no wildcard ('*' or 'Any') is specified. CORS might be highly restrictive or disabled depending on tower-http defaults. Consider setting origins or '*' for AllowOrigin::any()."
-            );
+            warn!("cors origins list is empty; cors may be highly restrictive or disabled");
             if self.config.cors.credentials {
-                warn!(
-                    "CORS origins list is empty, and credentials set to true. Forcing credentials to false for safety as no origin is explicitly allowed."
-                );
+                warn!("cors credentials forced to false because origins list is empty");
                 cors_builder = cors_builder.allow_credentials(false);
             }
         }
@@ -148,8 +151,8 @@ impl SockudoServer {
                     .unwrap_or(0) as usize;
 
                 info!(
-                    "Applying HTTP API rate limiting middleware with trust_hops: {}",
-                    trust_hops
+                    trust_hops = trust_hops,
+                    "http api rate limiting middleware configured"
                 );
                 Some(Self::build_rate_limit_layer(
                     rate_limiter_instance.clone(),
@@ -160,12 +163,12 @@ impl SockudoServer {
                 ))
             } else {
                 warn!(
-                    "Rate limiting is enabled in config, but no RateLimiter instance found in server state for HTTP API. Rate limiting will not be applied."
+                    "http api rate limiter configured but no instance found; rate limiting skipped"
                 );
                 None
             }
         } else {
-            info!("Custom HTTP API Rate limiting is disabled in configuration.");
+            info!("http api rate limiting disabled in configuration");
             None
         };
 
@@ -179,8 +182,8 @@ impl SockudoServer {
                     .unwrap_or(0) as usize;
 
                 info!(
-                    "Applying WebSocket rate limiting middleware with trust_hops: {}",
-                    trust_hops
+                    trust_hops = trust_hops,
+                    "websocket rate limiting middleware configured"
                 );
                 Some(Self::build_rate_limit_layer(
                     rate_limiter_instance.clone(),
@@ -191,20 +194,21 @@ impl SockudoServer {
                 ))
             } else {
                 warn!(
-                    "Rate limiting is enabled in config, but no RateLimiter instance found for WebSocket upgrades. WebSocket rate limiting will not be applied."
+                    "websocket rate limiter configured but no instance found; rate limiting skipped"
                 );
                 None
             }
         } else {
-            info!("Custom WebSocket rate limiting is disabled in configuration.");
+            info!("websocket rate limiting disabled in configuration");
             None
         };
 
         let body_limit_bytes =
             (self.config.http_api.request_limit_in_mb as usize).saturating_mul(1024 * 1024);
         debug!(
-            "Configuring Axum DefaultBodyLimit to {} MB ({} bytes)",
-            self.config.http_api.request_limit_in_mb, body_limit_bytes
+            limit_mb = self.config.http_api.request_limit_in_mb,
+            limit_bytes = body_limit_bytes,
+            "configuring http body limit"
         );
 
         let mut websocket_router = Router::new().route("/app/{appKey}", get(handle_ws_upgrade));
@@ -375,6 +379,13 @@ impl SockudoServer {
             .route(
                 "/apps/{appId}/users/{userId}/terminate_connections",
                 post(terminate_user_connections).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/users/{userId}/force_reconnect",
+                post(force_reconnect_user).route_layer(axum_middleware::from_fn_with_state(
                     self.handler.clone(),
                     pusher_api_auth_middleware,
                 )),
@@ -578,24 +589,26 @@ impl SockudoServer {
             // when authenticated Ably requests share the legacy `/stats` path.
             router = router.route("/operator/stats", get(stats));
             #[cfg(feature = "ably-compat")]
-            if self.config.ably_compat.enabled {
+            {
                 let runtime = Arc::clone(&self.ably_compat);
-                let aggregation_runtime = Arc::clone(&self.ably_compat);
-                let delivery_runtime = Arc::clone(&self.ably_compat);
-                router = router.route(
-                    "/operator/stats/aggregation",
-                    get(move || {
-                        let snapshot = aggregation_runtime.stats_metrics();
-                        async move { axum::Json(snapshot) }
-                    }),
-                );
-                router = router.route(
-                    "/operator/stats/ably-runtime",
-                    get(move || {
-                        let snapshot = delivery_runtime.metrics();
-                        async move { axum::Json(snapshot) }
-                    }),
-                );
+                if self.config.ably_compat.enabled {
+                    let aggregation_runtime = Arc::clone(&self.ably_compat);
+                    let delivery_runtime = Arc::clone(&self.ably_compat);
+                    router = router.route(
+                        "/operator/stats/aggregation",
+                        get(move || {
+                            let snapshot = aggregation_runtime.stats_metrics();
+                            async move { axum::Json(snapshot) }
+                        }),
+                    );
+                    router = router.route(
+                        "/operator/stats/ably-runtime",
+                        get(move || {
+                            let snapshot = delivery_runtime.metrics();
+                            async move { axum::Json(snapshot) }
+                        }),
+                    );
+                }
                 router = router.route(
                     "/stats",
                     get(
@@ -606,10 +619,7 @@ impl SockudoServer {
                         >| {
                             let runtime = Arc::clone(&runtime);
                             async move {
-                                let is_ably_request = query.key.is_some()
-                                    || query.access_token.is_some()
-                                    || headers.contains_key(axum::http::header::AUTHORIZATION);
-                                if is_ably_request {
+                                if is_ably_stats_request(&query, &headers) {
                                     sockudo_ably_compat::ably_stats(
                                         query,
                                         headers,
@@ -627,8 +637,6 @@ impl SockudoServer {
                         },
                     ),
                 );
-            } else {
-                router = router.route("/stats", get(stats));
             }
             #[cfg(not(feature = "ably-compat"))]
             {
@@ -708,6 +716,37 @@ mod tests {
                     .route("/apps/{appId}/events", post(ok_handler))
                     .layer(api_layer),
             )
+    }
+
+    #[cfg(feature = "ably-compat")]
+    #[test]
+    fn authenticated_stats_requests_use_the_ably_handler() {
+        let query = sockudo_ably_compat::AblyStatsQuery::default();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::ACCEPT,
+            HeaderValue::from_static("application/x-msgpack"),
+        );
+        assert!(!is_ably_stats_request(&query, &headers));
+
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic ZGVtbzprZXk="),
+        );
+        assert!(is_ably_stats_request(&query, &headers));
+
+        headers.remove(axum::http::header::AUTHORIZATION);
+        let key_query = sockudo_ably_compat::AblyStatsQuery {
+            key: Some("demo:key".to_string()),
+            ..Default::default()
+        };
+        assert!(is_ably_stats_request(&key_query, &headers));
+
+        let token_query = sockudo_ably_compat::AblyStatsQuery {
+            access_token: Some("token".to_string()),
+            ..Default::default()
+        };
+        assert!(is_ably_stats_request(&token_query, &headers));
     }
 
     #[tokio::test]

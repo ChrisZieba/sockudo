@@ -75,6 +75,26 @@ fn publish_validation_accepts_nameless_and_dataless_messages() {
 }
 
 #[test]
+fn publish_validation_accepts_empty_ai_step_owner() {
+    let message = AblyMessage {
+        name: Some("ai-step-start".to_string()),
+        extras: Some(json!({
+            "ai": {
+                "transport": {
+                    "run-id": "run-1",
+                    "step-id": "step-1",
+                    "step-client-id": ""
+                }
+            }
+        })),
+        ..AblyMessage::default()
+    };
+
+    validate_ably_publish_message(&message, false)
+        .expect("Ably AI Transport uses an empty step owner as an unknown-owner sentinel");
+}
+
+#[test]
 fn publish_validation_rejects_reserved_and_unknown_fields() {
     let reserved = AblyMessage {
         connection_id: Some("client-supplied".to_string()),
@@ -118,7 +138,7 @@ async fn connection_key_resolves_only_a_live_same_app_identity() {
 
     assert!(rest_publish_identity(&hub, "app", Some("publisher"), &message).is_err());
 
-    let (command_tx, _command_rx) = tokio::sync::mpsc::channel(1);
+    let (command_tx, _command_rx) = crossfire::mpsc::bounded_async(1);
     hub.live_sessions.insert(
         "connection-a".to_string(),
         AblyLiveSession {
@@ -164,7 +184,7 @@ async fn recovered_transport_supersedes_without_unregistering_replacement() {
         revocable: false,
         revocation_key: None,
     }));
-    let (old_tx, mut old_rx) = tokio::sync::mpsc::channel(1);
+    let (old_tx, old_rx) = crossfire::mpsc::bounded_async(1);
     assert!(
         hub.register_live_session(
             "connection-a".to_string(),
@@ -178,7 +198,7 @@ async fn recovered_transport_supersedes_without_unregistering_replacement() {
         .is_none()
     );
 
-    let (new_tx, _new_rx) = tokio::sync::mpsc::channel(1);
+    let (new_tx, _new_rx) = crossfire::mpsc::bounded_async(1);
     let previous = hub
         .register_live_session(
             "connection-a".to_string(),
@@ -196,7 +216,7 @@ async fn recovered_transport_supersedes_without_unregistering_replacement() {
         .expect("old transport still receives supersession");
     assert!(matches!(
         old_rx.recv().await,
-        Some(AblySessionCommand::Superseded)
+        Ok(AblySessionCommand::Superseded)
     ));
 
     hub.unregister_live_session("connection-a", "transport-old");

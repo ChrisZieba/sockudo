@@ -14,7 +14,7 @@ use sockudo_core::webhook_types::{JobData, JobProcessorFnAsync};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, Notify};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub struct PulsarQueueManager {
     client: Pulsar<TokioExecutor>,
@@ -215,17 +215,25 @@ impl QueueInterface for PulsarQueueManager {
                         Ok(job) => {
                             let callback = callback.clone();
                             in_flight.spawn(async move {
-                                let succeeded = callback(job).await.is_ok();
+                                let succeeded = match callback(job).await {
+                                    Ok(()) => true,
+                                    Err(_) => {
+                                        warn!("pulsar queue processor failed");
+                                        false
+                                    }
+                                };
                                 (message, succeeded)
                             });
                         }
                         Err(e) => {
-                            error!("Failed to deserialize Pulsar queue job: {}", e);
-                            let _ = consumer.ack(&message).await;
+                            error!(error = %e, "failed to deserialize pulsar queue job");
+                            if let Err(error) = consumer.ack(&message).await {
+                                error!(error = %error, "failed to ack malformed pulsar queue job");
+                            }
                         }
                     },
                     Err(e) => {
-                        error!("Pulsar queue consumer error: {}", e);
+                        error!(error = %e, "pulsar queue consumer error");
                         break;
                     }
                 }
@@ -233,7 +241,7 @@ impl QueueInterface for PulsarQueueManager {
             while let Some(completed) = in_flight.join_next().await {
                 complete_pulsar_delivery(&mut consumer, completed).await;
             }
-            info!("Pulsar queue consumer stopped");
+            info!("pulsar queue consumer stopped");
         });
 
         Ok(())
@@ -291,7 +299,7 @@ async fn complete_pulsar_delivery(
     let (message, succeeded) = match completed {
         Ok(result) => result,
         Err(error) => {
-            error!("Pulsar queue callback task failed: {error}");
+            error!(error = %error, "pulsar queue callback task failed");
             return;
         }
     };
@@ -301,7 +309,7 @@ async fn complete_pulsar_delivery(
         consumer.nack(&message).await
     };
     if let Err(error) = result {
-        error!("Failed to settle Pulsar queue job: {error}");
+        error!(error = %error, "failed to settle pulsar queue job");
     }
 }
 

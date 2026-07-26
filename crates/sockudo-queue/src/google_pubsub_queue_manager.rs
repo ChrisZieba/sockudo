@@ -16,7 +16,7 @@ use sockudo_core::webhook_types::{JobData, JobProcessorFnAsync};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Notify;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub struct GooglePubSubQueueManager {
     config: GooglePubSubAdapterConfig,
@@ -220,7 +220,7 @@ impl QueueInterface for GooglePubSubQueueManager {
                 }
                 if in_flight.len() >= prefetch {
                     if let Some(Err(error)) = in_flight.join_next().await {
-                        error!("Google Pub/Sub queue callback task failed: {error}");
+                        error!(error = %error, "google pub/sub queue callback task failed");
                     }
                     continue;
                 }
@@ -228,7 +228,7 @@ impl QueueInterface for GooglePubSubQueueManager {
                     _ = shutdown.notified() => break,
                     completed = in_flight.join_next(), if !in_flight.is_empty() => {
                         if let Some(Err(error)) = completed {
-                            error!("Google Pub/Sub queue callback task failed: {error}");
+                            error!(error = %error, "google pub/sub queue callback task failed");
                         }
                         continue;
                     }
@@ -243,15 +243,18 @@ impl QueueInterface for GooglePubSubQueueManager {
                         in_flight.spawn(async move {
                             match sonic_rs::from_slice::<JobData>(&message.data) {
                                 Ok(job) => {
-                                    if callback(job).await.is_ok() {
-                                        ack_handler.ack();
-                                    } else {
-                                        ack_handler.nack();
+                                    match callback(job).await {
+                                        Ok(()) => ack_handler.ack(),
+                                        Err(_) => {
+                                            warn!("google pub/sub queue processor failed");
+                                            ack_handler.nack();
+                                        }
                                     }
                                 }
                                 Err(error) => {
                                     error!(
-                                        "Failed to deserialize Google Pub/Sub queue job: {error}"
+                                        error = %error,
+                                        "failed to deserialize google pub/sub queue job"
                                     );
                                     ack_handler.ack();
                                 }
@@ -259,17 +262,17 @@ impl QueueInterface for GooglePubSubQueueManager {
                         });
                     }
                     Err(e) => {
-                        error!("Google Pub/Sub queue consumer error: {}", e);
+                        error!(error = %e, "google pub/sub queue consumer error");
                         break;
                     }
                 }
             }
             while let Some(result) = in_flight.join_next().await {
                 if let Err(error) = result {
-                    error!("Google Pub/Sub queue callback task failed while draining: {error}");
+                    error!(error = %error, "google pub/sub queue callback task failed while draining");
                 }
             }
-            info!("Google Pub/Sub queue consumer stopped");
+            info!("google pub/sub queue consumer stopped");
         });
 
         Ok(())

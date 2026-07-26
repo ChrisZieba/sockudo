@@ -355,12 +355,13 @@ impl<P: QueueRedisProvider> ReliableRedisQueue<P> {
 
     fn envelope(
         &self,
-        data: JobData,
+        mut data: JobData,
         options: QueueJobOptions,
     ) -> Result<(RedisJobEnvelope, QueueJobOptions)> {
         let id = options
             .job_id
             .clone()
+            .or_else(|| data.job_id.clone())
             .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
         if id.is_empty() || id.len() > MAX_ID_LENGTH {
             return Err(Error::Queue(format!(
@@ -381,6 +382,7 @@ impl<P: QueueRedisProvider> ReliableRedisQueue<P> {
                 "queue deduplication key must contain 1..={MAX_ID_LENGTH} bytes"
             )));
         }
+        data.job_id = Some(id.clone());
         Ok((
             RedisJobEnvelope {
                 version: 2,
@@ -491,6 +493,11 @@ impl<P: QueueRedisProvider> ReliableRedisQueue<P> {
         let generated_fast_path = self.inner.config.event_retention == 0
             && jobs.iter().all(|job| {
                 job.options.job_id.is_none()
+                    && job
+                        .data
+                        .job_id
+                        .as_ref()
+                        .is_none_or(|id| id.len() == 32 && id.is_ascii())
                     && job.options.delay_ms == 0
                     && job.options.deduplication_key.is_none()
                     && job
@@ -502,11 +509,15 @@ impl<P: QueueRedisProvider> ReliableRedisQueue<P> {
         let mut prepared = Vec::with_capacity(jobs.len());
         let mut generated_batch_prefix = uuid::Uuid::new_v4().simple().to_string();
         generated_batch_prefix.truncate(20);
-        for (index, request) in jobs.into_iter().enumerate() {
+        for (index, mut request) in jobs.into_iter().enumerate() {
             if generated_fast_path {
-                let mut id = String::with_capacity(32);
-                id.push_str(&generated_batch_prefix);
-                let _ = write!(&mut id, "{index:012x}");
+                let id = request.data.job_id.clone().unwrap_or_else(|| {
+                    let mut id = String::with_capacity(32);
+                    id.push_str(&generated_batch_prefix);
+                    let _ = write!(&mut id, "{index:012x}");
+                    id
+                });
+                request.data.job_id = Some(id.clone());
                 let data = sonic_rs::to_string(&request.data)?;
                 let mut serialized = String::with_capacity(id.len() + data.len());
                 serialized.push_str(&id);
@@ -839,7 +850,7 @@ impl<P: QueueRedisProvider> ReliableRedisQueue<P> {
         info!(
             backend = ?self.backend(),
             queue = queue_name,
-            workers = self.inner.concurrency,
+            worker_count = self.inner.concurrency,
             "started reliable queue workers"
         );
         Ok(())
@@ -925,7 +936,11 @@ impl<P: QueueRedisProvider> ReliableRedisQueue<P> {
                     }
                 }
                 Err(error) => {
-                    warn!(jobs = batch.len(), error = %error, "queue settlement batch failed");
+                    warn!(
+                        job_count = batch.len(),
+                        error = %error,
+                        "queue settlement batch failed"
+                    );
                     connection = None;
                     self.inner.provider.invalidate();
                     for request in &batch {
@@ -979,7 +994,7 @@ impl<P: QueueRedisProvider> ReliableRedisQueue<P> {
                 .await;
             match claimed {
                 Ok(jobs) if jobs.is_empty() => {
-                    if self
+                    if let Err(error) = self
                         .wait_for_notification(
                             connection
                                 .as_mut()
@@ -987,8 +1002,8 @@ impl<P: QueueRedisProvider> ReliableRedisQueue<P> {
                             &keys,
                         )
                         .await
-                        .is_err()
                     {
+                        warn!(error = %error, "queue notification wait failed");
                         connection = None;
                         self.inner.provider.invalidate();
                     }
@@ -1000,7 +1015,12 @@ impl<P: QueueRedisProvider> ReliableRedisQueue<P> {
                         let token = Arc::clone(&job.token);
                         let worker = &workers[next_worker];
                         next_worker = (next_worker + 1) % workers.len();
-                        if worker.send(job).await.is_err() {
+                        if let Err(error) = worker.send(job).await {
+                            warn!(
+                                job_id = %id,
+                                error = %error,
+                                "queue worker channel closed"
+                            );
                             remove_lease(&leases, &id, token.as_ref());
                         }
                     }
@@ -1232,8 +1252,18 @@ impl<P: QueueRedisProvider> ReliableRedisQueue<P> {
                 }
             }
             Ok(Err(_)) => {
+                warn!(job_id = %job.id, "queue processor failed");
                 if connection.is_none() {
-                    *connection = self.inner.provider.worker_connection().await.ok();
+                    match self.inner.provider.worker_connection().await {
+                        Ok(worker_connection) => *connection = Some(worker_connection),
+                        Err(error) => {
+                            warn!(
+                                job_id = %job.id,
+                                error = %error,
+                                "queue retry connection failed"
+                            );
+                        }
+                    }
                 }
                 let delay = self.retry_delay_ms(&job.id, job.attempt);
                 let result = match connection.as_mut() {
@@ -1255,21 +1285,38 @@ impl<P: QueueRedisProvider> ReliableRedisQueue<P> {
                         "could not connect to retry queue delivery".to_string(),
                     )),
                 };
-                if result.is_ok() {
-                    if job.attempt >= job.maximum {
+                match result {
+                    Ok(_) if job.attempt >= job.maximum => {
                         shared.metrics.dead_lettered.increment(1);
-                    } else {
+                    }
+                    Ok(_) => {
                         shared.metrics.retried.increment(1);
                     }
-                } else {
-                    *connection = None;
-                    self.inner.provider.invalidate();
+                    Err(error) => {
+                        warn!(
+                            job_id = %job.id,
+                            error = %error,
+                            "queue retry settlement failed"
+                        );
+                        *connection = None;
+                        self.inner.provider.invalidate();
+                    }
                 }
                 remove_lease(&shared.leases, &job.id, job.token.as_ref());
             }
             Err(_) => {
+                warn!(job_id = %job.id, "queue processor panicked");
                 if connection.is_none() {
-                    *connection = self.inner.provider.worker_connection().await.ok();
+                    match self.inner.provider.worker_connection().await {
+                        Ok(worker_connection) => *connection = Some(worker_connection),
+                        Err(error) => {
+                            warn!(
+                                job_id = %job.id,
+                                error = %error,
+                                "queue panic retry connection failed"
+                            );
+                        }
+                    }
                 }
                 let delay = self.retry_delay_ms(&job.id, job.attempt);
                 let result = match connection.as_mut() {
@@ -1291,11 +1338,17 @@ impl<P: QueueRedisProvider> ReliableRedisQueue<P> {
                         "could not connect to retry panicked queue delivery".to_string(),
                     )),
                 };
-                if result.is_ok() {
-                    shared.metrics.panicked_or_lease_lost.increment(1);
-                } else {
-                    *connection = None;
-                    self.inner.provider.invalidate();
+                match result {
+                    Ok(_) => shared.metrics.panicked_or_lease_lost.increment(1),
+                    Err(error) => {
+                        warn!(
+                            job_id = %job.id,
+                            error = %error,
+                            "queue panic settlement failed"
+                        );
+                        *connection = None;
+                        self.inner.provider.invalidate();
+                    }
                 }
                 remove_lease(&shared.leases, &job.id, job.token.as_ref());
             }

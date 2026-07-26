@@ -157,6 +157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for index in 0..jobs {
         requests.push(QueueJobRequest {
             data: JobData {
+                job_id: None,
                 app_key: "bench".to_string(),
                 app_id: "bench".to_string(),
                 app_secret: "not-a-secret".to_string(),

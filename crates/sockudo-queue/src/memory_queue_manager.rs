@@ -110,12 +110,13 @@ impl MemoryQueueManager {
 
     fn prepare_job(
         &self,
-        data: JobData,
+        mut data: JobData,
         options: QueueJobOptions,
     ) -> Result<(MemoryJob, QueueJobOptions, u64)> {
         let id = options
             .job_id
             .clone()
+            .or_else(|| data.job_id.clone())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         if id.is_empty() || id.len() > MAX_ID_LENGTH {
             return Err(Error::Queue(format!(
@@ -127,6 +128,7 @@ impl MemoryQueueManager {
                 "queue job max_attempts must be greater than zero".to_string(),
             ));
         }
+        data.job_id = Some(id.clone());
         let serialized = sonic_rs::to_string(&data)?;
         let fingerprint = serialized
             .bytes()
@@ -293,11 +295,30 @@ impl MemoryQueueManager {
                     let outcome = AssertUnwindSafe(processor(job.data.clone()))
                         .catch_unwind()
                         .await;
+                    let (succeeded, panicked) = match outcome {
+                        Ok(Ok(())) => (true, false),
+                        Ok(Err(_)) => {
+                            warn!(
+                                queue = %queue_name,
+                                job_id = %id,
+                                "memory queue processor failed"
+                            );
+                            (false, false)
+                        }
+                        Err(_) => {
+                            warn!(
+                                queue = %queue_name,
+                                job_id = %id,
+                                "memory queue processor panicked"
+                            );
+                            (false, true)
+                        }
+                    };
                     MemoryCompletion {
                         queue_name,
                         job,
-                        succeeded: matches!(outcome, Ok(Ok(()))),
-                        panicked: outcome.is_err(),
+                        succeeded,
+                        panicked,
                         id,
                         attempt,
                     }
@@ -425,9 +446,20 @@ impl QueueInterface for MemoryQueueManager {
         let handle = self.inner.supervisor.lock().take();
         if let Some(mut handle) = handle {
             let timeout = Duration::from_millis(self.inner.config.shutdown_timeout_ms);
-            if tokio::time::timeout(timeout, &mut handle).await.is_err() {
-                handle.abort();
-                let _ = handle.await;
+            match tokio::time::timeout(timeout, &mut handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    warn!(error = %error, "memory queue supervisor task failed");
+                }
+                Err(error) => {
+                    warn!(error = %error, "memory queue supervisor shutdown timed out");
+                    handle.abort();
+                    if let Err(error) = handle.await
+                        && !error.is_cancelled()
+                    {
+                        warn!(error = %error, "memory queue supervisor abort failed");
+                    }
+                }
             }
         }
         Ok(())
@@ -547,6 +579,7 @@ mod tests {
 
     fn job() -> JobData {
         JobData {
+            job_id: None,
             app_key: "test-key".to_string(),
             app_id: "test-id".to_string(),
             app_secret: "test-secret".to_string(),

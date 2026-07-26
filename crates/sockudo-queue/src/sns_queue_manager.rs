@@ -53,7 +53,7 @@ impl SnsQueueManager {
         if jobs.is_empty() {
             return Ok(());
         }
-        debug!("SNS batch publish called for queue: {queue_name}");
+        debug!(queue = %queue_name, "sns batch publish called");
         let batch_size = self.reliability.max_batch_size.min(10);
         for chunk in jobs.chunks(batch_size) {
             let entries = chunk

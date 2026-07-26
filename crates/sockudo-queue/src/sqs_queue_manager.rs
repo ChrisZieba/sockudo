@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Duration;
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
 /// SQS-based implementation of the QueueInterface
 pub struct SqsQueueManager {
@@ -128,7 +128,7 @@ impl SqsQueueManager {
 
     /// Create a queue if it doesn't exist
     async fn create_queue(&self, queue_name: &str) -> Result<String> {
-        info!("{}", format!("Creating SQS queue: {}", queue_name));
+        debug!(queue = %queue_name, "creating sqs queue");
 
         let actual_queue_name = if self.config.fifo && !queue_name.ends_with(".fifo") {
             format!("{queue_name}.fifo")
@@ -185,7 +185,7 @@ impl SqsQueueManager {
         let queue_url = self.get_queue_url(queue_name).await?;
         let mut prepared = Vec::with_capacity(jobs.len());
 
-        for (data, options) in jobs {
+        for (mut data, options) in jobs {
             if options.max_attempts.is_some() {
                 return Err(Error::Queue(
                     "SQS max_attempts is configured by the queue redrive policy, not per job"
@@ -208,12 +208,14 @@ impl SqsQueueManager {
                 ));
             }
 
-            let supplied_job_id = options.job_id.is_some();
+            let supplied_job_id = options.job_id.is_some() || data.job_id.is_some();
             let id = QueueJobId(
                 options
                     .job_id
+                    .or_else(|| data.job_id.clone())
                     .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()),
             );
+            data.job_id = Some(id.0.clone());
             let deduplication_id = options
                 .deduplication_key
                 .or_else(|| supplied_job_id.then(|| id.0.clone()));
@@ -287,23 +289,11 @@ impl SqsQueueManager {
         let worker_prefetch = self.reliability.worker_prefetch;
 
         tokio::spawn(async move {
-            info!(
-                "{}",
-                format!(
-                    "Starting SQS worker #{} for queue: {}",
-                    worker_id, queue_name
-                )
-            );
+            debug!(worker_id = %worker_id, queue = %queue_name, "starting sqs worker");
 
             loop {
                 if shutdown.load(Ordering::Relaxed) {
-                    info!(
-                        "{}",
-                        format!(
-                            "SQS worker #{} for queue {} shutting down",
-                            worker_id, queue_name
-                        )
-                    );
+                    debug!(worker_id = %worker_id, queue = %queue_name, "sqs worker shutting down");
                     break;
                 }
 
@@ -321,15 +311,7 @@ impl SqsQueueManager {
                         let messages = response.messages();
 
                         if !messages.is_empty() {
-                            info!(
-                                "{}",
-                                format!(
-                                    "SQS worker #{} received {} messages from queue {}",
-                                    worker_id,
-                                    messages.len(),
-                                    queue_name
-                                )
-                            );
+                            debug!(worker_id = %worker_id, queue = %queue_name, message_count = messages.len(), "sqs worker received messages");
 
                             let message_concurrency = if config.fifo {
                                 1
@@ -351,14 +333,7 @@ impl SqsQueueManager {
                         }
                     }
                     Err(e) => {
-                        error!(
-                            "{}",
-                            format!(
-                                "Failed to receive messages from SQS queue {}: {}",
-                                queue_name, e
-                            )
-                        );
-
+                        error!(queue = %queue_name, error = %e, "failed to receive messages from sqs queue");
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                 }
@@ -433,13 +408,7 @@ impl QueueInterface for SqsQueueManager {
             .unwrap()
             .insert(queue_name.to_string(), worker_handles);
 
-        info!(
-            "{}",
-            format!(
-                "Started {} workers for SQS queue: {}",
-                concurrency, queue_name
-            )
-        );
+        info!(queue = %queue_name, worker_count = concurrency, "started sqs queue workers");
 
         Ok(())
     }
@@ -449,10 +418,7 @@ impl QueueInterface for SqsQueueManager {
 
         let worker_handles = std::mem::take(&mut *self.worker_handles.lock().unwrap());
         for (queue_name, workers) in worker_handles {
-            info!(
-                "{}",
-                format!("Waiting for SQS queue {} workers to shutdown", queue_name)
-            );
+            info!(queue = %queue_name, "waiting for sqs queue workers to shutdown");
 
             for mut handle in workers {
                 if tokio::time::timeout(
@@ -540,14 +506,24 @@ async fn process_sqs_message(
     let job_data = match sonic_rs::from_str::<JobData>(body) {
         Ok(job_data) => job_data,
         Err(error) => {
-            error!("Failed to deserialize message from SQS queue {queue_name}: {error}");
-            if let Some(receipt_handle) = message.receipt_handle() {
-                let _ = client
+            error!(
+                queue = %queue_name,
+                error = %error,
+                "failed to deserialize sqs queue message"
+            );
+            if let Some(receipt_handle) = message.receipt_handle()
+                && let Err(error) = client
                     .delete_message()
                     .queue_url(&queue_url)
                     .receipt_handle(receipt_handle)
                     .send()
-                    .await;
+                    .await
+            {
+                error!(
+                    queue = %queue_name,
+                    error = %error,
+                    "failed to delete malformed sqs queue message"
+                );
             }
             return;
         }
@@ -571,11 +547,15 @@ async fn process_sqs_message(
                     .send()
                     .await
             {
-                error!("Failed to delete message from SQS queue {queue_name}: {error}");
+                error!(
+                    queue = %queue_name,
+                    error = %error,
+                    "failed to delete sqs queue message"
+                );
             }
         }
-        Err(error) => {
-            error!("Error processing message from SQS queue {queue_name}: {error}");
+        Err(_) => {
+            warn!(queue = %queue_name, "sqs queue processor failed");
             if let Some(receipt_handle) = message.receipt_handle()
                 && let Err(change_error) = client
                     .change_message_visibility()
@@ -585,7 +565,11 @@ async fn process_sqs_message(
                     .send()
                     .await
             {
-                error!("Failed to release failed SQS queue message: {change_error}");
+                error!(
+                    queue = %queue_name,
+                    error = %change_error,
+                    "failed to release sqs queue message"
+                );
             }
         }
     }

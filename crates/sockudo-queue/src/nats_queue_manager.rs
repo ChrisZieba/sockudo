@@ -16,7 +16,7 @@ use sockudo_core::webhook_types::{JobData, JobProcessorFnAsync};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Notify;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub struct NatsJetStreamQueueManager {
     client: async_nats::Client,
@@ -204,7 +204,7 @@ impl QueueInterface for NatsJetStreamQueueManager {
                 let messages = match consumer.messages().await {
                     Ok(messages) => messages,
                     Err(e) => {
-                        error!("Failed to open NATS JetStream message stream: {}", e);
+                        error!(error = %e, "failed to open nats jetstream message stream");
                         break;
                     }
                 };
@@ -216,7 +216,7 @@ impl QueueInterface for NatsJetStreamQueueManager {
                     }
                     if in_flight.len() >= prefetch {
                         if let Some(Err(error)) = in_flight.join_next().await {
-                            error!("NATS queue callback task failed: {error}");
+                            error!(error = %error, "nats queue callback task failed");
                         }
                         continue;
                     }
@@ -224,7 +224,7 @@ impl QueueInterface for NatsJetStreamQueueManager {
                         _ = shutdown.notified() => break,
                         completed = in_flight.join_next(), if !in_flight.is_empty() => {
                             if let Some(Err(error)) = completed {
-                                error!("NATS queue callback task failed: {error}");
+                                error!(error = %error, "nats queue callback task failed");
                             }
                             continue;
                         }
@@ -239,18 +239,18 @@ impl QueueInterface for NatsJetStreamQueueManager {
                         }
                         Ok(None) => break,
                         Err(e) => {
-                            error!("NATS queue consumer error: {}", e);
+                            error!(error = %e, "nats queue consumer error");
                             break;
                         }
                     }
                 }
                 while let Some(result) = in_flight.join_next().await {
                     if let Err(error) = result {
-                        error!("NATS queue callback task failed while draining: {error}");
+                        error!(error = %error, "nats queue callback task failed while draining");
                     }
                 }
             }
-            info!("NATS JetStream queue consumer stopped");
+            info!("nats jetstream queue consumer stopped");
         });
 
         Ok(())
@@ -305,21 +305,27 @@ async fn process_nats_message(
     retry_delay: std::time::Duration,
 ) {
     match sonic_rs::from_slice::<JobData>(&message.payload) {
-        Ok(job) => {
-            if callback(job).await.is_ok() {
+        Ok(job) => match callback(job).await {
+            Ok(()) => {
                 if let Err(error) = message.ack().await {
-                    error!("Failed to ack NATS queue job: {error}");
+                    error!(error = %error, "failed to ack nats queue job");
                 }
-            } else if let Err(error) = message
-                .ack_with(jetstream::AckKind::Nak(Some(retry_delay)))
-                .await
-            {
-                error!("Failed to nack NATS queue job: {error}");
             }
-        }
+            Err(_) => {
+                warn!("nats queue processor failed");
+                if let Err(error) = message
+                    .ack_with(jetstream::AckKind::Nak(Some(retry_delay)))
+                    .await
+                {
+                    error!(error = %error, "failed to nack nats queue job");
+                }
+            }
+        },
         Err(error) => {
-            error!("Failed to deserialize NATS queue job: {error}");
-            let _ = message.ack_with(jetstream::AckKind::Term).await;
+            error!(error = %error, "failed to deserialize nats queue job");
+            if let Err(error) = message.ack_with(jetstream::AckKind::Term).await {
+                error!(error = %error, "failed to terminate malformed nats queue job");
+            }
         }
     }
 }

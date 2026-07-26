@@ -173,6 +173,7 @@ async fn redis_queue_is_idempotent_retries_and_settles() {
 
 fn job(signature: &str) -> JobData {
     JobData {
+        job_id: None,
         app_key: "key".to_string(),
         app_id: "app".to_string(),
         app_secret: "secret".to_string(),

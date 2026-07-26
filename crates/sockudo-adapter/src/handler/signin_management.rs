@@ -68,9 +68,24 @@ impl ConnectionHandler {
         self.clear_user_authentication_timeout(&app_config.id, socket_id)
             .await?;
 
-        {
+        let previous_user_id = {
             let mut conn_locked = connection_arc.inner.lock().await;
+            if conn_locked.state.disconnecting {
+                return Err(Error::ConnectionClosed(
+                    "connection is disconnecting".to_string(),
+                ));
+            }
+            let previous = conn_locked.state.user_id.clone();
             conn_locked.set_user_info(user_info.clone());
+            previous
+        };
+
+        if previous_user_id.as_deref() != Some(user_info.id.as_str())
+            && let Some(ref prev_id) = previous_user_id
+        {
+            self.connection_manager
+                .remove_user_socket(prev_id, socket_id, &app_config.id)
+                .await?;
         }
 
         // Re-add user to adapter's tracking (this updates user associations)
@@ -94,9 +109,9 @@ impl ConnectionHandler {
             && let Some(watchlist) = user_info.watchlist.as_ref()
         {
             info!(
-                "Processing watchlist for user {} with {} watched users",
-                user_info.id,
-                watchlist.len()
+                user_id = %user_info.id,
+                watched_count = watchlist.len(),
+                "processing watchlist for user"
             );
 
             // Add user to watchlist manager and get initial status events
@@ -118,10 +133,10 @@ impl ConnectionHandler {
                 .await?;
 
             info!(
-                "User {} signin: {} watchlist events to send, notifying {} watchers",
-                user_info.id,
-                watchlist_events.len(),
-                watchers_to_notify.len()
+                user_id = %user_info.id,
+                watchlist_event_count = watchlist_events.len(),
+                watcher_count = watchers_to_notify.len(),
+                "user signed in with watchlist"
             );
 
             // Send watchlist events to the newly signed-in user
@@ -132,8 +147,9 @@ impl ConnectionHandler {
                     .await
                 {
                     warn!(
-                        "Failed to send watchlist event to user {}: {}",
-                        user_info.id, e
+                        user_id = %user_info.id,
+                        error = %e,
+                        "failed to send watchlist event to user"
                     );
                 }
             }
@@ -150,8 +166,9 @@ impl ConnectionHandler {
                         .await
                     {
                         warn!(
-                            "Failed to send online notification to watcher {}: {}",
-                            watcher_socket_id, e
+                            socket_id = %watcher_socket_id,
+                            error = %e,
+                            "failed to send online notification to watcher"
                         );
                     }
                 }

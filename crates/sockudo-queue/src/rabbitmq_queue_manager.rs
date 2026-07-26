@@ -19,7 +19,7 @@ use sockudo_core::webhook_types::{JobData, JobProcessorFnAsync};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Notify;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 const DELIVERY_ATTEMPT_HEADER: &str = "sockudo-delivery-attempt";
 
@@ -197,7 +197,7 @@ impl QueueInterface for RabbitMqQueueManager {
                 }
                 if in_flight.len() >= prefetch {
                     if let Some(Err(error)) = in_flight.join_next().await {
-                        error!("RabbitMQ queue callback task failed: {error}");
+                        error!(error = %error, "rabbitmq queue callback task failed");
                     }
                     continue;
                 }
@@ -205,7 +205,7 @@ impl QueueInterface for RabbitMqQueueManager {
                     _ = shutdown.notified() => break,
                     completed = in_flight.join_next(), if !in_flight.is_empty() => {
                         if let Some(Err(error)) = completed {
-                            error!("RabbitMQ queue callback task failed: {error}");
+                            error!(error = %error, "rabbitmq queue callback task failed");
                         }
                         continue;
                     }
@@ -233,17 +233,17 @@ impl QueueInterface for RabbitMqQueueManager {
                         });
                     }
                     Err(e) => {
-                        error!("RabbitMQ queue consumer error: {}", e);
+                        error!(error = %e, "rabbitmq queue consumer error");
                         break;
                     }
                 }
             }
             while let Some(result) = in_flight.join_next().await {
                 if let Err(error) = result {
-                    error!("RabbitMQ queue callback task failed while draining: {error}");
+                    error!(error = %error, "rabbitmq queue callback task failed while draining");
                 }
             }
-            info!("RabbitMQ queue consumer stopped");
+            info!("rabbitmq queue consumer stopped");
         });
 
         Ok(())
@@ -299,12 +299,14 @@ async fn process_rabbitmq_delivery(
     max_attempts: u32,
 ) {
     match sonic_rs::from_slice::<JobData>(&delivery.data) {
-        Ok(job) => {
-            if callback(job).await.is_ok() {
+        Ok(job) => match callback(job).await {
+            Ok(()) => {
                 if let Err(error) = delivery.ack(BasicAckOptions::default()).await {
-                    error!("Failed to ack RabbitMQ queue delivery: {error}");
+                    error!(error = %error, "failed to ack rabbitmq queue delivery");
                 }
-            } else {
+            }
+            Err(_) => {
+                warn!("rabbitmq queue processor failed");
                 let attempt = delivery_attempt(&delivery);
                 let (target, next_attempt) = if attempt >= max_attempts {
                     (dead_letter_queue.as_str(), attempt)
@@ -313,9 +315,9 @@ async fn process_rabbitmq_delivery(
                 };
                 republish_rabbitmq_delivery(&delivery, &channel, target, next_attempt).await;
             }
-        }
+        },
         Err(error) => {
-            error!("Failed to deserialize RabbitMQ queue job: {error}");
+            error!(error = %error, "failed to deserialize rabbitmq queue job");
             republish_rabbitmq_delivery(&delivery, &channel, &dead_letter_queue, max_attempts)
                 .await;
         }
@@ -344,11 +346,15 @@ async fn republish_rabbitmq_delivery(
     match published {
         Ok(_) => {
             if let Err(error) = delivery.ack(BasicAckOptions::default()).await {
-                error!("Failed to ack republished RabbitMQ queue delivery: {error}");
+                error!(error = %error, "failed to ack republished rabbitmq queue delivery");
             }
         }
         Err(error) => {
-            error!("Failed to republish RabbitMQ queue delivery to {target}: {error}");
+            error!(
+                error = %error,
+                target_queue = target,
+                "failed to republish rabbitmq queue delivery"
+            );
             if let Err(nack_error) = delivery
                 .nack(BasicNackOptions {
                     multiple: false,
@@ -356,7 +362,7 @@ async fn republish_rabbitmq_delivery(
                 })
                 .await
             {
-                error!("Failed to release RabbitMQ queue delivery: {nack_error}");
+                error!(error = %nack_error, "failed to release rabbitmq queue delivery");
             }
         }
     }

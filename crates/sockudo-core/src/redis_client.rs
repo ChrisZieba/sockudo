@@ -61,6 +61,7 @@ impl RedisClient {
             }),
         };
         let _ = client.command_connection().await?;
+        let _ = client.events_connection().await?;
         Ok(client)
     }
 
@@ -158,7 +159,8 @@ async fn load_tls_certificates(
 ) -> Result<Option<TlsCertificates>> {
     if (tls.client_cert_path.is_some()) ^ (tls.client_key_path.is_some()) {
         warn!(
-            "Redis {hop} TLS requires both client_cert_path and client_key_path; ignoring the partial client certificate configuration"
+            hop = %hop,
+            "partial redis mutual tls configuration ignored"
         );
     }
     if tls.ca_path.is_none() && !tls.has_client_cert() {

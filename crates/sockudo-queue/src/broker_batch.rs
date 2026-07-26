@@ -15,7 +15,7 @@ pub(crate) fn prepare_default_batch(
     let mut data = Vec::with_capacity(jobs.len());
     let mut ids = Vec::with_capacity(jobs.len());
 
-    for job in jobs {
+    for mut job in jobs {
         if job.options.delay_ms > 0
             || job.options.deduplication_key.is_some()
             || job.options.max_attempts.is_some()
@@ -25,11 +25,14 @@ pub(crate) fn prepare_default_batch(
                 backend.as_str()
             )));
         }
-        ids.push(QueueJobId(
+        let id = QueueJobId(
             job.options
                 .job_id
+                .or_else(|| job.data.job_id.clone())
                 .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()),
-        ));
+        );
+        job.data.job_id = Some(id.0.clone());
+        ids.push(id);
         data.push(job.data);
     }
 
@@ -56,7 +59,13 @@ mod tests {
         .expect("default batch should be supported");
 
         assert_eq!(prepared.ids, vec![QueueJobId("stable-id".to_string())]);
-        assert_eq!(prepared.data, vec![JobData::default()]);
+        assert_eq!(
+            prepared.data,
+            vec![JobData {
+                job_id: Some("stable-id".to_string()),
+                ..JobData::default()
+            }]
+        );
     }
 
     #[test]

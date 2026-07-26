@@ -213,9 +213,18 @@ impl QueueInterface for KafkaQueueManager {
                                 Ok(job) => {
                                     let mut succeeded = false;
                                     for attempt in 1_u32..=max_attempts {
-                                        if callback(job.clone()).await.is_ok() {
-                                            succeeded = true;
-                                            break;
+                                        match callback(job.clone()).await {
+                                            Ok(()) => {
+                                                succeeded = true;
+                                                break;
+                                            }
+                                            Err(_) => {
+                                                warn!(
+                                                    attempt,
+                                                    max_attempts,
+                                                    "kafka queue processor failed"
+                                                );
+                                            }
                                         }
                                         if attempt < max_attempts {
                                             tokio::time::sleep(Duration::from_millis(
@@ -238,42 +247,68 @@ impl QueueInterface for KafkaQueueManager {
                                             )
                                             .await;
                                         if let Err((e, _)) = dlq_result {
-                                            error!("Failed to publish Kafka dead-letter job: {}", e);
+                                            error!(
+                                                error = %e,
+                                                "failed to publish kafka dead-letter job"
+                                            );
                                             continue;
                                         }
-                                        warn!("Kafka queue job moved to dead-letter topic after {max_attempts} attempts");
+                                        warn!(
+                                            max_attempts,
+                                            "kafka queue job moved to dead-letter topic"
+                                        );
                                     }
                                     if let Err(e) =
                                         consumer.commit_message(&message, CommitMode::Sync)
                                     {
-                                        error!("Failed to commit Kafka queue message: {}", e);
+                                        error!(
+                                            error = %e,
+                                            "failed to commit kafka queue message"
+                                        );
                                     }
                                 }
                                 Err(e) => {
-                                    error!("Failed to deserialize Kafka queue job: {}", e);
-                                    let dlq_result = producer
+                                    error!(
+                                        error = %e,
+                                        "failed to deserialize kafka queue job"
+                                    );
+                                    match producer
                                         .send(
                                             FutureRecord::to(&dead_letter_topic)
                                                 .key("")
                                                 .payload(payload),
                                             Timeout::After(Duration::from_millis(request_timeout)),
                                         )
-                                        .await;
-                                    if dlq_result.is_ok() {
-                                        let _ = consumer
-                                            .commit_message(&message, CommitMode::Sync);
+                                        .await
+                                    {
+                                        Ok(_) => {
+                                            if let Err(commit_error) = consumer
+                                                .commit_message(&message, CommitMode::Sync)
+                                            {
+                                                error!(
+                                                    error = %commit_error,
+                                                    "failed to commit malformed kafka queue message"
+                                                );
+                                            }
+                                        }
+                                        Err((publish_error, _)) => {
+                                            error!(
+                                                error = %publish_error,
+                                                "failed to publish malformed kafka queue job to dead-letter topic"
+                                            );
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        error!("Kafka queue consumer error: {}", e);
+                        error!(error = %e, "kafka queue consumer error");
                         break;
                     }
                 }
             }
-            info!("Kafka queue consumer stopped");
+            info!("kafka queue consumer stopped");
         });
 
         Ok(())
