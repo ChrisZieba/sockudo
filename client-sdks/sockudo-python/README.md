@@ -97,7 +97,9 @@ from sockudo_python import (
 )
 
 
-async def my_auth_handler(request: ChannelAuthorizationRequest) -> ChannelAuthorizationData:
+async def my_auth_handler(
+    request: ChannelAuthorizationRequest,
+) -> ChannelAuthorizationData:
     # Call your own backend to produce a signed auth token.
     return ChannelAuthorizationData(
         auth="app-key:hmac-sha256-signature",
@@ -177,7 +179,11 @@ await channel.update({"status": "editing"})
 Client-side presence history is proxy-backed. The Python client does not sign the server REST API directly; configure a backend endpoint that accepts `{channel, params, action}` and proxies the request with server credentials.
 
 ```python
-from sockudo_python import PresenceHistoryOptions, PresenceHistoryParams, PresenceSnapshotParams
+from sockudo_python import (
+    PresenceHistoryOptions,
+    PresenceHistoryParams,
+    PresenceSnapshotParams,
+)
 
 client = SockudoClient(
     "app-key",
@@ -193,9 +199,7 @@ client = SockudoClient(
 
 channel = client.subscribe("presence-lobby")
 
-page = await channel.history(
-    PresenceHistoryParams(limit=50, direction="newest_first")
-)
+page = await channel.history(PresenceHistoryParams(limit=50, direction="newest_first"))
 if page.has_next():
     next_page = await page.next()
 
@@ -322,7 +326,9 @@ channel.bind("doc-updated", lambda data, meta: print(data))  # data is already d
 Your auth handler must populate `shared_secret` in `ChannelAuthorizationData`:
 
 ```python
-async def encrypted_auth(request: ChannelAuthorizationRequest) -> ChannelAuthorizationData:
+async def encrypted_auth(
+    request: ChannelAuthorizationRequest,
+) -> ChannelAuthorizationData:
     return ChannelAuthorizationData(
         auth="app-key:hmac-sha256-signature",
         shared_secret="base64-encoded-32-byte-secret",
@@ -359,8 +365,11 @@ Bind to connection state changes to react to connect, disconnect, and reconnect 
 def on_state_change(change) -> None:
     print(f"connection: {change.previous} -> {change.current}")
 
+
 client.connection.bind("state_change", on_state_change)
-client.connection.bind("connected", lambda data, _: print("socket id:", data.get("socket_id")))
+client.connection.bind(
+    "connected", lambda data, _: print("socket id:", data.get("socket_id"))
+)
 client.connection.bind("disconnected", lambda data, _: print("disconnected"))
 client.connection.bind("error", lambda data, _: print("error:", data))
 

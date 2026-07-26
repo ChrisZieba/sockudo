@@ -35,7 +35,11 @@ pip install -e server-sdks/sockudo-http-python[dev]
 ```python
 from sockudo_http import Config, Sockudo
 
-sockudo = Sockudo(Config(app_id="app-id", key="app-key", secret="app-secret", host="127.0.0.1", port=6001))
+sockudo = Sockudo(
+    Config(
+        app_id="app-id", key="app-key", secret="app-secret", host="127.0.0.1", port=6001
+    )
+)
 
 result = sockudo.trigger("orders", "order.created", {"id": "ord_123"})
 assert result.ok
@@ -68,7 +72,9 @@ sockudo.trigger(
     TriggerOptions(idempotency_key="order-created-ord_123"),
 )
 
-sockudo.trigger("orders", "order.created", {"id": "ord_124"}, TriggerOptions(idempotency_key=True))
+sockudo.trigger(
+    "orders", "order.created", {"id": "ord_124"}, TriggerOptions(idempotency_key=True)
+)
 ```
 
 Set `SockudoOptions(auto_idempotency=True)` to generate keys for publish and batch publish calls that omit one.
@@ -113,7 +119,11 @@ body = encrypted.authenticate("123.456", "private-encrypted-room")
 ```python
 from sockudo_http_python import ChannelsParams, HistoryParams, PresenceHistoryParams
 
-sockudo.list_channels(ChannelsParams(filter_by_prefix="presence-", info=["subscription_count", "user_count"]))
+sockudo.list_channels(
+    ChannelsParams(
+        filter_by_prefix="presence-", info=["subscription_count", "user_count"]
+    )
+)
 sockudo.get_channel_users("presence-room")
 sockudo.get_channel_history("orders", HistoryParams(limit=50, direction="newest_first"))
 sockudo.get_channel_presence_history("presence-room", PresenceHistoryParams(limit=50))
@@ -157,7 +167,9 @@ sockudo.delete_message("orders", "msg:1", MessageMutation(description="moderated
 sockudo.publish_annotation(
     "orders",
     "msg:1",
-    PublishAnnotationRequest(type="reactions:distinct.v1", name="like", client_id="user-1", count=1),
+    PublishAnnotationRequest(
+        type="reactions:distinct.v1", name="like", client_id="user-1", count=1
+    ),
 )
 sockudo.list_annotations("orders", "msg:1")
 ```
@@ -165,7 +177,9 @@ sockudo.list_annotations("orders", "msg:1")
 ## Webhooks
 
 ```python
-validity = sockudo.validate_webhook_signature(x_pusher_key, x_pusher_signature, raw_body)
+validity = sockudo.validate_webhook_signature(
+    x_pusher_key, x_pusher_signature, raw_body
+)
 webhook = sockudo.parse_webhook(x_pusher_key, x_pusher_signature, raw_body)
 ```
 
@@ -174,7 +188,9 @@ If a webhook contains encrypted channel events and the client has an encryption 
 ## Signed URIs
 
 ```python
-uri = sockudo.signed_uri("GET", "/apps/app-id/channels", parameters={"filter_by_prefix": "presence-"})
+uri = sockudo.signed_uri(
+    "GET", "/apps/app-id/channels", parameters={"filter_by_prefix": "presence-"}
+)
 ```
 
 The signing format matches Sockudo/Pusher REST auth: `auth_key`, `auth_timestamp`, `auth_version`, optional `body_md5`, and `auth_signature` over `{METHOD}\n{PATH}\n{SORTED_QUERY}`.
