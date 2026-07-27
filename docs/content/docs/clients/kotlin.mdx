@@ -6,6 +6,10 @@ icon: Smartphone
 
 `sockudo-kotlin` is the official Android and JVM realtime SDK. It uses OkHttp for WebSockets and exposes the same channel model as other Sockudo clients.
 
+The current package targets JVM 23 and uses Protocol V2 by default. Set
+`protocolVersion = 1` only when strict Pusher Protocol V1 compatibility is
+required.
+
 ## Install
 
 Install the published package from Maven Central:
@@ -56,6 +60,36 @@ channel.bind("price-updated") { data, _ ->
 client.connect()
 ```
 
+For production, point `wsHost` at the public load balancer or ingress, set
+`forceTls = true`, and use the secure WebSocket port. Keep one long-lived
+client per application process or signed-in mobile session.
+
+## Lifecycle and cleanup
+
+Connection and channel events use the same binding model as application events:
+
+```kotlin
+val stateToken =
+    client.bind("state_change") { change, _ ->
+        println("connection: $change")
+    }
+
+val eventToken =
+    channel.bind("price-updated") { data, _ ->
+        println(data)
+    }
+
+channel.unbind("price-updated", eventToken)
+client.unbind("state_change", stateToken)
+client.unsubscribe("public-updates")
+client.disconnect()
+```
+
+Wait for the channel subscription-success event before treating channel state
+as live. Unsubscribe and unbind when an Android lifecycle owner no longer needs
+updates; disconnect on explicit sign-out. A temporary network loss should be
+left to the SDK's reconnect path.
+
 ## Auth
 
 ```kotlin
@@ -76,6 +110,47 @@ val client =
         ),
     )
 ```
+
+Your auth endpoint must validate the application session and authorize the
+exact requested channel. For presence, derive `user_id` from the server-side
+identity. Never ship the app secret or an encryption master key in the APK.
+
+Protocol V2 capability tokens can be supplied with a refresh provider:
+
+```kotlin
+val client =
+    SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster = "local",
+            protocolVersion = 2,
+            authTokenProvider =
+                ClientAuthTokenProvider { request ->
+                    fetchCapabilityToken(
+                        reason = request.reason,
+                        socketId = request.socketId,
+                    )
+                },
+        ),
+    )
+```
+
+JWT expiry metadata enables proactive refresh. Opaque tokens refresh after the
+server reports expiration.
+
+## Presence
+
+```kotlin
+val presence = client.subscribe("presence-lobby") as PresenceChannel
+
+presence.bind("sockudo:member_added") { member, _ -> println("joined: $member") }
+presence.bind("sockudo:member_removed") { member, _ -> println("left: $member") }
+presence.bind("sockudo:presence_update") { member, _ -> println("updated: $member") }
+
+presence.update(mapOf("status" to "typing"))
+```
+
+The update method changes V2 presence member data without a leave/rejoin cycle.
 
 ## Filters and deltas
 
@@ -136,6 +211,41 @@ val page = channel.history(PresenceHistoryParams(limit = 50, direction = "newest
 val snapshot = channel.snapshot(PresenceSnapshotParams(atSerial = 4))
 ```
 
+History, snapshots, and versioned-message helpers call your trusted proxy. The
+proxy must authenticate the caller, authorize the channel, bound page sizes,
+and sign the upstream Sockudo request. Use channel history with
+`untilAttach = true` when building a gap-free late join.
+
+## Mutable messages
+
+Apply V2 message actions in serial order. An update replaces local data, a
+delete becomes the latest visible version, and an append concatenates to a
+known string base. Configure `VersionedMessagesOptions.endpoint` for
+proxy-backed writes:
+
+```kotlin
+val chat = client.subscribe("chat:room-1")
+val ack = chat.createMessage("chat.message", mapOf("text" to "hello"))
+chat.appendMessage(ack.messageSerial, " world")
+chat.updateMessage(ack.messageSerial, mapOf("text" to "edited"))
+chat.deleteMessage(ack.messageSerial)
+```
+
+If an append arrives before its base, fetch the latest message through the
+proxy before applying subsequent actions.
+
+## Encrypted channels
+
+`private-encrypted-*` subscriptions decrypt automatically when the auth
+response includes the derived channel shared secret:
+
+```kotlin
+val encrypted = client.subscribe("private-encrypted-documents")
+encrypted.bind("doc-updated") { payload, _ -> println(payload) }
+```
+
+Encrypted channels still require TLS and normal channel authorization.
+
 ## Android push registration
 
 Use Firebase Messaging or the platform provider to obtain a token, then register through your backend.
@@ -153,3 +263,15 @@ class PushTokenService : FirebaseMessagingService() {
 ```
 
 The backend should call Sockudo push registration APIs with app credentials. The Android app should not hold Sockudo secrets.
+
+## Production checklist
+
+- Tie subscriptions to an Android lifecycle owner and avoid duplicate bindings
+  after configuration changes.
+- Keep callbacks short; move blocking work off the WebSocket callback path.
+- Treat auth failures as permission failures instead of endlessly reconnecting.
+- On `sockudo:resume_failed`, reload authoritative application state.
+- Bound rewind and proxy history requests.
+- Refresh FCM tokens through the backend when `onNewToken` fires.
+- Test airplane-mode transitions, process recreation, capability-token expiry,
+  and rolling Sockudo restarts.

@@ -6,6 +6,10 @@ icon: Smartphone
 
 `SockudoSwift` is the official realtime client for Apple platforms. It supports public, private, presence, encrypted channels, auth endpoints, V2 recovery, rewind, filters, deltas, mutable messages, and proxy-backed history helpers.
 
+Supported deployment targets are iOS 13+, macOS 10.15+, tvOS 13+, watchOS
+6+, and visionOS 1+. The package uses Swift 6.2 concurrency and isolates the
+client, channels, and callbacks on `@SockudoActor`.
+
 ## Install
 
 Install through Swift Package Manager from the SockudoSwift mirror. SwiftPM resolves this from
@@ -51,6 +55,46 @@ channel.bind("price-updated") { data, _ in
 client.connect()
 ```
 
+Protocol V1 compatibility is the default. Set `protocolVersion: 2` explicitly
+for new Sockudo applications that need continuity metadata and V2 features.
+Use the public ingress hostname with `forceTLS: true` in production.
+
+## Concurrency and lifecycle
+
+From code outside `@SockudoActor`, access client methods with `await`:
+
+```swift
+func startRealtime() async {
+    await client.connect()
+}
+
+func stopRealtime() async {
+    await client.unsubscribe("public-updates")
+    await client.disconnect()
+}
+```
+
+Event callbacks execute on the dedicated Sockudo actor, not the main thread.
+Hop to `MainActor` for UIKit or SwiftUI state:
+
+```swift
+channel.bind("price-updated") { data, _ in
+    Task { @MainActor in
+        viewModel.latestPrice = String(describing: data)
+    }
+}
+```
+
+Keep the `EventBindingToken` returned by `bind` when you want to remove one
+handler with `unbind(eventName:token:)`; call `unbindAll()` only when the
+channel owner is being torn down.
+
+Unexpected disconnects reconnect with bounded exponential backoff. Tune
+`maxReconnectAttempts` and `maxReconnectGapInSeconds` for the app's foreground
+and background policy. Client events emitted while disconnected are buffered
+up to 50 per channel and replayed after subscription; unsubscribing clears that
+buffer.
+
 ## Auth
 
 ```swift
@@ -67,6 +111,51 @@ let client = try SockudoClient(
     )
 )
 ```
+
+The backend must authenticate the current user and authorize the exact
+`channel_name` before signing. Presence identity must come from the server-side
+session, not a value supplied by the app.
+
+Protocol V2 also supports scoped capability tokens:
+
+```swift
+let client = try SockudoClient(
+    "app-key",
+    options: .init(
+        cluster: "local",
+        protocolVersion: 2,
+        forceTLS: true,
+        wsHost: "realtime.example.com",
+        capabilityToken: .init(asyncProvider: {
+            try await tokenService.fetchSockudoToken()
+        })
+    )
+)
+```
+
+JWTs with expiry metadata refresh proactively. Opaque tokens refresh when the
+server reports expiration, provided an async provider is configured.
+
+## Presence
+
+Subscribe as `PresenceChannel` to access members and V2 in-place presence
+updates:
+
+```swift
+let presence = client.subscribe("presence-agent:session-123") as! PresenceChannel
+
+presence.bind("sockudo:member_added") { member, _ in
+    print(member as Any)
+}
+presence.bind("sockudo:presence_update") { member, _ in
+    print(member as Any)
+}
+
+try presence.update(data: ["status": "thinking"])
+```
+
+Wait for the subscription-success event before treating the initial membership
+set as authoritative.
 
 ## Filters and deltas
 
@@ -137,6 +226,25 @@ channel.history(.init(limit: 50, direction: "newest_first")) { result in
 }
 ```
 
+History endpoints are backend proxies because a mobile client must not sign
+Sockudo REST requests. Authorize the caller and channel on every request, bound
+page sizes, and forward opaque cursors unchanged.
+
+## Encrypted channels
+
+`private-encrypted-*` channels decrypt automatically when the protected-channel
+auth response contains a derived `shared_secret`:
+
+```swift
+let encrypted = client.subscribe("private-encrypted-documents")
+encrypted.bind("doc-updated") { payload, _ in
+    print(payload as Any)
+}
+```
+
+Keep the encryption master key on the backend. Continue to use TLS and normal
+channel authorization.
+
 ## Push notifications on Apple platforms
 
 Use APNs to obtain a device token, then send it to your backend. Your backend registers the device with Sockudo and keeps APNs credentials server-side.
@@ -158,3 +266,18 @@ func application(
 ```
 
 Do not embed APNs private keys or Sockudo app secrets in the app.
+
+## Production checklist
+
+- Use one long-lived client for the app session and disconnect it on explicit
+  sign-out.
+- Select Protocol V2 deliberately; do not assume the default changed during a
+  Pusher migration.
+- Move UI mutations from `@SockudoActor` to `MainActor`.
+- Apply an app-specific reconnect limit for backgrounded mobile processes.
+- Treat failed recovery as a signal to reload authoritative application state.
+- Keep auth, history, versioned-message, and push proxy credentials on the
+  backend.
+- Unbind view-owned callbacks to prevent retained views and duplicate updates.
+- Test offline/online transitions, token expiry, app suspension, and a rolling
+  Sockudo restart.

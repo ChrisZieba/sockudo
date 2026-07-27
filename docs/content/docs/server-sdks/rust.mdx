@@ -10,13 +10,13 @@ icon: FileCode
 [dependencies]
 sockudo-http = "2.1.0"
 tokio = { version = "1", features = ["full"] }
-serde_json = "1"
+sonic-rs = "0.5"
 ```
 
 ## Configure
 
 ```rust
-use sockudo_http::{Config, Pusher};
+use sockudo_http::{Config, Sockudo};
 
 let config = Config::builder()
     .app_id("app-id")
@@ -27,14 +27,22 @@ let config = Config::builder()
     .use_tls(false)
     .build()?;
 
-let sockudo = Pusher::new(config)?;
+let sockudo = Sockudo::new(config)?;
 ```
+
+The default TLS backend is rustls and encryption support is enabled by default.
+Create one `Sockudo` value at startup and share it with application state; its
+HTTP client is designed for reuse.
+
+Important builder options include `timeout`, `pool_max_idle_per_host`,
+`enable_retry`, and `max_retries`. Use TLS outside local development and set
+the SDK timeout below the surrounding request or job deadline.
 
 ## Publish
 
 ```rust
 use sockudo_http::{events::TriggerParams, Channel};
-use serde_json::json;
+use sonic_rs::json;
 
 let channels = vec![Channel::from_string("orders")?];
 let params = TriggerParams::builder()
@@ -46,10 +54,33 @@ sockudo
     .await?;
 ```
 
+Exclude an originating socket and attach a stable idempotency key with
+`TriggerParams`:
+
+```rust
+let params = TriggerParams::builder()
+    .socket_id("123.456")
+    .idempotency_key("order-paid:ord_123:v3")
+    .build();
+
+sockudo
+    .trigger(
+        &channels,
+        "order.updated",
+        json!({ "id": "ord_123", "status": "paid" }),
+        Some(params),
+    )
+    .await?;
+```
+
+Use a business-derived idempotency key for any operation that may be retried.
+Do not generate a new key on each attempt.
+
 ## Batch and tags
 
 ```rust
 use sockudo_http::events::BatchEvent;
+use sonic_rs::json;
 use std::collections::HashMap;
 
 let mut tags = HashMap::new();
@@ -61,10 +92,109 @@ let event = BatchEvent::new("order.created", "orders", json!({ "id": "ord_124" }
 sockudo.trigger_batch(vec![event]).await?;
 ```
 
+Tags are strings and require server-side tag filtering to be enabled. Avoid
+putting secrets or high-cardinality unbounded data in tags.
+
+## Channel and user authentication
+
+Perform application authorization before asking the SDK to sign:
+
+```rust
+use sockudo_http::{Channel, SockudoError};
+use sonic_rs::json;
+
+fn authorize_private(
+    sockudo: &Sockudo,
+    socket_id: &str,
+    channel_name: &str,
+) -> Result<sockudo_http::SocketAuth, SockudoError> {
+    let channel = Channel::from_string(channel_name)?;
+    sockudo.authorize_channel(socket_id, &channel, None)
+}
+
+let presence = Channel::from_string("presence-lobby")?;
+let member = json!({
+    "user_id": "user-42",
+    "user_info": { "name": "Ada" }
+});
+let auth = sockudo.authorize_channel("123.456", &presence, Some(&member))?;
+```
+
+The HTTP handler must derive channel access and presence identity from its
+authenticated session. For user-targeted events, use `authenticate_user` and
+`send_to_user`; use `terminate_user_connections` or `force_reconnect_user`
+when access changes.
+
+## History and pagination
+
+```rust
+use sockudo_http::HistoryParams;
+
+let page = sockudo
+    .channel_history_with_name(
+        "orders",
+        Some(&HistoryParams {
+            limit: Some(50),
+            direction: Some("newest_first".to_owned()),
+            ..Default::default()
+        }),
+    )
+    .await?;
+
+if let Some(cursor) = page.next_cursor {
+    let next_page = sockudo
+        .channel_history_with_name(
+            "orders",
+            Some(&HistoryParams {
+                cursor: Some(cursor),
+                ..Default::default()
+            }),
+        )
+        .await?;
+    process_history(next_page)?;
+}
+```
+
+Keep pages bounded and treat the cursor as opaque. Presence history and
+snapshots use the corresponding typed parameter structs.
+
+## Webhooks
+
+Validate the signature against the unchanged request body before processing
+events:
+
+```rust
+use std::collections::BTreeMap;
+
+fn verified_events(
+    sockudo: &Sockudo,
+    headers: &BTreeMap<String, String>,
+    raw_body: &str,
+) -> Result<Vec<sockudo_http::WebhookEvent>, SockudoError> {
+    let webhook = sockudo.webhook(headers, raw_body);
+    if !webhook.is_valid(None) {
+        return Err(SockudoError::Validation {
+            message: "invalid webhook signature".to_owned(),
+        });
+    }
+    Ok(webhook.get_events()?)
+}
+```
+
+Do not deserialize, normalize, or log the body before verification. Enqueue
+validated events and acknowledge quickly.
+
+## End-to-end encrypted channels
+
+Set `encryption_master_key_base64` on the config builder and publish to a
+`private-encrypted-*` channel. The SDK encrypts the event and returns a derived
+shared secret during channel auth. Keep the 32-byte master key in a secret
+manager and continue to use TLS.
+
 ## Push notifications
 
 ```rust
-use serde_json::json;
+use sonic_rs::json;
 
 sockudo.activate_device(&json!({
     "deviceId": "ios-device-1",
@@ -90,3 +220,28 @@ let response = sockudo.publish_push(&json!({
 ```
 
 Use Rust SDK push helpers for backend services that already own transactional state and need typed error handling around notification fanout.
+
+## Errors, retries, and graceful shutdown
+
+All fallible methods return `Result<T, SockudoError>`. Match the error category
+when policy differs:
+
+```rust
+match sockudo
+    .trigger(&channels, "order.created", payload, Some(params))
+    .await
+{
+    Ok(response) => record_status(response.status()),
+    Err(SockudoError::Request(error)) => schedule_retry(error)?,
+    Err(SockudoError::Validation { message }) => {
+        tracing::warn!(error = %message, "sockudo publish rejected");
+    }
+    Err(error) => return Err(error),
+}
+```
+
+Retries must be bounded and use an idempotency key. Share the SDK client rather
+than constructing it per request, do not hold application locks across
+`.await`, and use your service's cancellation mechanism to stop accepting new
+jobs before shutdown. Never log signed URLs, app secrets, event payloads, or
+raw webhook content.

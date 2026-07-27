@@ -1,6 +1,6 @@
 ---
 title: Realtime clients
-description: Choose the official Sockudo realtime client SDK for web, mobile, desktop, Flutter, Kotlin, Swift, JavaScript, or .NET.
+description: Choose and operate an official Sockudo realtime client for web, mobile, desktop, Python, and backend WebSocket consumers.
 icon: Smartphone
 ---
 
@@ -15,11 +15,25 @@ archived/legacy mirrors.
 | --- | --- | --- | --- |
 | JavaScript / TypeScript | `@sockudo/client` | Web, Node, worker, React, Vue, React Native, NativeScript | Protocol V1 compatibility |
 | Swift | `SockudoSwift` via SwiftPM | iOS, macOS, tvOS, watchOS, visionOS | Protocol V1 compatibility |
-| Kotlin | `io.sockudo:sockudo-kotlin` | Android and JVM | Protocol V1 compatibility |
+| Kotlin | `io.sockudo:sockudo-kotlin` | Android and JVM | Protocol V2 by default |
 | Flutter / Dart | `sockudo_flutter` | Flutter and Dart | Protocol V1 compatibility |
 | .NET realtime | `Sockudo.Client` | .NET apps | Protocol V2 by default |
+| Python realtime | `sockudo-python` | Python 3.10+ and asyncio | Protocol V2 by default |
 
 Use Protocol V1 when migrating existing Pusher clients. Use Protocol V2 for recovery, rewind, delta compression, tag filters, mutable messages, annotations, and native Sockudo metadata.
+
+The realtime and HTTP SDKs have different trust boundaries. Realtime clients
+hold only the public app key and maintain WebSocket subscriptions. Server SDKs
+hold the app secret, publish over HTTP, authorize protected subscriptions, and
+validate webhooks. For Python and .NET in particular, make sure you choose the
+package whose role matches your process.
+
+| Language | Realtime package | Trusted HTTP package |
+| --- | --- | --- |
+| JavaScript / TypeScript | `@sockudo/client` | `sockudo` |
+| Python | `sockudo-python` | `sockudo-http-python` |
+| .NET | `Sockudo.Client` | `SockudoServer` |
+| Swift | `SockudoSwift` | `Sockudo` server package |
 
 ## Client responsibilities
 
@@ -31,6 +45,9 @@ Client SDKs should:
 - bind events and update UI state
 - store recovery positions when V2 recovery is enabled
 - register devices for push through trusted backend endpoints
+
+They should never contain the app secret, provider credentials, an encryption
+master key, or an unrestricted capability token.
 
 ## Server responsibilities
 
@@ -52,6 +69,68 @@ const client = new Sockudo("app-key", {
   connectionRecovery: true,
 });
 ```
+
+Use this sequence in every client:
+
+1. Construct one long-lived client with your public key and public WebSocket
+   endpoint.
+2. Bind connection diagnostics and event handlers.
+3. Subscribe to channels, using a backend auth endpoint for protected names.
+4. Connect and let the SDK resubscribe after transient failures.
+5. If recovery fails, replace derived state from an authoritative snapshot.
+6. Unbind or unsubscribe when a screen or worker no longer needs a channel.
+7. Disconnect during application shutdown.
+
+## Choosing features
+
+| Requirement | Client setting or API | Backend requirement |
+| --- | --- | --- |
+| Pusher migration | Protocol V1 | Pusher-compatible app config |
+| Resume after a short outage | Protocol V2 recovery | Durable or hot recovery configured |
+| Initial backlog | Subscription rewind | History enabled with suitable retention |
+| Gap-free late join | History with `until_attach` | Authorized history proxy |
+| Lower high-volume bandwidth | Tag filters and delta compression | V2 filtering/delta enabled |
+| Private data | Private channel auth | Session-aware auth endpoint |
+| End-to-end content encryption | `private-encrypted-*` | Shared-secret auth and key management |
+| User-targeted events | User sign-in | User auth endpoint |
+| Mobile notifications | Provider token collection | Push registration and publish backend |
+
+## Connection and state model
+
+A successful WebSocket connection does not mean every channel is subscribed.
+Wait for each channel's subscription-success event before treating its state as
+live. During reconnect, keep the last rendered state but mark it stale. After a
+successful resume, continue from the recovered serial; after a failed resume,
+discard derived state and fetch a fresh snapshot.
+
+Event handlers should be idempotent. Network reconnects, application retries,
+and upstream publishing workflows can all repeat logical work even when the
+client deduplicates messages by `message_id`.
+
+## Protected-channel auth flow
+
+```text
+client -> your backend: socket_id + requested channel
+your backend: authenticate session and authorize that exact channel
+your backend -> client: short-lived signed auth response
+client -> Sockudo: subscribe with auth response
+```
+
+Do not implement an auth endpoint that signs every requested channel. Validate
+tenant ownership, resource access, and presence identity before signing. For
+encrypted channels, return only the derived channel shared secret—not the
+encryption master key.
+
+## Production checklist
+
+- Terminate TLS at Sockudo or a load balancer and use `wss://`.
+- Keep a single client per app or process unless isolation is intentional.
+- Observe connected, unavailable, failed, and reconnecting states.
+- Set auth and proxy request timeouts; handle `401`, `403`, and `429`
+  separately from transport failures.
+- Bound rewind and history page sizes.
+- Test a rolling restart, network interruption, auth expiry, and resume failure.
+- Unsubscribe and unbind handlers when views or jobs end.
 
 ## Push from clients
 
@@ -77,4 +156,5 @@ await fetch("/api/push/devices", {
   <Card title="Kotlin" href="/docs/clients/kotlin" description="Android and JVM WebSocket client examples." />
   <Card title="Flutter" href="/docs/clients/flutter" description="Flutter and pure Dart client examples." />
   <Card title=".NET realtime" href="/docs/clients/dotnet" description="Protocol V2 by default for .NET applications." />
+  <Card title="Python realtime" href="/docs/clients/python" description="Asyncio client for services, agents, workers, and CLIs." />
 </Cards>

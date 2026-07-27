@@ -29,13 +29,31 @@ var client = sockudo.Client{
 }
 ```
 
+Reuse the client for the lifetime of the process. Configure a custom
+`http.Client` to set the overall deadline and preserve connection pooling:
+
+```go
+client.HTTPClient = &http.Client{
+    Timeout: 5 * time.Second,
+    Transport: &http.Transport{
+        MaxIdleConns:        100,
+        MaxIdleConnsPerHost: 20,
+        IdleConnTimeout:     90 * time.Second,
+    },
+}
+```
+
+The default client timeout is five seconds. Set `Secure: true` for HTTPS in
+production. `ClientFromURL` and `ClientFromEnv("SOCKUDO_URL")` are convenient,
+but connection URLs contain credentials and must not be logged.
+
 ## Publish
 
 ```go
 data := map[string]string{"id": "ord_123"}
 key := "order-created-ord_123"
 
-err := client.TriggerWithParams(
+_, err := client.TriggerWithParams(
     "orders",
     "order.created",
     data,
@@ -46,11 +64,40 @@ if err != nil {
 }
 ```
 
+Publish the same event to multiple channels with `TriggerMulti`, batch
+independent events with `TriggerBatch`, and exclude an originating socket with
+`TriggerParams.SocketID`:
+
+```go
+socketID := "123.456"
+key := "order-paid:ord_123:v3"
+
+_, err := client.TriggerWithParams(
+    "orders",
+    "order.updated",
+    map[string]string{"id": "ord_123", "status": "paid"},
+    sockudo.TriggerParams{
+        SocketID:       &socketID,
+        IdempotencyKey: &key,
+    },
+)
+if err != nil {
+    return err
+}
+```
+
+Use a stable idempotency key for any publish a worker or HTTP handler may retry.
+Do not generate a new key for each attempt.
+
 ## Auth endpoint
 
 ```go
 func sockudoAuth(res http.ResponseWriter, req *http.Request) {
     params, _ := io.ReadAll(req.Body)
+    if !currentUserCanAccess(req.Context(), requestedChannel(params)) {
+        http.Error(res, "forbidden", http.StatusForbidden)
+        return
+    }
     response, err := client.AuthorizePrivateChannel(params)
     if err != nil {
         http.Error(res, "unauthorized", http.StatusUnauthorized)
@@ -72,6 +119,67 @@ member := sockudo.MemberData{
 
 response, err := client.AuthorizePresenceChannel(params, member)
 ```
+
+The SDK signs the form body; your handler still owns session authentication and
+channel authorization. Populate `MemberData` from trusted application state.
+Use `AuthenticateUser` for user-targeted events, then
+`TerminateUserConnections` or `ForceReconnectUser` when access changes.
+
+## State and history
+
+```go
+prefix := "presence-"
+info := "user_count"
+channels, err := client.Channels(sockudo.ChannelsParams{
+    FilterByPrefix: &prefix,
+    Info:           &info,
+})
+if err != nil {
+    return err
+}
+
+users, err := client.GetChannelUsers("presence-lobby")
+
+limit := 50
+direction := "newest_first"
+page, err := client.ChannelHistory("orders", sockudo.HistoryParams{
+    Limit:     &limit,
+    Direction: &direction,
+})
+```
+
+State is an operational snapshot, not an authorization source. History cursors
+are opaque and must be passed to the next call unchanged.
+
+## Webhooks
+
+Read and preserve the exact body bytes for signature validation:
+
+```go
+body, err := io.ReadAll(req.Body)
+if err != nil {
+    http.Error(res, "invalid body", http.StatusBadRequest)
+    return
+}
+
+webhook, err := client.Webhook(req.Header, body)
+if err != nil {
+    http.Error(res, "invalid signature", http.StatusUnauthorized)
+    return
+}
+
+enqueueWebhookEvents(webhook.Events)
+res.WriteHeader(http.StatusAccepted)
+```
+
+Do not decode the JSON first or log the raw body and signature.
+
+## End-to-end encrypted channels
+
+Set `EncryptionMasterKeyBase64` to a base64-encoded 32-byte key and publish only
+to `private-encrypted-*` names. The server SDK encrypts payloads and produces
+the shared secret during channel auth. Keep the master key in a secret manager
+and do not mix encrypted and unencrypted channels in one logical publish.
 
 ## Push notifications
 
@@ -104,3 +212,19 @@ _ = accepted
 ```
 
 The Go push helpers sign `/push/*` requests and force async publish behavior.
+
+## Errors and production guidance
+
+Every network operation returns an `error`; check it before using the response.
+Retry only transient network errors, `429`, and suitable server failures with
+bounded exponential backoff. Because an HTTP error can be ambiguous after the
+server accepted a request, every retried publish needs an idempotency key.
+
+- Reuse one `Client` and one tuned `http.Client`.
+- Set a timeout below the enclosing request or job deadline.
+- Pass request-scoped cancellation through your own surrounding workflow.
+- Keep credentials, signed URLs, provider tokens, and raw webhook content out
+  of logs.
+- Bound channel-history page sizes and validate all auth endpoint input.
+- Test duplicate attempts, key rotation, network interruption, and graceful
+  worker shutdown.

@@ -25,6 +25,29 @@ $sockudo = new Sockudo([
 ]);
 ```
 
+Create the client once in your framework service container and reuse it. The
+important options are:
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `host` | `127.0.0.1` | Sockudo HTTP API host |
+| `port` | `6001` | HTTP API port |
+| `useTLS` / `scheme` | `false` / `http` | Select HTTPS in production |
+| `timeout` | `30` seconds | Bound each request |
+| `path` | none | Optional reverse-proxy path prefix |
+
+Inject a configured Guzzle client when you need keep-alive, proxy, middleware,
+or retry policy:
+
+```php
+$http = new GuzzleHttp\Client([
+    'timeout' => 5.0,
+    'connect_timeout' => 2.0,
+]);
+
+$sockudo = new Sockudo($config, $http);
+```
+
 ## Publish
 
 ```php
@@ -38,6 +61,26 @@ $sockudo->triggerBatch([
 ]);
 ```
 
+Publish the same event to multiple channels with an array, and exclude the
+originating connection when it already applied the change:
+
+```php
+$sockudo->trigger(
+    ['tenant-42:orders', 'user-7:orders'],
+    'order.updated',
+    ['id' => 'ord_123', 'status' => 'paid'],
+    [
+        'socket_id' => '123.456',
+        'idempotency_key' => 'order-paid:ord_123:v3',
+    ],
+);
+```
+
+A batch accepts up to 10 events. Use `triggerAsync` or `triggerBatchAsync` when
+the surrounding runtime can compose Guzzle promises; calling `wait()` makes the
+operation synchronous again. Every retryable publish needs a stable,
+business-derived idempotency key.
+
 ## Auth
 
 ```php
@@ -50,6 +93,49 @@ $presence = $sockudo->authorizePresenceChannel(
     ['name' => 'Ada']
 );
 ```
+
+These methods sign a response; they do not decide whether a user may access a
+channel. Authenticate the session, validate the exact channel, and derive
+presence identity before calling them. Use `authenticateUser` for
+user-targeted events and `forceReconnectUser` when a user's permissions change.
+
+## Webhooks
+
+Pass the exact request headers and raw body to the SDK before JSON decoding:
+
+```php
+try {
+    $webhook = $sockudo->webhook($requestHeaders, $rawBody);
+    foreach ($webhook->get_events() as $event) {
+        enqueueWebhookEvent($event);
+    }
+} catch (\Sockudo\SockudoException $error) {
+    return response('invalid signature', 401);
+}
+```
+
+Signature failure throws. Do not normalize or log the body before validation.
+
+## State and history
+
+```php
+$channels = $sockudo->getChannels([
+    'filter_by_prefix' => 'presence-',
+    'info' => 'user_count',
+]);
+$users = $sockudo->getPresenceUsers('presence-lobby');
+
+$page = $sockudo->getChannelHistory('orders', [
+    'limit' => 50,
+    'direction' => 'newest_first',
+]);
+$next = $sockudo->getChannelHistory('orders', [
+    'cursor' => $page->next_cursor,
+]);
+```
+
+Treat application state as an operational snapshot. Keep history pages bounded
+and pass cursors back unchanged.
 
 ## Laravel broadcasting
 
@@ -67,6 +153,10 @@ $presence = $sockudo->authorizePresenceChannel(
     ],
 ],
 ```
+
+Store these values in Laravel's environment/secret configuration and enable
+TLS when the HTTP API crosses an untrusted network. Laravel broadcasting still
+uses your application authorization routes for private and presence channels.
 
 ## Push notifications
 
@@ -99,3 +189,21 @@ $status = $sockudo->getPublishStatus($accepted->publish_id);
 ```
 
 Push publishing is asynchronous by default. Use status APIs and provider callbacks for delivery diagnostics.
+
+## Logging, errors, and retries
+
+The client implements `Psr\Log\LoggerAwareInterface`, so attach the
+application's PSR-3 logger with `setLogger()`. Do not log request bodies,
+provider tokens, signed URLs, or credentials.
+
+Catch `ApiErrorException` for non-success API responses and
+`SockudoException` for SDK validation/configuration failures. Retry only
+transient network failures, `429`, and suitable `5xx` responses with bounded
+backoff. Retried publishes must retain their original idempotency key.
+
+- Reuse the SDK and Guzzle clients from the service container.
+- Keep the SDK timeout below the PHP request or queue-job timeout.
+- Move large batches and push fanout to queue workers.
+- Rate-limit and authorize auth/history endpoints.
+- Test duplicate attempts, queue retries, credential rotation, and worker
+  shutdown.

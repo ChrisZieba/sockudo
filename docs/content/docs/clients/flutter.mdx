@@ -6,6 +6,10 @@ icon: Smartphone
 
 `sockudo_flutter` is the official Flutter and Dart realtime SDK. It supports public, private, presence, encrypted channels, auth, V2 recovery, rewind, filters, deltas, mutable messages, presence history proxies, and push registration workflows.
 
+The current package requires Dart 3.11.3+ and Flutter 3.35+ when used in a
+Flutter application. Protocol V1 compatibility is the default; opt into
+Protocol V2 for Sockudo-native features.
+
 ## Install
 
 Install the published package from `pub.dev`:
@@ -45,6 +49,34 @@ channel.bind('price-updated', (data, _) {
 client.connect();
 ```
 
+Use a public load-balancer or ingress hostname with `forceTls: true` in
+production. Create the client in an application-scoped service rather than in a
+widget's `build` method.
+
+## Lifecycle and cleanup
+
+Keep binding tokens when a widget or controller needs to remove a specific
+handler:
+
+```dart
+final stateToken = client.bind('state_change', (change, _) {
+  print('connection: $change');
+});
+final orderToken = channel.bind('order.created', (data, _) {
+  print(data);
+});
+
+channel.unbind(eventName: 'order.created', token: orderToken);
+client.unbind(eventName: 'state_change', token: stateToken);
+client.unsubscribe('public-updates');
+client.disconnect();
+```
+
+Wait for the channel subscription-success event before treating its data as
+live. Unsubscribe in the owning service or controller's disposal path, and
+disconnect on explicit sign-out or process shutdown. Let the SDK handle
+temporary transport failures and resubscription.
+
 ## Auth
 
 ```dart
@@ -61,6 +93,43 @@ final client = SockudoClient(
   ),
 );
 ```
+
+The endpoint must authenticate the user and authorize the exact requested
+channel. Presence identity comes from the backend session, not from an
+untrusted request field.
+
+Protocol V2 can use a scoped capability token and async refresh callback:
+
+```dart
+final client = SockudoClient(
+  'app-key',
+  SockudoOptions(
+    cluster: 'local',
+    protocolVersion: 2,
+    wsHost: 'realtime.example.com',
+    forceTls: true,
+    token: initialToken,
+    authCallback: () async => fetchFreshSockudoToken(),
+  ),
+);
+```
+
+JWTs with expiry metadata refresh proactively. Opaque tokens depend on the
+server's expiration event.
+
+## Presence
+
+```dart
+final presence = client.subscribe('presence-lobby') as PresenceChannel;
+
+presence.bind('sockudo:member_added', (member, _) => print('joined: $member'));
+presence.bind('sockudo:member_removed', (member, _) => print('left: $member'));
+presence.bind('sockudo:presence_update', (member, _) => print('updated: $member'));
+
+presence.update(<String, Object?>{'status': 'editing'});
+```
+
+V2 presence updates modify member data without a leave and rejoin cycle.
 
 ## Filters and deltas
 
@@ -110,6 +179,24 @@ channel.bindGlobal((eventName, data) {
 });
 ```
 
+Configure `versionedMessages` with a trusted backend endpoint to create,
+append, update, or delete messages:
+
+```dart
+final created = await channel.createMessage(
+  const VersionedMessageCreateRequest(data: 'hello'),
+);
+await channel.appendMessage(created.messageSerial, ' world');
+await channel.updateMessage(
+  created.messageSerial,
+  const VersionedMessageMutation(data: <String, Object?>{'text': 'edited'}),
+);
+await channel.deleteMessage(created.messageSerial);
+```
+
+Apply mutation events in serial order. If an append arrives before its base,
+fetch the latest visible message through the proxy first.
+
 ## Presence history proxy
 
 ```dart
@@ -132,6 +219,23 @@ final page = await channel.history(
 );
 ```
 
+The history proxy owns the app secret, authenticates the caller, checks channel
+access, and forwards opaque pagination cursors. Use channel history with
+`untilAttach: true` for a gap-free late join.
+
+## Encrypted channels
+
+`private-encrypted-*` channels decrypt automatically when protected-channel
+authorization returns the derived `sharedSecret`:
+
+```dart
+final encrypted = client.subscribe('private-encrypted-documents');
+encrypted.bind('doc-updated', (payload, _) => print(payload));
+```
+
+Keep the encryption master key on the backend. End-to-end encryption does not
+replace TLS or channel authorization.
+
 ## Push registration
 
 Use a platform push plugin to get the provider token, then send the token to your backend.
@@ -151,3 +255,18 @@ await http.post(
 ```
 
 The backend registers the device with Sockudo and enforces user ownership.
+
+## Production checklist
+
+- Scope the client above individual widgets and avoid reconnecting on rebuild.
+- Remove bindings and subscriptions when their lifecycle owner is disposed.
+- Keep event callbacks fast and move blocking work to an isolate or async
+  service.
+- On `sockudo:resume_failed`, discard derived state and load an authoritative
+  snapshot.
+- Protect and rate-limit auth, history, mutable-message, and push proxy
+  endpoints.
+- Refresh provider tokens through the backend and associate them with the
+  authenticated user.
+- Test background/foreground transitions, offline recovery, token expiry, and
+  application process recreation.
