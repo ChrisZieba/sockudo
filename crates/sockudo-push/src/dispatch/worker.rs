@@ -109,17 +109,15 @@ impl ProviderDispatchWorker {
     }
 
     async fn handle_message(&mut self, message: QueueMessage) -> PushPipelineResult<()> {
-        let PushQueuePayload::DeliveryBatch(batch) = message.payload.clone() else {
+        let QueueMessage { payload, ack, .. } = message;
+        let PushQueuePayload::DeliveryBatch(batch) = payload else {
             self.queue
-                .dead_letter(
-                    message.ack,
-                    "unexpected payload for provider worker".to_owned(),
-                )
+                .dead_letter(ack, "unexpected payload for provider worker".to_owned())
                 .await?;
             return Ok(());
         };
         let batch = *batch;
-        let Some(batch) = self.preflight_batch(message.ack.clone(), batch).await? else {
+        let Some(batch) = self.preflight_batch(ack.clone(), batch).await? else {
             return Ok(());
         };
         let app_id = batch.app_id.clone();
@@ -138,10 +136,7 @@ impl ProviderDispatchWorker {
             self.metrics
                 .circuit_breaker_state(self.provider, &app_id, true);
             self.queue
-                .nack(
-                    message.ack,
-                    Some(self.circuit_breaker.retry_after_ms(now_ms())),
-                )
+                .nack(ack, Some(self.circuit_breaker.retry_after_ms(now_ms())))
                 .await?;
             return Ok(());
         }
@@ -149,7 +144,7 @@ impl ProviderDispatchWorker {
         if !self.rate_limiter.acquire(&app_id, self.provider) {
             self.metrics.rate_limiter_throttled(self.provider, &app_id);
             self.queue
-                .nack(message.ack, Some(now_ms().saturating_add(1_000)))
+                .nack(ack, Some(now_ms().saturating_add(1_000)))
                 .await?;
             return Ok(());
         }
@@ -166,8 +161,15 @@ impl ProviderDispatchWorker {
             batch_id,
             jobs,
         } = batch;
-        for chunk in jobs.chunks(self.max_outbound_requests) {
-            let chunk_jobs = chunk.to_vec();
+        let mut jobs = jobs.into_iter();
+        loop {
+            let chunk_jobs = jobs
+                .by_ref()
+                .take(self.max_outbound_requests)
+                .collect::<Vec<_>>();
+            if chunk_jobs.is_empty() {
+                break;
+            }
             self.metrics
                 .worker_pool(self.provider, self.max_outbound_requests, chunk_jobs.len());
             let mut original_jobs = chunk_jobs.clone().into_iter();
@@ -257,7 +259,7 @@ impl ProviderDispatchWorker {
         self.rate_limiter.release(&app_id, self.provider);
         self.metrics
             .worker_pool(self.provider, self.max_outbound_requests, 0);
-        self.queue.ack(message.ack).await?;
+        self.queue.ack(ack).await?;
         Ok(())
     }
 
@@ -353,7 +355,7 @@ impl ProviderDispatchWorker {
         }
         let batch_id = format!("{original_batch_id}-deferred-{not_before_ms}");
         for job in &mut jobs {
-            job.batch_id = batch_id.clone();
+            job.batch_id.clone_from(&batch_id);
         }
         let batch = DeliveryBatch {
             app_id: app_id.to_owned(),

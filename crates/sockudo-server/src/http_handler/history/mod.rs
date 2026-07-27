@@ -251,7 +251,7 @@ pub async fn channel_history(
                         }
                         let latest_message = build_versioned_realtime_message(latest);
                         let latest_bytes = sonic_rs::to_vec(&latest_message)?;
-                        event_name = latest_message.message.event.clone();
+                        event_name.clone_from(&latest_message.message.event);
                         operation_kind = latest_message.action.as_str().to_string();
                         payload_size_bytes = latest_bytes.len();
                         sonic_rs::to_value(&latest_message)?

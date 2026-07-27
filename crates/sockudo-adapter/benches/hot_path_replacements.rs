@@ -1,15 +1,147 @@
 use ahash::{AHashMap, AHasher, RandomState as AHashRandomState};
+use bytes::Bytes;
 use compact_str::{CompactString, format_compact};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use dashmap::DashMap;
 use papaya::HashMap as PapayaHashMap;
 use parking_lot::Mutex as ParkingMutex;
 use scc::{HashIndex as SccHashIndex, HashMap as SccHashMap};
+use sockudo_protocol::messages::PusherMessage;
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::hint::black_box;
-use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex as StdMutex, Once};
 use std::thread;
+
+struct CountingAllocator;
+
+static TRACK_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
+static ALLOCATION_COUNT: AtomicU64 = AtomicU64::new(0);
+static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
+static FANOUT_ALLOCATION_REPORT: Once = Once::new();
+
+// SAFETY: every allocation operation delegates to the process system allocator.
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller provided a valid allocation layout.
+        let pointer = unsafe { System.alloc(layout) };
+        if !pointer.is_null() && TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
+            ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            ALLOCATED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+        }
+        pointer
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        // SAFETY: the pointer and layout came from the delegated system allocator.
+        unsafe { System.dealloc(pointer, layout) };
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: the pointer and layout came from the delegated system allocator.
+        let pointer = unsafe { System.realloc(pointer, layout, new_size) };
+        if !pointer.is_null() && TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
+            ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            ALLOCATED_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
+        }
+        pointer
+    }
+}
+
+#[global_allocator]
+static GLOBAL_ALLOCATOR: CountingAllocator = CountingAllocator;
+
+fn measure_allocations<T>(operation: impl FnOnce() -> T) -> (T, u64, u64) {
+    TRACK_ALLOCATIONS.store(false, Ordering::SeqCst);
+    ALLOCATION_COUNT.store(0, Ordering::SeqCst);
+    ALLOCATED_BYTES.store(0, Ordering::SeqCst);
+    TRACK_ALLOCATIONS.store(true, Ordering::SeqCst);
+    let result = operation();
+    TRACK_ALLOCATIONS.store(false, Ordering::SeqCst);
+    (
+        result,
+        ALLOCATION_COUNT.load(Ordering::SeqCst),
+        ALLOCATED_BYTES.load(Ordering::SeqCst),
+    )
+}
+
+fn fanout_message(payload_bytes: usize) -> PusherMessage {
+    PusherMessage::channel_event(
+        "message",
+        "bench-channel",
+        sonic_rs::json!({"payload": "x".repeat(payload_bytes)}),
+    )
+}
+
+fn legacy_protocol_fanout(message: &PusherMessage, sockets: usize) -> usize {
+    (0..sockets)
+        .map(|_| {
+            let socket_message = message.clone();
+            sonic_rs::to_vec(&socket_message).unwrap().len()
+        })
+        .sum()
+}
+
+fn serialized_bytes_fanout(message: &PusherMessage, sockets: usize) -> usize {
+    let bytes = Bytes::from(sonic_rs::to_vec(message).unwrap());
+    (0..sockets)
+        .map(|_| {
+            let socket_bytes = bytes.clone();
+            socket_bytes.len()
+        })
+        .sum()
+}
+
+fn bench_serialized_fanout(c: &mut Criterion) {
+    FANOUT_ALLOCATION_REPORT.call_once(|| {
+        let message = fanout_message(64 * 1024);
+        let (_, legacy_allocations, legacy_bytes) =
+            measure_allocations(|| legacy_protocol_fanout(&message, 1_000));
+        let (_, shared_allocations, shared_bytes) =
+            measure_allocations(|| serialized_bytes_fanout(&message, 1_000));
+        eprintln!(
+            "allocation_profile name=adapter_v2_fanout_1000x64k variant=legacy allocations={legacy_allocations} allocated_bytes={legacy_bytes}"
+        );
+        eprintln!(
+            "allocation_profile name=adapter_v2_fanout_1000x64k variant=shared_bytes allocations={shared_allocations} allocated_bytes={shared_bytes}"
+        );
+    });
+
+    let mut group = c.benchmark_group("adapter_v2_serialized_fanout");
+    for payload_bytes in [1_024_usize, 64 * 1_024] {
+        let message = fanout_message(payload_bytes);
+        for sockets in [1_usize, 100, 1_000] {
+            group.throughput(Throughput::Elements(sockets as u64));
+            group.bench_with_input(
+                BenchmarkId::new(format!("legacy_{payload_bytes}b"), sockets),
+                &sockets,
+                |b, &sockets| {
+                    b.iter(|| {
+                        black_box(legacy_protocol_fanout(
+                            black_box(&message),
+                            black_box(sockets),
+                        ))
+                    })
+                },
+            );
+            group.bench_with_input(
+                BenchmarkId::new(format!("shared_bytes_{payload_bytes}b"), sockets),
+                &sockets,
+                |b, &sockets| {
+                    b.iter(|| {
+                        black_box(serialized_bytes_fanout(
+                            black_box(&message),
+                            black_box(sockets),
+                        ))
+                    })
+                },
+            );
+        }
+    }
+    group.finish();
+}
 
 fn hash_with_default(payload: &[u8]) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -850,6 +982,7 @@ criterion_group!(
     bench_replay_lock_store,
     bench_compact_string_candidates,
     bench_concurrent_map_candidates,
-    bench_subscription_count_notification_plans
+    bench_subscription_count_notification_plans,
+    bench_serialized_fanout
 );
 criterion_main!(benches);

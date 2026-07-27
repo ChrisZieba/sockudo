@@ -830,7 +830,7 @@ mod tests {
             request_timeout_ms: None,
         };
 
-        let webhooks = [prefixed.clone(), catch_all.clone()];
+        let webhooks = [prefixed, catch_all];
         let relevant = webhook_sender.find_relevant_webhooks(
             &[
                 sonic_rs::json!({

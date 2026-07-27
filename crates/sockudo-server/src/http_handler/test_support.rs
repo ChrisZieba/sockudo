@@ -501,7 +501,7 @@ pub(crate) fn test_realtime_handler_harness() -> (Arc<ConnectionHandler>, Arc<Me
     let app_manager = Arc::new(MemoryAppManager::new());
     let adapter = Arc::new(LocalAdapter::new());
     let app_manager_dyn = app_manager.clone() as Arc<dyn AppManager + Send + Sync>;
-    let adapter_dyn = adapter.clone() as Arc<dyn sockudo_adapter::ConnectionManager + Send + Sync>;
+    let adapter_dyn = adapter as Arc<dyn sockudo_adapter::ConnectionManager + Send + Sync>;
     let cache = Arc::new(MemoryCacheManager::new(
         "test".to_string(),
         MemoryCacheOptions::default(),

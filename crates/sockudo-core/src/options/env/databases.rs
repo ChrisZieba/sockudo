@@ -143,14 +143,19 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
             .map(ToString::to_string)
             .collect();
 
-        options.adapter.cluster.nodes = node_list.clone();
-        options.queue.redis_cluster.nodes = node_list.clone();
+        options.adapter.cluster.nodes.clone_from(&node_list);
+        options.queue.redis_cluster.nodes.clone_from(&node_list);
 
         let parsed_nodes: Vec<ClusterNode> = node_list
             .iter()
             .filter_map(|seed| ClusterNode::from_seed(seed))
             .collect();
-        options.database.redis.cluster.nodes = parsed_nodes.clone();
+        options
+            .database
+            .redis
+            .cluster
+            .nodes
+            .clone_from(&parsed_nodes);
         options.database.redis.cluster_nodes = parsed_nodes;
     };
 

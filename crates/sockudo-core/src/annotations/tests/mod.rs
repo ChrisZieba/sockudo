@@ -1,6 +1,7 @@
 use super::*;
 use crate::versioned_messages::MessageSerial;
 use sonic_rs::json;
+use std::sync::Arc;
 
 fn annotation_type(value: &str) -> AnnotationType {
     AnnotationType::new(value).unwrap()
@@ -763,13 +764,17 @@ async fn memory_store_get_projection_repairs_stale_watermark() {
     let projection_key = MemoryAnnotationStore::event_projection_key(&late_event);
     let channel_key =
         MemoryAnnotationStore::channel_key(&late_event.app_id, &late_event.channel_id);
+    let late_event = Arc::new(late_event);
     {
         let mut state = store.state.write().await;
         state
             .events_by_projection
             .entry(projection_key)
             .or_default()
-            .insert(late_event.annotation_serial().clone(), late_event.clone());
+            .insert(
+                late_event.annotation_serial().clone(),
+                Arc::clone(&late_event),
+            );
         state
             .raw_by_channel
             .entry(channel_key)
@@ -804,13 +809,14 @@ async fn memory_store_list_projections_rebuilds_cold_projection_cache() {
     );
     let projection_key = MemoryAnnotationStore::event_projection_key(&event);
     let channel_key = MemoryAnnotationStore::channel_key(&event.app_id, &event.channel_id);
+    let event = Arc::new(event);
     {
         let mut state = store.state.write().await;
         state
             .events_by_projection
             .entry(projection_key)
             .or_default()
-            .insert(event.annotation_serial().clone(), event.clone());
+            .insert(event.annotation_serial().clone(), Arc::clone(&event));
         state
             .raw_by_channel
             .entry(channel_key)
@@ -848,13 +854,14 @@ async fn memory_store_reports_cold_projection_cache_rebuild_count() {
     );
     let projection_key = MemoryAnnotationStore::event_projection_key(&event);
     let channel_key = MemoryAnnotationStore::channel_key(&event.app_id, &event.channel_id);
+    let event = Arc::new(event);
     {
         let mut state = store.state.write().await;
         state
             .events_by_projection
             .entry(projection_key)
             .or_default()
-            .insert(event.annotation_serial().clone(), event.clone());
+            .insert(event.annotation_serial().clone(), Arc::clone(&event));
         state
             .raw_by_channel
             .entry(channel_key)

@@ -34,12 +34,8 @@ async fn send_v2_append_mode_groups(
             continue;
         }
         let mode_message = crate::v2_broadcast::apply_append_mode(message.clone(), append_mode);
-        let (v2_message, _v2_bytes) = crate::v2_broadcast::prepare_v2_message(mode_message)?;
-        LocalAdapter::log_send_errors(
-            adapter
-                .send_protocol_messages_concurrent(sockets, v2_message)
-                .await,
-        );
+        let (_, v2_bytes) = crate::v2_broadcast::prepare_v2_message(mode_message)?;
+        LocalAdapter::log_send_errors(adapter.send_messages_concurrent(sockets, v2_bytes).await);
     }
     Ok(())
 }

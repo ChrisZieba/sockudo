@@ -151,7 +151,7 @@ impl HistoryStore for MemoryHistoryStore {
         let mut channels = self.channels.write().await;
         let channel_state = channels.entry(key).or_default();
         if channel_state.stream_id != record.stream_id {
-            channel_state.stream_id = record.stream_id.clone();
+            channel_state.stream_id.clone_from(&record.stream_id);
         }
         channel_state.next_serial = channel_state
             .next_serial

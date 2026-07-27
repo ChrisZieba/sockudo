@@ -29,11 +29,16 @@ impl ConflationKeyCache {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn add_message(&self, content: Vec<u8>) -> Result<()> {
+        self.add_shared_message(Arc::new(content)).await
+    }
+
+    pub(crate) async fn add_shared_message(&self, content: Arc<Vec<u8>>) -> Result<()> {
         use std::sync::atomic::Ordering;
 
         let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed);
-        let msg = Arc::new(CachedMessage::new(content, sequence));
+        let msg = Arc::new(CachedMessage::new_shared(content, sequence));
 
         *self.last_message.write().await = Some(msg);
         Ok(())

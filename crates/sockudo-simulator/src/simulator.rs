@@ -853,7 +853,7 @@ impl DeterministicSimulator {
             .await?;
         self.shadow
             .channel_mut(&channel)
-            .reset_history(history.new_stream_id.clone());
+            .reset_history(history.new_stream_id);
         self.storage_visibility.reset_history(&channel);
 
         let presence = self
@@ -868,7 +868,7 @@ impl DeterministicSimulator {
             .await?;
         self.shadow
             .channel_mut(&channel)
-            .reset_presence(presence.new_stream_id.clone());
+            .reset_presence(presence.new_stream_id);
         self.storage_visibility.reset_presence(&channel);
 
         for client in &mut self.clients {

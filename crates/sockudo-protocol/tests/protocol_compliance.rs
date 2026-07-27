@@ -809,11 +809,8 @@ fn test_encrypted_channel_event_format() {
         "nonce": "random_nonce_value"
     });
 
-    let message = PusherMessage::channel_event(
-        "my-event",
-        "private-encrypted-channel",
-        encrypted_data.clone(),
-    );
+    let message =
+        PusherMessage::channel_event("my-event", "private-encrypted-channel", encrypted_data);
     let json = message_to_json(&message);
 
     // Assert event and channel fields exist and have correct values

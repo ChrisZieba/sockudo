@@ -264,7 +264,14 @@ impl VersionedMessage {
 }
 
 pub fn validate_version_chain(versions: &[VersionedMessage]) -> Result<()> {
-    let Some(first) = versions.first() else {
+    validate_version_chain_iter(versions)
+}
+
+pub(crate) fn validate_version_chain_iter<'a>(
+    versions: impl IntoIterator<Item = &'a VersionedMessage>,
+) -> Result<()> {
+    let mut versions = versions.into_iter();
+    let Some(first) = versions.next() else {
         return Err(Error::InvalidMessageFormat(
             "version chain must not be empty".to_string(),
         ));
@@ -272,11 +279,13 @@ pub fn validate_version_chain(versions: &[VersionedMessage]) -> Result<()> {
 
     let mut version_serials = HashSet::new();
     let mut delivery_serials = HashSet::new();
+    version_serials.insert(first.version.serial.as_str());
+    delivery_serials.insert(first.replay_position.delivery_serial);
 
     for version in versions {
         ensure_same_chain(first, version)?;
 
-        if !version_serials.insert(version.version.serial.as_str().to_string()) {
+        if !version_serials.insert(version.version.serial.as_str()) {
             return Err(Error::InvalidMessageFormat(format!(
                 "duplicate version_serial {} in version chain",
                 version.version.serial.as_str()
@@ -296,6 +305,13 @@ pub fn validate_version_chain(versions: &[VersionedMessage]) -> Result<()> {
 
 pub fn validate_replay_continuity(
     replay: &[VersionedMessage],
+    requested_after_serial: u64,
+) -> Result<()> {
+    validate_replay_continuity_iter(replay, requested_after_serial)
+}
+
+pub(crate) fn validate_replay_continuity_iter<'a>(
+    replay: impl IntoIterator<Item = &'a VersionedMessage>,
     requested_after_serial: u64,
 ) -> Result<()> {
     let mut expected = requested_after_serial.saturating_add(1);

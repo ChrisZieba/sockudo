@@ -76,7 +76,7 @@ async fn seed_local_user_connection(
         .or_default()
         .insert(socket_id);
 
-    namespace.sockets.insert(socket_id, ws_ref.clone());
+    namespace.sockets.insert(socket_id, ws_ref);
 
     namespace
         .presence_data

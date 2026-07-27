@@ -19,7 +19,9 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--confirmation-criterion-root", type=Path)
     parser.add_argument("--require-criterion-comparison", action="store_true")
     parser.add_argument("--load-result", action="append", default=[], type=Path)
-    parser.add_argument("--baseline-load-result", action="append", default=[], type=Path)
+    parser.add_argument(
+        "--baseline-load-result", action="append", default=[], type=Path
+    )
     parser.add_argument("--require-independent-runs", action="store_true")
     return parser.parse_args()
 
@@ -44,7 +46,9 @@ def main() -> int:
     baseline = [read_json(path) for path in args.baseline_load_result]
     minimum_runs = int(budgets["load"]["minimumIndependentRuns"])
     if args.require_independent_runs and len(current) < minimum_runs:
-        failures.append(f"release evidence requires {minimum_runs} independent load runs; found {len(current)}")
+        failures.append(
+            f"release evidence requires {minimum_runs} independent load runs; found {len(current)}"
+        )
     for path, result in zip(args.load_result, current):
         check_load_result(path, result, budgets["load"], failures, checked)
 
@@ -54,7 +58,9 @@ def main() -> int:
                 f"statistical comparison requires at least {minimum_runs} current and baseline runs"
             )
         else:
-            check_statistical_regressions(current, baseline, budgets["load"], failures, checked)
+            check_statistical_regressions(
+                current, baseline, budgets["load"], failures, checked
+            )
 
     if failures:
         print("Ably compatibility release guard failed:")
@@ -82,25 +88,34 @@ def check_criterion(
     ]
     for required in budget.get("requiredBenchmarks", []):
         if not any(required in estimate for estimate in estimates):
-            failures.append(f"missing required Criterion estimate matching {required!r}")
+            failures.append(
+                f"missing required Criterion estimate matching {required!r}"
+            )
     if estimates:
         checked.append(f"{len(estimates)} Criterion estimates discovered")
     changes = criterion_changes(root)
     threshold = float(budget["maxSignificantRegressionPercent"]) / 100.0
     if not changes:
-        message = "Criterion estimates present; no saved-baseline change intervals to gate"
+        message = (
+            "Criterion estimates present; no saved-baseline change intervals to gate"
+        )
         if require_comparison:
             failures.append(message)
         else:
             checked.append(message)
         return
     confirmation_changes = (
-        {bench_id(path, confirmation_root): path for path in criterion_changes(confirmation_root)}
+        {
+            bench_id(path, confirmation_root): path
+            for path in criterion_changes(confirmation_root)
+        }
         if confirmation_root
         else {}
     )
     if confirmation_root and not confirmation_changes:
-        failures.append("confirmation Criterion evidence has no saved-baseline change intervals")
+        failures.append(
+            "confirmation Criterion evidence has no saved-baseline change intervals"
+        )
         return
     for path in changes:
         data = read_json(path)
@@ -109,14 +124,18 @@ def check_criterion(
         lower = confidence.get("lower_bound")
         upper = confidence.get("upper_bound")
         if lower is None or upper is None:
-            failures.append(f"{path}: missing Criterion mean change confidence interval")
+            failures.append(
+                f"{path}: missing Criterion mean change confidence interval"
+            )
             continue
         bench = bench_id(path, root)
         if float(lower) > threshold:
             if confirmation_root:
                 confirmation_path = confirmation_changes.get(bench)
                 if confirmation_path is None:
-                    failures.append(f"{bench}: missing confirmation Criterion change interval")
+                    failures.append(
+                        f"{bench}: missing confirmation Criterion change interval"
+                    )
                     continue
                 confirmation_data = read_json(confirmation_path)
                 confirmation_lower = (
@@ -160,7 +179,13 @@ def criterion_changes(root: Path) -> list[Path]:
     ]
 
 
-def check_load_result(path: Path, result: dict[str, Any], budget: dict[str, Any], failures: list[str], checked: list[str]) -> None:
+def check_load_result(
+    path: Path,
+    result: dict[str, Any],
+    budget: dict[str, Any],
+    failures: list[str],
+    checked: list[str],
+) -> None:
     if result.get("schema") != "sockudo.ably-compat.capacity-result.v1":
         failures.append(f"{path}: not an executable compatibility capacity result")
         return
@@ -180,7 +205,9 @@ def check_load_result(path: Path, result: dict[str, Any], budget: dict[str, Any]
     present_topologies = {topology.get("topology") for topology in topologies}
     missing_topologies = set(budget.get("requiredTopologies", [])) - present_topologies
     if missing_topologies:
-        failures.append(f"{path}: missing required topologies {sorted(missing_topologies)}")
+        failures.append(
+            f"{path}: missing required topologies {sorted(missing_topologies)}"
+        )
     for topology in topologies:
         label = f"{path}:{topology.get('topology')}"
         if topology.get("status") != "passed":
@@ -189,7 +216,9 @@ def check_load_result(path: Path, result: dict[str, Any], budget: dict[str, Any]
             readiness = topology.get("readiness", {})
             if readiness.get("crossNodeFanout") != "ready":
                 failures.append(f"{label}: cross-node fanout did not become ready")
-            elif float(readiness.get("durationMs", math.inf)) > float(budget["maxCrossNodeReadyMs"]):
+            elif float(readiness.get("durationMs", math.inf)) > float(
+                budget["maxCrossNodeReadyMs"]
+            ):
                 failures.append(f"{label}: cross-node fanout readiness exceeded budget")
         plateau = topology.get("resources", {}).get("plateau", {})
         if not plateau.get("stalledPeersExercised"):
@@ -199,22 +228,40 @@ def check_load_result(path: Path, result: dict[str, Any], budget: dict[str, Any]
         if not plateau.get("postDisconnectPlateau"):
             failures.append(f"{label}: RSS did not plateau after disconnect")
         for node in plateau.get("nodes", []):
-            if float(node.get("stalledSlopeBytesPerSecond", math.inf)) > float(budget["maxRssPlateauSlopeBytesPerSecond"]):
-                failures.append(f"{label}: node {node.get('node')} stalled-peer RSS slope exceeded budget")
-            if float(node.get("postDisconnectSlopeBytesPerSecond", math.inf)) > float(budget["maxRssPlateauSlopeBytesPerSecond"]):
-                failures.append(f"{label}: node {node.get('node')} post-disconnect RSS slope exceeded budget")
-            if float(node.get("postDisconnectRatio", math.inf)) > float(budget["maxPostDisconnectRssRatio"]):
-                failures.append(f"{label}: node {node.get('node')} post-disconnect RSS ratio exceeded budget")
+            if float(node.get("stalledSlopeBytesPerSecond", math.inf)) > float(
+                budget["maxRssPlateauSlopeBytesPerSecond"]
+            ):
+                failures.append(
+                    f"{label}: node {node.get('node')} stalled-peer RSS slope exceeded budget"
+                )
+            if float(node.get("postDisconnectSlopeBytesPerSecond", math.inf)) > float(
+                budget["maxRssPlateauSlopeBytesPerSecond"]
+            ):
+                failures.append(
+                    f"{label}: node {node.get('node')} post-disconnect RSS slope exceeded budget"
+                )
+            if float(node.get("postDisconnectRatio", math.inf)) > float(
+                budget["maxPostDisconnectRssRatio"]
+            ):
+                failures.append(
+                    f"{label}: node {node.get('node')} post-disconnect RSS ratio exceeded budget"
+                )
         for shutdown in topology.get("shutdown", []):
             if not shutdown.get("continuityExplicit"):
-                failures.append(f"{label}: node {shutdown.get('node')} shutdown neither drained nor marked continuity")
+                failures.append(
+                    f"{label}: node {shutdown.get('node')} shutdown neither drained nor marked continuity"
+                )
             if shutdown.get("sensitiveDataLogged") is not False:
-                failures.append(f"{label}: node {shutdown.get('node')} did not prove secret/raw-payload log safety")
+                failures.append(
+                    f"{label}: node {shutdown.get('node')} did not prove secret/raw-payload log safety"
+                )
         scenarios = topology.get("scenarios", [])
         present_scenarios = {scenario.get("name") for scenario in scenarios}
         missing_scenarios = set(budget.get("requiredScenarios", [])) - present_scenarios
         if missing_scenarios:
-            failures.append(f"{label}: missing required scenarios {sorted(missing_scenarios)}")
+            failures.append(
+                f"{label}: missing required scenarios {sorted(missing_scenarios)}"
+            )
         for scenario in scenarios:
             scenario_label = f"{label}:{scenario.get('name')}"
             if scenario.get("status") != "passed":
@@ -224,41 +271,81 @@ def check_load_result(path: Path, result: dict[str, Any], budget: dict[str, Any]
                 if int(correctness.get(key, 0)) != 0:
                     failures.append(f"{scenario_label}: {key}={correctness[key]}")
             encoding = scenario.get("encoding")
-            if scenario.get("name") in {
-                "steady_publish",
-                "burst",
-                "payload_64k",
-                "encrypted_binary",
-                "fanout_1000",
-                "slow_consumers",
-            } and not encoding:
-                failures.append(f"{scenario_label}: missing active-format encode evidence")
+            if (
+                scenario.get("name")
+                in {
+                    "steady_publish",
+                    "burst",
+                    "payload_64k",
+                    "encrypted_binary",
+                    "fanout_1000",
+                    "slow_consumers",
+                }
+                and not encoding
+            ):
+                failures.append(
+                    f"{scenario_label}: missing active-format encode evidence"
+                )
             if encoding and not encoding.get("exactlyOncePerFormat"):
-                failures.append(f"{scenario_label}: encode count was not exactly once per active format")
+                failures.append(
+                    f"{scenario_label}: encode count was not exactly once per active format"
+                )
             for snapshot in scenario.get("runtimeAfter", []):
                 aggregation = snapshot.get("aggregation")
                 if aggregation:
                     backlog = int(aggregation.get("backlog", -1))
                     capacity = int(aggregation.get("queueCapacity", -1))
                     if backlog < 0 or capacity <= 0 or backlog > capacity:
-                        failures.append(f"{scenario_label}: stats backlog was missing or exceeded its bounded queue")
+                        failures.append(
+                            f"{scenario_label}: stats backlog was missing or exceeded its bounded queue"
+                        )
                     if int(aggregation.get("dropped", 0)) != 0:
-                        failures.append(f"{scenario_label}: stats observations were dropped")
+                        failures.append(
+                            f"{scenario_label}: stats observations were dropped"
+                        )
             if scenario.get("name") == "recovery_storm":
-                if int(scenario.get("resumed", -1)) != int(scenario.get("attempted", 0)):
+                if int(scenario.get("resumed", -1)) != int(
+                    scenario.get("attempted", 0)
+                ):
                     failures.append(f"{scenario_label}: not every connection recovered")
                 if int(scenario.get("replaySource", 0)) <= 0:
-                    failures.append(f"{scenario_label}: no canonical replay source was observed")
+                    failures.append(
+                        f"{scenario_label}: no canonical replay source was observed"
+                    )
                 if int(scenario.get("backendCalls", 0)) <= 0:
-                    failures.append(f"{scenario_label}: no recovery backend boundary was observed")
-                if int(scenario.get("backendCalls", 0)) > int(scenario.get("backendCallBudget", -1)):
-                    failures.append(f"{scenario_label}: recovery backend calls exceeded the constant budget")
-            check_latency(scenario_label, scenario, "publishLatencyMs", budget["maxPublishP99Ms"], failures)
-            check_latency(scenario_label, scenario, "deliveryLatencyMs", budget["maxDeliveryP99Ms"], failures)
+                    failures.append(
+                        f"{scenario_label}: no recovery backend boundary was observed"
+                    )
+                if int(scenario.get("backendCalls", 0)) > int(
+                    scenario.get("backendCallBudget", -1)
+                ):
+                    failures.append(
+                        f"{scenario_label}: recovery backend calls exceeded the constant budget"
+                    )
+            check_latency(
+                scenario_label,
+                scenario,
+                "publishLatencyMs",
+                budget["maxPublishP99Ms"],
+                failures,
+            )
+            check_latency(
+                scenario_label,
+                scenario,
+                "deliveryLatencyMs",
+                budget["maxDeliveryP99Ms"],
+                failures,
+            )
         checked.append(f"{label}: real topology and correctness invariants")
 
 
-def check_latency(label: str, scenario: dict[str, Any], field: str, maximum: float, failures: list[str]) -> None:
+def check_latency(
+    label: str,
+    scenario: dict[str, Any],
+    field: str,
+    maximum: float,
+    failures: list[str],
+) -> None:
     summary = scenario.get(field, {})
     p99 = summary.get("p99")
     if p99 is not None and float(p99) > float(maximum):
@@ -277,7 +364,13 @@ def bench_id(path: Path, root: Path) -> str:
     return path.relative_to(root).parent.parent.as_posix()
 
 
-def check_statistical_regressions(current: list[dict[str, Any]], baseline: list[dict[str, Any]], budget: dict[str, Any], failures: list[str], checked: list[str]) -> None:
+def check_statistical_regressions(
+    current: list[dict[str, Any]],
+    baseline: list[dict[str, Any]],
+    budget: dict[str, Any],
+    failures: list[str],
+    checked: list[str],
+) -> None:
     current_samples = collect_samples(current)
     baseline_samples = collect_samples(baseline)
     z_limit = float(budget["significanceZ"])
@@ -308,7 +401,9 @@ def check_statistical_regressions(current: list[dict[str, Any]], baseline: list[
                     f"(z={z_score:.3f}) exceeds {limits[metric]:.2f}%"
                 )
             else:
-                checked.append(f"{key}:{metric}: regression={regression:.2f}% z={z_score:.3f}")
+                checked.append(
+                    f"{key}:{metric}: regression={regression:.2f}% z={z_score:.3f}"
+                )
 
 
 def collect_samples(results: list[dict[str, Any]]) -> dict[str, dict[str, list[float]]]:
@@ -317,15 +412,36 @@ def collect_samples(results: list[dict[str, Any]]) -> dict[str, dict[str, list[f
         for topology in result.get("topologies", []):
             topology_name = topology.get("topology")
             peak_rss = max(
-                (float(node.get("peakRssBytes", 0)) for node in topology.get("resources", {}).get("plateau", {}).get("nodes", [])),
+                (
+                    float(node.get("peakRssBytes", 0))
+                    for node in topology.get("resources", {})
+                    .get("plateau", {})
+                    .get("nodes", [])
+                ),
                 default=0,
             )
             for scenario in topology.get("scenarios", []):
                 key = f"{topology_name}:{scenario.get('name')}"
-                target = samples.setdefault(key, {"publish_p99": [], "delivery_p99": [], "throughput": [], "peak_rss": []})
-                append_if_number(target["publish_p99"], scenario.get("publishLatencyMs", {}).get("p99"))
-                append_if_number(target["delivery_p99"], scenario.get("deliveryLatencyMs", {}).get("p99"))
-                append_if_number(target["throughput"], scenario.get("throughputPerSecond"))
+                target = samples.setdefault(
+                    key,
+                    {
+                        "publish_p99": [],
+                        "delivery_p99": [],
+                        "throughput": [],
+                        "peak_rss": [],
+                    },
+                )
+                append_if_number(
+                    target["publish_p99"],
+                    scenario.get("publishLatencyMs", {}).get("p99"),
+                )
+                append_if_number(
+                    target["delivery_p99"],
+                    scenario.get("deliveryLatencyMs", {}).get("p99"),
+                )
+                append_if_number(
+                    target["throughput"], scenario.get("throughputPerSecond")
+                )
                 append_if_number(target["peak_rss"], peak_rss)
     return samples
 
@@ -336,8 +452,14 @@ def append_if_number(target: list[float], value: Any) -> None:
 
 
 def welch_z(current: list[float], baseline: list[float], throughput: bool) -> float:
-    difference = statistics.mean(baseline) - statistics.mean(current) if throughput else statistics.mean(current) - statistics.mean(baseline)
-    variance = statistics.variance(current) / len(current) + statistics.variance(baseline) / len(baseline)
+    difference = (
+        statistics.mean(baseline) - statistics.mean(current)
+        if throughput
+        else statistics.mean(current) - statistics.mean(baseline)
+    )
+    variance = statistics.variance(current) / len(current) + statistics.variance(
+        baseline
+    ) / len(baseline)
     return 0.0 if variance <= 0 else difference / math.sqrt(variance)
 
 

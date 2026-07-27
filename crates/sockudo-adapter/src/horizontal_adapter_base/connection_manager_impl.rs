@@ -119,10 +119,13 @@ where
         // Fall back to regular sending without delta compression
         // Send locally first (tracked in connection manager for metrics)
         let node_id = self.horizontal.node_id.clone();
+        let message_json = sonic_rs::to_string(&message)?;
+        let idempotency_key = message.idempotency_key.clone();
+        let ephemeral = message.is_ephemeral();
 
         let local_result = self
             .local_adapter
-            .send(channel, message.clone(), except, app_id, start_time_ms)
+            .send(channel, message, except, app_id, start_time_ms)
             .await;
 
         if let Err(e) = local_result {
@@ -130,7 +133,6 @@ where
         }
 
         // Broadcast to other nodes
-        let message_json = sonic_rs::to_string(&message)?;
         let broadcast = BroadcastMessage {
             node_id,
             app_id: app_id.to_string(),
@@ -149,8 +151,8 @@ where
                 )
             }),
             compression_metadata: None,
-            idempotency_key: message.idempotency_key.clone(),
-            ephemeral: message.is_ephemeral(),
+            idempotency_key,
+            ephemeral,
         };
 
         // Skip broadcasting to other nodes if we're in single-node mode
@@ -171,9 +173,12 @@ where
         envelope: Option<sockudo_core::message_envelope::MessageEnvelope>,
     ) -> Result<()> {
         let node_id = self.horizontal.node_id.clone();
+        let message_json = sonic_rs::to_string(&message)?;
+        let idempotency_key = message.idempotency_key.clone();
+        let ephemeral = message.is_ephemeral();
         let local_result = self
             .local_adapter
-            .send(channel, message.clone(), except, app_id, start_time_ms)
+            .send(channel, message, except, app_id, start_time_ms)
             .await;
         if let Err(error) = local_result {
             warn!(channel, %error, "Local send failed");
@@ -183,7 +188,7 @@ where
             node_id,
             app_id: app_id.to_string(),
             channel: channel.to_string(),
-            message: sonic_rs::to_string(&message)?,
+            message: message_json,
             presence_replication: None,
             envelope,
             except_socket_id: except.map(ToString::to_string),
@@ -197,8 +202,8 @@ where
                 )
             }),
             compression_metadata: None,
-            idempotency_key: message.idempotency_key.clone(),
-            ephemeral: message.is_ephemeral(),
+            idempotency_key,
+            ephemeral,
         };
         if !self.should_skip_horizontal_communication().await {
             self.transport.publish_broadcast(&broadcast).await?;
@@ -275,6 +280,10 @@ where
         start_time_ms: Option<f64>,
         compression: crate::connection_manager::CompressionParams<'_>,
     ) -> Result<()> {
+        let message_json = sonic_rs::to_string(&message)?;
+        let event_name = message.event.clone();
+        let idempotency_key = message.idempotency_key.clone();
+        let ephemeral = message.is_ephemeral();
         // Send locally first with delta compression support
         let (node_id, local_result) = {
             let result = self
@@ -282,7 +291,7 @@ where
                 .local_adapter
                 .send_with_compression(
                     channel,
-                    message.clone(),
+                    message,
                     except,
                     app_id,
                     start_time_ms,
@@ -302,16 +311,12 @@ where
 
         // Broadcast to other nodes with compression metadata
         // Other nodes will apply their own delta compression using this metadata
-        let message_json = sonic_rs::to_string(&message)?;
-
         // Extract conflation key from channel settings
         let conflation_key = compression
             .channel_settings
             .and_then(|s| s.conflation_key.clone());
 
         // Extract event name from message for tracking
-        let event_name = message.event.as_deref().map(|s| s.to_string());
-
         // Check cluster coordination for synchronized full message intervals
         let (cluster_should_send_full, cluster_delta_count) = if compression
             .delta_compression
@@ -376,8 +381,8 @@ where
                 is_full_message, // Determined by cluster coordination or defaults to true
                 event_name,
             }),
-            idempotency_key: message.idempotency_key.clone(),
-            ephemeral: message.is_ephemeral(),
+            idempotency_key,
+            ephemeral,
         };
 
         // Skip broadcasting to other nodes if we're in single-node mode

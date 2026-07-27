@@ -833,7 +833,7 @@ mod tests {
         let envelope = MessageEnvelope::from_message(&message, None, None, 100).unwrap();
         let first = canonical_publish_fingerprint("channel", &message, &envelope).unwrap();
 
-        let mut changed = message.clone();
+        let mut changed = message;
         changed.user_id = Some("publisher-b".to_string());
         let changed_envelope = MessageEnvelope::from_message(&changed, None, None, 100).unwrap();
         assert_ne!(

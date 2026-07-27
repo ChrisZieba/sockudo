@@ -11,8 +11,62 @@ use sockudo_core::versioned_messages::{
     MessageAppend, MessageSerial, VersionMetadata, VersionSerial, VersionedMessage,
 };
 use sockudo_protocol::messages::MessageData;
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Once;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+struct CountingAllocator;
+
+static TRACK_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
+static ALLOCATION_COUNT: AtomicU64 = AtomicU64::new(0);
+static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
+static VERSION_STORE_ALLOCATION_REPORT: Once = Once::new();
+
+// SAFETY: every allocation operation delegates to the process system allocator.
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller provided a valid allocation layout.
+        let pointer = unsafe { System.alloc(layout) };
+        if !pointer.is_null() && TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
+            ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            ALLOCATED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+        }
+        pointer
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        // SAFETY: the pointer and layout came from the delegated system allocator.
+        unsafe { System.dealloc(pointer, layout) };
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: the pointer and layout came from the delegated system allocator.
+        let pointer = unsafe { System.realloc(pointer, layout, new_size) };
+        if !pointer.is_null() && TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
+            ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            ALLOCATED_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
+        }
+        pointer
+    }
+}
+
+#[global_allocator]
+static GLOBAL_ALLOCATOR: CountingAllocator = CountingAllocator;
+
+fn measure_allocations<T>(operation: impl FnOnce() -> T) -> (T, u64, u64) {
+    TRACK_ALLOCATIONS.store(false, Ordering::SeqCst);
+    ALLOCATION_COUNT.store(0, Ordering::SeqCst);
+    ALLOCATED_BYTES.store(0, Ordering::SeqCst);
+    TRACK_ALLOCATIONS.store(true, Ordering::SeqCst);
+    let result = operation();
+    TRACK_ALLOCATIONS.store(false, Ordering::SeqCst);
+    (
+        result,
+        ALLOCATION_COUNT.load(Ordering::SeqCst),
+        ALLOCATED_BYTES.load(Ordering::SeqCst),
+    )
+}
 
 struct CountingBlockVersionStore {
     inner: MemoryVersionStore,
@@ -236,7 +290,59 @@ fn bench_atomic_compare_and_append_64b_to_100k(c: &mut Criterion) {
     });
 }
 
+fn report_version_store_allocations() {
+    VERSION_STORE_ALLOCATION_REPORT.call_once(|| {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let store = MemoryVersionStore::new();
+        let mut current = record_with_data(String::new());
+        runtime
+            .block_on(store.append_version(current.clone()))
+            .unwrap();
+        for index in 0..32 {
+            let next = StoredVersionRecord {
+                message: current
+                    .message
+                    .apply_append(
+                        version(index + 2),
+                        index + 2,
+                        MessageAppend {
+                            data_fragment: "x".repeat(1024),
+                            extras: None,
+                        },
+                    )
+                    .unwrap(),
+                ..current.clone()
+            };
+            runtime
+                .block_on(store.append_version(next.clone()))
+                .unwrap();
+            current = next;
+        }
+        let next = StoredVersionRecord {
+            message: current
+                .message
+                .apply_append(
+                    version(34),
+                    34,
+                    MessageAppend {
+                        data_fragment: "x".repeat(1024),
+                        extras: None,
+                    },
+                )
+                .unwrap(),
+            ..current
+        };
+        let (result, allocations, allocated_bytes) =
+            measure_allocations(|| runtime.block_on(store.append_version(next)));
+        result.unwrap();
+        eprintln!(
+            "allocation_profile name=memory_version_store_append_chain32_1k allocations={allocations} allocated_bytes={allocated_bytes}"
+        );
+    });
+}
+
 fn criterion_benchmark(c: &mut Criterion) {
+    report_version_store_allocations();
     bench_append_64b_to_100k(c);
     bench_warm_get_latest_2000_appends(c);
     bench_leased_delivery_reservations(c);

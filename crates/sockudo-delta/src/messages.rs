@@ -53,9 +53,9 @@ where
 }
 
 impl CachedMessage {
-    pub(crate) fn new(content: Vec<u8>, sequence: u32) -> Self {
+    pub(crate) fn new_shared(content: Arc<Vec<u8>>, sequence: u32) -> Self {
         Self {
-            content: Arc::new(content),
+            content,
             sequence,
             timestamp: Instant::now(),
         }

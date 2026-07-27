@@ -528,7 +528,7 @@ async fn fetch_history(sockudo: &Sockudo) -> Result<(), sockudo_http::SockudoErr
         )
         .await?;
 
-    if let Some(cursor) = page.next_cursor.clone() {
+    if let Some(cursor) = page.next_cursor {
         let _next_page = sockudo
             .channel_history_with_name(
                 "my-channel",

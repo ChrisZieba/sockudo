@@ -502,7 +502,7 @@ struct MemoryQueueState {
     next_id: u64,
     ready: BTreeMap<PushQueueStage, VecDeque<StoredMessage>>,
     inflight: BTreeMap<(PushQueueStage, String), StoredMessage>,
-    produced_keys: BTreeMap<(PushQueueStage, String), String>,
+    produced_keys: BTreeMap<PushQueueStage, BTreeMap<String, String>>,
     dead_letters: Vec<StoredDeadLetter>,
 }
 
@@ -644,7 +644,7 @@ impl PushQueue for MemoryPushQueue {
     async fn ack(&self, token: QueueAckToken) -> PushQueueResult<()> {
         let mut inner = self.lock()?;
         if let Some(stored) = inner.inflight.remove(&(token.stage, token.message_id)) {
-            inner.produced_keys.remove(&(token.stage, stored.key));
+            remove_produced_key(&mut inner, token.stage, &stored.key);
         }
         Ok(())
     }
@@ -667,9 +667,7 @@ impl PushQueue for MemoryPushQueue {
     async fn dead_letter(&self, token: QueueAckToken, reason: String) -> PushQueueResult<()> {
         let mut inner = self.lock()?;
         if let Some(stored) = inner.inflight.remove(&(token.stage, token.message_id)) {
-            inner
-                .produced_keys
-                .remove(&(token.stage, stored.key.clone()));
+            remove_produced_key(&mut inner, token.stage, &stored.key);
             let dead_letter = dead_letter_from_message(token.stage, &stored, reason);
             inner.dead_letters.push(StoredDeadLetter {
                 dead_letter_id: dead_letter_entry_id(&dead_letter, &stored.message_id),
@@ -816,7 +814,11 @@ impl MemoryPushQueue {
         not_before_ms: Option<u64>,
     ) -> PushQueueResult<String> {
         let mut inner = self.lock()?;
-        if let Some(existing) = inner.produced_keys.get(&(stage, key.clone())) {
+        if let Some(existing) = inner
+            .produced_keys
+            .get(&stage)
+            .and_then(|stage_keys| stage_keys.get(&key))
+        {
             return Ok(existing.clone());
         }
 
@@ -825,7 +827,9 @@ impl MemoryPushQueue {
         let route = QueueRoute::for_message(stage, &key, &payload);
         inner
             .produced_keys
-            .insert((stage, key.clone()), message_id.clone());
+            .entry(stage)
+            .or_default()
+            .insert(key.clone(), message_id.clone());
         if let (PushQueueStage::DeadLetters, PushQueuePayload::DeadLetter(dead_letter)) =
             (stage, &payload)
         {
@@ -859,6 +863,19 @@ impl MemoryPushQueue {
         self.inner
             .lock()
             .map_err(|_| PushQueueError::Backend("memory queue lock poisoned".to_owned()))
+    }
+}
+
+fn remove_produced_key(inner: &mut MemoryQueueState, stage: PushQueueStage, key: &str) {
+    let remove_stage = inner
+        .produced_keys
+        .get_mut(&stage)
+        .is_some_and(|stage_keys| {
+            stage_keys.remove(key);
+            stage_keys.is_empty()
+        });
+    if remove_stage {
+        inner.produced_keys.remove(&stage);
     }
 }
 

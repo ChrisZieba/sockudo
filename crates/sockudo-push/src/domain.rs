@@ -2125,7 +2125,7 @@ mod tests {
             "{:?}",
             DevicePushDetails {
                 error_reason: Some("provider leaked token fcm-token-secret".to_owned()),
-                ..device.push.clone()
+                ..device.push
             }
         );
         assert!(push_debug.contains("[REDACTED]"));
@@ -2334,7 +2334,7 @@ mod tests {
             not_before_ms: None,
             expires_at_ms: Some(1000),
         };
-        assert_eq!(intent.idempotency_key(), intent.clone().idempotency_key());
+        assert_eq!(intent.idempotency_key(), intent.idempotency_key());
     }
 
     #[test]

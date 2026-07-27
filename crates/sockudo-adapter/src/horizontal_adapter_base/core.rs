@@ -565,8 +565,9 @@ where
                                                     // Use the conflation key from compression metadata
                                                     let mut settings = settings.clone();
                                                     if compression_meta.conflation_key.is_some() {
-                                                        settings.conflation_key =
-                                                            compression_meta.conflation_key.clone();
+                                                        settings.conflation_key.clone_from(
+                                                            &compression_meta.conflation_key,
+                                                        );
                                                     }
                                                     Some(settings)
                                                 }

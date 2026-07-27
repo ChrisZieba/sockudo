@@ -1061,7 +1061,7 @@ mod tests {
             "key".to_string(),
             "secret".to_string(),
             true,
-            policy.clone(),
+            policy,
         );
 
         assert_eq!(app.policy().limits.max_connections, 250);

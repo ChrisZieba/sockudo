@@ -325,9 +325,8 @@ pub(super) fn intersect_ably_capability(
         for (resource, operations) in &key {
             capability_operations(resource, operations)?;
         }
-        let capabilities =
-            ably_capability_value_to_sockudo(&serde_json::Value::Object(key.clone()))
-                .map_err(|error| CapabilityIntersectionError::Invalid(error.to_string()))?;
+        let capabilities = ably_capability_value_to_sockudo(&serde_json::Value::Object(key))
+            .map_err(|error| CapabilityIntersectionError::Invalid(error.to_string()))?;
         return Ok((key_capability.to_string(), Some(capabilities)));
     };
     let requested = parse_ably_capability_object(requested_raw)?;

@@ -4,13 +4,68 @@ use sockudo_core::annotations::{
     MemoryAnnotationStore, RawAnnotationReplayRequest, StoredAnnotationEvent,
 };
 use sockudo_core::versioned_messages::MessageSerial;
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
+use std::sync::Once;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const APP_ID: &str = "bench-app";
 const CHANNEL: &str = "bench-channel";
 const NOISY_EVENTS: usize = 2_000;
 const TARGET_EVENTS: usize = 100;
 const PAGE_SIZE: usize = 50;
+
+struct CountingAllocator;
+
+static TRACK_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
+static ALLOCATION_COUNT: AtomicU64 = AtomicU64::new(0);
+static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
+static ANNOTATION_ALLOCATION_REPORT: Once = Once::new();
+
+// SAFETY: every allocation operation delegates to the process system allocator.
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller provided a valid allocation layout.
+        let pointer = unsafe { System.alloc(layout) };
+        if !pointer.is_null() && TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
+            ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            ALLOCATED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+        }
+        pointer
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        // SAFETY: the pointer and layout came from the delegated system allocator.
+        unsafe { System.dealloc(pointer, layout) };
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: the pointer and layout came from the delegated system allocator.
+        let pointer = unsafe { System.realloc(pointer, layout, new_size) };
+        if !pointer.is_null() && TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
+            ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            ALLOCATED_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
+        }
+        pointer
+    }
+}
+
+#[global_allocator]
+static GLOBAL_ALLOCATOR: CountingAllocator = CountingAllocator;
+
+fn measure_allocations<T>(operation: impl FnOnce() -> T) -> (T, u64, u64) {
+    TRACK_ALLOCATIONS.store(false, Ordering::SeqCst);
+    ALLOCATION_COUNT.store(0, Ordering::SeqCst);
+    ALLOCATED_BYTES.store(0, Ordering::SeqCst);
+    TRACK_ALLOCATIONS.store(true, Ordering::SeqCst);
+    let result = operation();
+    TRACK_ALLOCATIONS.store(false, Ordering::SeqCst);
+    (
+        result,
+        ALLOCATION_COUNT.load(Ordering::SeqCst),
+        ALLOCATED_BYTES.load(Ordering::SeqCst),
+    )
+}
 
 fn stored_event(index: usize, message_serial: MessageSerial) -> StoredAnnotationEvent {
     StoredAnnotationEvent {
@@ -56,6 +111,28 @@ fn annotation_replay(c: &mut Criterion) {
                 .await
                 .unwrap();
         }
+    });
+
+    ANNOTATION_ALLOCATION_REPORT.call_once(|| {
+        let allocation_store = MemoryAnnotationStore::new();
+        let allocation_target = MessageSerial::new("msg:allocation").unwrap();
+        runtime.block_on(async {
+            for index in 0..100 {
+                allocation_store
+                    .append_event(stored_event(index, allocation_target.clone()))
+                    .await
+                    .unwrap();
+            }
+        });
+        let (projection, allocations, allocated_bytes) = measure_allocations(|| {
+            runtime.block_on(
+                allocation_store.append_event(stored_event(100, allocation_target.clone())),
+            )
+        });
+        black_box(projection.unwrap());
+        eprintln!(
+            "allocation_profile name=memory_annotation_append_projection100 allocations={allocations} allocated_bytes={allocated_bytes}"
+        );
     });
 
     let mut group = c.benchmark_group("annotation_rest_page");

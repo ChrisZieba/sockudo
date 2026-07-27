@@ -81,19 +81,20 @@ impl PushFeedbackProcessor {
     }
 
     async fn handle_message(&self, message: QueueMessage) -> PushPipelineResult<()> {
-        let feedback = match message.payload.clone() {
+        let QueueMessage { payload, ack, .. } = message;
+        let feedback = match payload {
             PushQueuePayload::DeliveryResult(result) => DeliveryFeedback::from_result(*result),
             PushQueuePayload::DeliveryFeedback(feedback) => *feedback,
             _ => {
                 self.queue
-                    .dead_letter(message.ack, "unexpected payload for feedback".to_owned())
+                    .dead_letter(ack, "unexpected payload for feedback".to_owned())
                     .await?;
                 return Ok(());
             }
         };
 
         self.apply_feedback(feedback).await?;
-        self.queue.ack(message.ack).await?;
+        self.queue.ack(ack).await?;
         Ok(())
     }
 

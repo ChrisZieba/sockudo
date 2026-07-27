@@ -71,9 +71,10 @@ impl PushPlanner {
         consumer_group: &str,
     ) -> PushPipelineResult<()> {
         let started = Instant::now();
-        let PushQueuePayload::PublishLog(event) = message.payload.clone() else {
+        let QueueMessage { payload, ack, .. } = message;
+        let PushQueuePayload::PublishLog(event) = payload else {
             self.queue
-                .dead_letter(message.ack, "unexpected payload for publish log".to_owned())
+                .dead_letter(ack, "unexpected payload for publish log".to_owned())
                 .await?;
             return Ok(());
         };
@@ -81,11 +82,11 @@ impl PushPlanner {
         let lock_id = match self.begin_planning(&event, consumer_group).await? {
             PlanningStart::Started { lock_id } => lock_id,
             PlanningStart::AlreadyHandled => {
-                self.queue.ack(message.ack).await?;
+                self.queue.ack(ack).await?;
                 return Ok(());
             }
             PlanningStart::Locked { retry_at_ms } => {
-                self.queue.nack(message.ack, Some(retry_at_ms)).await?;
+                self.queue.nack(ack, Some(retry_at_ms)).await?;
                 return Ok(());
             }
         };
@@ -97,7 +98,7 @@ impl PushPlanner {
             self.mark_failed(&event, reason.clone()).await?;
             self.release_planner_lock(&event, &lock_id, consumer_group)
                 .await;
-            self.queue.dead_letter(message.ack, reason).await?;
+            self.queue.dead_letter(ack, reason).await?;
             return Ok(());
         }
         if let Err(error) = plan_result {
@@ -110,7 +111,7 @@ impl PushPlanner {
             .await?;
         self.release_planner_lock(&event, &lock_id, consumer_group)
             .await;
-        self.queue.ack(message.ack).await?;
+        self.queue.ack(ack).await?;
         Ok(())
     }
 
@@ -480,12 +481,10 @@ impl PushShardWorker {
     }
 
     async fn handle_shard_message(&self, message: QueueMessage) -> PushPipelineResult<()> {
-        let PushQueuePayload::ShardJob(shard) = message.payload.clone() else {
+        let QueueMessage { payload, ack, .. } = message;
+        let PushQueuePayload::ShardJob(shard) = payload else {
             self.queue
-                .dead_letter(
-                    message.ack,
-                    "unexpected payload for shard worker".to_owned(),
-                )
+                .dead_letter(ack, "unexpected payload for shard worker".to_owned())
                 .await?;
             return Ok(());
         };
@@ -500,7 +499,7 @@ impl PushShardWorker {
                 Err(PushPipelineError::InvalidPayload(reason)) => {
                     shard.status = ShardJobStatus::Failed;
                     self.store.put_fanout_shard(shard).await?;
-                    self.queue.dead_letter(message.ack, reason).await?;
+                    self.queue.dead_letter(ack, reason).await?;
                     return Ok(());
                 }
                 Err(error) => return Err(error),
@@ -546,7 +545,7 @@ impl PushShardWorker {
                 .await?;
         }
 
-        self.queue.ack(message.ack).await?;
+        self.queue.ack(ack).await?;
         Ok(())
     }
 
@@ -770,7 +769,7 @@ impl ProviderBatcher {
             *index
         );
         for job in &mut jobs {
-            job.batch_id = batch_id.clone();
+            job.batch_id.clone_from(&batch_id);
         }
         let jobs_len = jobs.len();
         let batch = DeliveryBatch {

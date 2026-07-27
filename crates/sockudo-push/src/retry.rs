@@ -8,7 +8,7 @@ use crate::domain::{
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::PushMetrics;
 use crate::pipeline::{
-    PushPipelineResult, PushQueuePayload, PushQueueStage, QueueMessage,
+    PushPipelineResult, PushQueuePayload, PushQueueStage, QueueAckToken, QueueMessage,
     guard_publish_status_transition, mutate_publish_status_with_cas, now_ms,
 };
 use crate::storage::{DynPushStore, IdempotencyRecord, SchedulerLock};
@@ -200,12 +200,10 @@ impl PushRetryScheduler {
     }
 
     async fn handle_message(&self, message: QueueMessage) -> PushPipelineResult<bool> {
-        let PushQueuePayload::RetrySchedule(entry) = message.payload.clone() else {
+        let QueueMessage { payload, ack, .. } = message;
+        let PushQueuePayload::RetrySchedule(entry) = payload else {
             self.queue
-                .dead_letter(
-                    message.ack,
-                    "unexpected payload for retry scheduler".to_owned(),
-                )
+                .dead_letter(ack, "unexpected payload for retry scheduler".to_owned())
                 .await?;
             self.metrics
                 .retry_malformed("unknown", "unexpected_payload");
@@ -216,19 +214,19 @@ impl PushRetryScheduler {
         let now = now_ms();
         let Some(provider) = entry.provider else {
             return self
-                .dead_letter_malformed(message, &entry, "missing retry provider")
+                .dead_letter_malformed(ack, &entry, "missing retry provider")
                 .await
                 .map(|_| false);
         };
         let Some(job) = entry.job.as_deref().cloned() else {
             return self
-                .dead_letter_malformed(message, &entry, "missing retry job")
+                .dead_letter_malformed(ack, &entry, "missing retry job")
                 .await
                 .map(|_| false);
         };
         if entry.retry_idempotency_key.trim().is_empty() {
             return self
-                .dead_letter_malformed(message, &entry, "missing retry idempotency key")
+                .dead_letter_malformed(ack, &entry, "missing retry idempotency key")
                 .await
                 .map(|_| false);
         }
@@ -238,14 +236,12 @@ impl PushRetryScheduler {
                 &entry.app_id,
                 entry.next_attempt_at_ms.saturating_sub(now),
             );
-            self.queue
-                .nack(message.ack, Some(entry.next_attempt_at_ms))
-                .await?;
+            self.queue.nack(ack, Some(entry.next_attempt_at_ms)).await?;
             return Ok(false);
         }
 
         if self.retry_already_completed(&entry).await? {
-            self.queue.ack(message.ack).await?;
+            self.queue.ack(ack).await?;
             return Ok(false);
         }
 
@@ -264,14 +260,14 @@ impl PushRetryScheduler {
             .await?;
         if !lock_acquired {
             self.queue
-                .nack(message.ack, Some(now.saturating_add(1_000)))
+                .nack(ack, Some(now.saturating_add(1_000)))
                 .await?;
             return Ok(false);
         }
 
         let app_id = entry.app_id.clone();
         let result = self
-            .handle_locked_retry(message, entry, provider, job, now)
+            .handle_locked_retry(ack, entry, provider, job, now)
             .await;
         let release = self
             .store
@@ -284,7 +280,7 @@ impl PushRetryScheduler {
 
     async fn handle_locked_retry(
         &self,
-        message: QueueMessage,
+        ack: QueueAckToken,
         entry: RetryScheduleEntry,
         provider: PushProviderKind,
         job: DeliveryJob,
@@ -295,7 +291,7 @@ impl PushRetryScheduler {
             .is_some_and(|expires_at_ms| expires_at_ms <= now)
         {
             self.complete_terminal_retry(
-                message,
+                ack,
                 &entry,
                 RetryTerminalKind::Expired,
                 "delivery expired before retry",
@@ -305,7 +301,7 @@ impl PushRetryScheduler {
         }
         if entry.attempt > entry.max_attempts || entry.max_attempts == 0 {
             self.complete_terminal_retry(
-                message,
+                ack,
                 &entry,
                 RetryTerminalKind::DeadLettered,
                 "retry attempts exhausted",
@@ -315,7 +311,7 @@ impl PushRetryScheduler {
         }
         if entry.expires_at_ms <= now {
             self.complete_terminal_retry(
-                message,
+                ack,
                 &entry,
                 RetryTerminalKind::DeadLettered,
                 "retry age expired",
@@ -358,7 +354,7 @@ impl PushRetryScheduler {
                 )
             {
                 self.put_retry_idempotency(&entry).await?;
-                self.queue.ack(message.ack).await?;
+                self.queue.ack(ack).await?;
                 return Ok(());
             }
         }
@@ -412,13 +408,13 @@ impl PushRetryScheduler {
             &entry.publish_id,
             "retry-dispatched",
         ));
-        self.queue.ack(message.ack).await?;
+        self.queue.ack(ack).await?;
         Ok(())
     }
 
     async fn dead_letter_malformed(
         &self,
-        message: QueueMessage,
+        ack: QueueAckToken,
         entry: &RetryScheduleEntry,
         reason: &'static str,
     ) -> PushPipelineResult<()> {
@@ -426,9 +422,7 @@ impl PushRetryScheduler {
             .retry_malformed(provider_for_metrics(entry.provider), reason);
         self.mark_terminal_status(entry, RetryTerminalKind::DeadLettered, reason)
             .await?;
-        self.queue
-            .dead_letter(message.ack, reason.to_owned())
-            .await?;
+        self.queue.dead_letter(ack, reason.to_owned()).await?;
         emit_push_meta_event(PushMetaEvent::dead_letter(
             &entry.app_id,
             &entry.publish_id,
@@ -440,7 +434,7 @@ impl PushRetryScheduler {
 
     async fn complete_terminal_retry(
         &self,
-        message: QueueMessage,
+        ack: QueueAckToken,
         entry: &RetryScheduleEntry,
         kind: RetryTerminalKind,
         reason: &'static str,
@@ -463,9 +457,7 @@ impl PushRetryScheduler {
             "retry_schedule",
             reason,
         ));
-        self.queue
-            .dead_letter(message.ack, reason.to_owned())
-            .await?;
+        self.queue.dead_letter(ack, reason.to_owned()).await?;
         Ok(())
     }
 

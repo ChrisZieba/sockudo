@@ -1007,9 +1007,10 @@ pub(super) async fn handle_ably_protocol_message(
                 client_id.map(str::to_string),
             )
             .await;
-            *active_connection_key
+            active_connection_key
                 .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = connection_key.clone();
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone_from(&connection_key);
             send_protocol(
                 sender,
                 connected_message(

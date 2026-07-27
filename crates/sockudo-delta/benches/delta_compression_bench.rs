@@ -1,6 +1,122 @@
-use std::hint::black_box;
-
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use sockudo_core::delta_types::DeltaCompressionConfig;
+use sockudo_core::websocket::SocketId;
+use sockudo_delta::DeltaCompressionManager;
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::hint::black_box;
+use std::sync::Arc;
+use std::sync::Once;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+struct CountingAllocator;
+
+static TRACK_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
+static ALLOCATION_COUNT: AtomicU64 = AtomicU64::new(0);
+static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
+static DELTA_STATE_ALLOCATION_REPORT: Once = Once::new();
+
+// SAFETY: every allocation operation delegates to the process system allocator.
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller provided a valid allocation layout.
+        let pointer = unsafe { System.alloc(layout) };
+        if !pointer.is_null() && TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
+            ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            ALLOCATED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+        }
+        pointer
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        // SAFETY: the pointer and layout came from the delegated system allocator.
+        unsafe { System.dealloc(pointer, layout) };
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: the pointer and layout came from the delegated system allocator.
+        let pointer = unsafe { System.realloc(pointer, layout, new_size) };
+        if !pointer.is_null() && TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
+            ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            ALLOCATED_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
+        }
+        pointer
+    }
+}
+
+#[global_allocator]
+static GLOBAL_ALLOCATOR: CountingAllocator = CountingAllocator;
+
+fn measure_allocations<T>(operation: impl FnOnce() -> T) -> (T, u64, u64) {
+    TRACK_ALLOCATIONS.store(false, Ordering::SeqCst);
+    ALLOCATION_COUNT.store(0, Ordering::SeqCst);
+    ALLOCATED_BYTES.store(0, Ordering::SeqCst);
+    TRACK_ALLOCATIONS.store(true, Ordering::SeqCst);
+    let result = operation();
+    TRACK_ALLOCATIONS.store(false, Ordering::SeqCst);
+    (
+        result,
+        ALLOCATION_COUNT.load(Ordering::SeqCst),
+        ALLOCATED_BYTES.load(Ordering::SeqCst),
+    )
+}
+
+fn delta_state_fixture(socket_count: usize) -> (DeltaCompressionManager, Vec<SocketId>) {
+    let manager = DeltaCompressionManager::new(DeltaCompressionConfig::default());
+    let sockets = (0..socket_count)
+        .map(|_| {
+            let socket_id = SocketId::new();
+            manager.enable_for_socket(&socket_id);
+            socket_id
+        })
+        .collect();
+    (manager, sockets)
+}
+
+fn store_legacy_copies(
+    runtime: &tokio::runtime::Runtime,
+    manager: &DeltaCompressionManager,
+    sockets: &[SocketId],
+    payload: &Arc<Vec<u8>>,
+) {
+    runtime.block_on(async {
+        for socket_id in sockets {
+            manager
+                .store_sent_message(
+                    socket_id,
+                    "bench-channel",
+                    "bench-event",
+                    payload.as_ref().clone(),
+                    true,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+    });
+}
+
+fn store_shared_bytes(
+    runtime: &tokio::runtime::Runtime,
+    manager: &DeltaCompressionManager,
+    sockets: &[SocketId],
+    payload: &Arc<Vec<u8>>,
+) {
+    runtime.block_on(async {
+        for socket_id in sockets {
+            manager
+                .store_shared_sent_message(
+                    socket_id,
+                    "bench-channel",
+                    "bench-event",
+                    Arc::clone(payload),
+                    true,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+    });
+}
 
 fn make_payload(symbol: &str, seq: u32, price: f64, volume: f64) -> String {
     format!(
@@ -59,5 +175,53 @@ fn bench_fossil_delta(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_fossil_delta);
+fn bench_shared_delta_state(c: &mut Criterion) {
+    const SOCKETS: usize = 256;
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let payload = Arc::new(vec![42_u8; 64 * 1024]);
+
+    DELTA_STATE_ALLOCATION_REPORT.call_once(|| {
+        let (legacy_manager, legacy_sockets) = delta_state_fixture(SOCKETS);
+        let (_, legacy_allocations, legacy_bytes) = measure_allocations(|| {
+            store_legacy_copies(&runtime, &legacy_manager, &legacy_sockets, &payload)
+        });
+        let (shared_manager, shared_sockets) = delta_state_fixture(SOCKETS);
+        let (_, shared_allocations, shared_bytes) = measure_allocations(|| {
+            store_shared_bytes(&runtime, &shared_manager, &shared_sockets, &payload)
+        });
+        eprintln!(
+            "allocation_profile name=delta_state_256x64k variant=legacy allocations={legacy_allocations} allocated_bytes={legacy_bytes}"
+        );
+        eprintln!(
+            "allocation_profile name=delta_state_256x64k variant=shared allocations={shared_allocations} allocated_bytes={shared_bytes}"
+        );
+    });
+
+    let (legacy_manager, legacy_sockets) = delta_state_fixture(SOCKETS);
+    let (shared_manager, shared_sockets) = delta_state_fixture(SOCKETS);
+    let mut group = c.benchmark_group("delta_state_fanout");
+    group.bench_function("legacy_vec_copy_256x64k", |b| {
+        b.iter(|| {
+            store_legacy_copies(
+                &runtime,
+                black_box(&legacy_manager),
+                black_box(&legacy_sockets),
+                black_box(&payload),
+            )
+        })
+    });
+    group.bench_function("shared_arc_256x64k", |b| {
+        b.iter(|| {
+            store_shared_bytes(
+                &runtime,
+                black_box(&shared_manager),
+                black_box(&shared_sockets),
+                black_box(&payload),
+            )
+        })
+    });
+    group.finish();
+}
+
+criterion_group!(benches, bench_fossil_delta, bench_shared_delta_state);
 criterion_main!(benches);

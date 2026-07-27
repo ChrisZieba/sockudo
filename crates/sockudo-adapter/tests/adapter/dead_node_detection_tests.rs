@@ -154,7 +154,7 @@ async fn test_cleanup_leader_election_excludes_dead_nodes() {
         let before_node = format!("aaa-before-{}", our_node_id);
         let after_node = format!("zzz-after-{}", our_node_id);
 
-        heartbeats.insert(before_node.clone(), std::time::Instant::now());
+        heartbeats.insert(before_node, std::time::Instant::now());
         heartbeats.insert(after_node, std::time::Instant::now());
     }
 

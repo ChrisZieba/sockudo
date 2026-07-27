@@ -81,19 +81,25 @@ impl CachedTokenProvider {
     }
 
     pub async fn access_token(&self, now_ms: u64) -> Result<SecretString, ProviderAuthError> {
-        let cached = self.cache.read().await.clone();
-        if let Some(cached) = cached
-            && cached.expires_at_ms > now_ms.saturating_add(self.refresh_skew_ms)
-        {
-            return Ok(cached.token.clone());
+        if let Some(token) = {
+            let cached = self.cache.read().await;
+            cached
+                .as_ref()
+                .filter(|cached| cached.expires_at_ms > now_ms.saturating_add(self.refresh_skew_ms))
+                .map(|cached| cached.token.clone())
+        } {
+            return Ok(token);
         }
 
         let _refresh = self.refresh_lock.lock().await;
-        let cached = self.cache.read().await.clone();
-        if let Some(cached) = cached
-            && cached.expires_at_ms > now_ms.saturating_add(self.refresh_skew_ms)
-        {
-            return Ok(cached.token.clone());
+        if let Some(token) = {
+            let cached = self.cache.read().await;
+            cached
+                .as_ref()
+                .filter(|cached| cached.expires_at_ms > now_ms.saturating_add(self.refresh_skew_ms))
+                .map(|cached| cached.token.clone())
+        } {
+            return Ok(token);
         }
         let refreshed = CachedProviderAccessToken::new(self.source.fetch_token(now_ms).await?)?;
         let token = refreshed.token.clone();
@@ -102,19 +108,25 @@ impl CachedTokenProvider {
     }
 
     pub async fn bearer_token(&self, now_ms: u64) -> Result<SecretString, ProviderAuthError> {
-        let cached = self.cache.read().await.clone();
-        if let Some(cached) = cached
-            && cached.expires_at_ms > now_ms.saturating_add(self.refresh_skew_ms)
-        {
-            return Ok(cached.bearer_token.clone());
+        if let Some(bearer_token) = {
+            let cached = self.cache.read().await;
+            cached
+                .as_ref()
+                .filter(|cached| cached.expires_at_ms > now_ms.saturating_add(self.refresh_skew_ms))
+                .map(|cached| cached.bearer_token.clone())
+        } {
+            return Ok(bearer_token);
         }
 
         let _refresh = self.refresh_lock.lock().await;
-        let cached = self.cache.read().await.clone();
-        if let Some(cached) = cached
-            && cached.expires_at_ms > now_ms.saturating_add(self.refresh_skew_ms)
-        {
-            return Ok(cached.bearer_token.clone());
+        if let Some(bearer_token) = {
+            let cached = self.cache.read().await;
+            cached
+                .as_ref()
+                .filter(|cached| cached.expires_at_ms > now_ms.saturating_add(self.refresh_skew_ms))
+                .map(|cached| cached.bearer_token.clone())
+        } {
+            return Ok(bearer_token);
         }
         let refreshed = CachedProviderAccessToken::new(self.source.fetch_token(now_ms).await?)?;
         let bearer_token = refreshed.bearer_token.clone();

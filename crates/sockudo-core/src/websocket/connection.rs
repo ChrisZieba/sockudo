@@ -141,8 +141,10 @@ impl WebSocket {
 
     pub fn set_user_info(&mut self, user_info: UserInfo) {
         self.state.user_id = Some(user_info.id.clone());
-        self.state.connection_capabilities = user_info.capabilities.clone();
-        self.state.connection_meta = user_info.meta.clone();
+        self.state
+            .connection_capabilities
+            .clone_from(&user_info.capabilities);
+        self.state.connection_meta.clone_from(&user_info.meta);
         self.state.user_info = Some(user_info.clone());
 
         if let Some(info) = &user_info.info {
@@ -162,7 +164,7 @@ impl WebSocket {
             meta: None,
         });
         self.state.user = Some(sonic_rs::json!({
-            "id": context.client_id.clone(),
+            "id": context.client_id,
         }));
         self.state.token_auth_context = Some(context);
     }
