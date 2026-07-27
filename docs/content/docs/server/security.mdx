@@ -31,6 +31,8 @@ Configure allowed origins for browser clients. Do not use wildcard origins for a
 id = "app-id"
 key = "app-key"
 secret = "app-secret"
+
+[app_manager.array.apps.policy.channels]
 allowed_origins = [
   "https://app.example.com",
   "https://admin.example.com"
@@ -42,6 +44,7 @@ allowed_origins = [
 Client events allow subscribed clients to publish events to private or presence channels. Disable them unless the product explicitly needs peer-to-peer client events.
 
 ```toml
+[app_manager.array.apps.policy.features]
 enable_client_messages = false
 ```
 

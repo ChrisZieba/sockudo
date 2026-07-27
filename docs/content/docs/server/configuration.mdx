@@ -5,6 +5,8 @@ icon: SlidersHorizontal
 ---
 
 Sockudo configuration should describe the runtime shape explicitly: app storage, fanout adapter, cache, queue, protocol features, security controls, metrics, webhooks, and push notification providers.
+For TOML versus JSON, file discovery, `--config`, environment precedence, and secret placement, start
+with [Static configuration](/docs/deployment/static-configuration).
 
 ## Minimal local config
 
@@ -22,8 +24,12 @@ id = "app-id"
 key = "app-key"
 secret = "app-secret"
 enabled = true
-enable_client_messages = false
+
+[app_manager.array.apps.policy.limits]
 max_connections = 1000
+
+[app_manager.array.apps.policy.features]
+enable_client_messages = false
 ```
 
 ## Production shape

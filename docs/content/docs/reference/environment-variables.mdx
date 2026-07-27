@@ -4,7 +4,15 @@ description: Complete Sockudo runtime environment variable reference.
 icon: Settings2
 ---
 
-Sockudo loads configuration from files first, then applies environment variable overrides. Values are parsed as strings unless the target option is numeric or boolean. Boolean values follow the server parser and accept common true/false forms.
+Sockudo loads configuration from files first, then applies supported environment variable
+overrides. Environment variables are explicit mappings, not a generic alternative syntax for every
+nested TOML or JSON field. Use them for deployment-specific values and secret injection; keep
+complex app policy, retention, queue reliability, and feature structure in a static file or
+persistent manager. See [Static configuration](/docs/deployment/static-configuration) for the full
+precedence and equivalent file examples.
+
+Values are parsed as strings unless the target option is numeric or boolean. Boolean values follow
+the server parser and accept common true/false forms.
 
 This page lists every runtime environment variable referenced by the server, core configuration loader, push subsystem, app managers, adapters, queues, and provider workers.
 

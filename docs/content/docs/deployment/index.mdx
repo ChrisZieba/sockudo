@@ -1,0 +1,110 @@
+---
+title: Deployment guide
+description: Choose a Sockudo production topology, configuration strategy, and rollout path.
+icon: Cloud
+---
+
+A good Sockudo deployment starts with the failure model, not the platform logo. Decide whether one
+process is sufficient, which state must survive a restart, and whether a client may reconnect to a
+different node. Those decisions determine the adapter, cache, queue, app manager, and history
+backends.
+
+<Cards>
+  <Card title="Static configuration" href="/docs/deployment/static-configuration" description="Use TOML or JSON for structure, environment variables for overrides, and secret stores for credentials." />
+  <Card title="Linux host" href="/docs/deployment/linux" description="Run a binary under systemd, raise file limits correctly, tune the node, and configure a reverse proxy." />
+  <Card title="Docker and Compose" href="/docs/deployment/docker" description="Mount configuration, set container limits, handle secrets, and move from one host to several." />
+  <Card title="Kubernetes and Helm" href="/docs/deployment/kubernetes" description="Configure probes, disruption budgets, resources, ingress, autoscaling, and pod or node sysctls." />
+  <Card title="Cloud platforms" href="/docs/deployment/cloud-platforms" description="Apply the same architecture on AWS, Google Cloud, and Azure, including managed-node tuning examples." />
+  <Card title="Capacity planning" href="/docs/deployment/capacity-planning" description="Budget connections, find the real bottleneck, and run geographically honest benchmarks." />
+</Cards>
+
+## Choose a topology
+
+| Deployment | Good fit | Runtime backends | Main limitation |
+| --- | --- | --- | --- |
+| One process, memory only | Local development, demos, CI | Local adapter, memory cache, queue, app manager, history | Restart loses process-local state; no failover. |
+| One production VM | Small stable workload with a simple operational model | Local adapter; static apps or a durable app manager; optional durable history | The host is one failure domain. |
+| Multiple nodes with Redis | Most regional production workloads | Redis adapter, cache, queue, and rate limiter; shared app manager when apps change dynamically | Redis availability and capacity become part of the realtime path. |
+| Multiple nodes with NATS | High fanout or high subscription churn | NATS adapter, Redis cache, durable queue and app manager | NATS carries fanout, but coordination and durable features still need shared stores. |
+| Durable Protocol V2 cluster | Recovery, history, mutable messages, annotations, AI Transport | Shared adapter and cache plus durable history and version stores | More write amplification and more dependencies to operate. |
+| Managed/serverless container platform | Moderate socket counts with platform-managed rollout and scaling | Shared adapter and stores from the first replica | Platform connection duration, concurrency, and node-tuning limits apply. |
+
+Memory drivers are not shared simply because several processes use identical configuration. Every
+multi-node deployment needs a horizontal adapter. Any feature whose correctness crosses nodes also
+needs its documented shared authority.
+
+## Recommended production baseline
+
+A conventional regional cluster has:
+
+- at least two Sockudo instances spread across failure domains
+- a load balancer that supports WebSocket upgrades and has a deliberate idle timeout
+- Redis or another supported horizontal adapter
+- a shared Redis or Redis Cluster cache for coordination, idempotency, and distributed rate limits
+- durable app storage if app records change at runtime
+- a durable queue when webhook or push work must survive a node failure
+- durable history and version storage when Protocol V2 recovery or mutable state must cross nodes
+- metrics, structured logs, readiness checks, and a tested drain path
+
+Start with [Scaling](/docs/server/scaling) for cross-node semantics and
+[Security](/docs/server/security) for network and secret boundaries.
+
+## Configuration strategy
+
+Use three layers with distinct responsibilities:
+
+1. Put stable structure in a version-controlled TOML or JSON file: enabled features, driver choices,
+   limits, queue reliability, history retention, and per-app policy.
+2. Put environment-specific addresses and non-secret switches in deployment variables or a
+   generated config file.
+3. Inject app secrets, database passwords, broker credentials, and provider keys from the
+   platform's secret store.
+
+Sockudo does not treat environment variables as a complete alternative syntax for every nested
+configuration field. Complex policy and multi-app definitions belong in a file or persistent app
+manager. See [Static configuration](/docs/deployment/static-configuration) for exact precedence and
+equivalent TOML and JSON examples.
+
+## Workload questions to answer first
+
+Document these inputs before choosing instance sizes:
+
+| Input | Why it matters |
+| --- | --- |
+| Peak concurrent sockets and reconnect surge | Sets file descriptor, memory, load-balancer, and admission budgets. |
+| Messages per second and average payload | Sets CPU, network, adapter, and serialization load. |
+| Subscribers per publish | Distinguishes ingest throughput from fanout throughput. |
+| Public, private, and presence mix | Adds authentication, membership, and transition work. |
+| Subscription churn | Can dominate otherwise quiet chat or room workloads. |
+| Protocol V1 or V2 features | Recovery, deltas, filtering, history, and mutations change state and compute costs. |
+| Retention and recovery objectives | Selects memory buffers versus durable stores. |
+| Client geography | Changes handshake time, RTT, reconnect behavior, and apparent benchmark throughput. |
+
+## Rollout sequence
+
+1. Build or pin one exact Sockudo image or binary version and required Cargo features.
+2. Validate the resolved config in staging, including startup logs and `/up/<app-id>`.
+3. Load test from realistic client regions and confirm the generators are not saturated.
+4. Set a per-node `SOCKUDO_MAX_CONNECTIONS` below the measured safe ceiling.
+5. Deploy at minimum capacity before enabling autoscaling.
+6. Remove a node while traffic is active and verify reconnect and recovery behavior.
+7. Fail or pause each shared dependency and verify readiness, alerts, and backpressure.
+8. Roll in small batches while watching connection churn, adapter errors, and recovery failures.
+
+## Production gate
+
+Do not call a deployment ready until all of these are true:
+
+- `/live` is used for liveness and startup checks
+- `/up` or `/up/<app-id>` is used for readiness
+- the load balancer idle timeout and Sockudo heartbeat behavior have been tested together
+- file descriptor limits have been checked in the actual process or container
+- credentials are absent from images, ConfigMaps, command lines, and logs
+- every replica has a stable, unique `INSTANCE_PROCESS_ID`
+- multi-node drivers and feature flags pass Sockudo startup validation
+- termination grace exceeds Sockudo's shutdown grace period
+- load testing includes connect, steady-state, fanout, churn, and reconnect phases
+- dashboards distinguish a Sockudo bottleneck from the load generator, load balancer, NAT, or broker
+
+Continue with [Static configuration](/docs/deployment/static-configuration), then select the
+platform-specific guide.

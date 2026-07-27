@@ -1,0 +1,253 @@
+---
+title: Linux VM and bare metal
+description: Run Sockudo under systemd with correct file limits, measured kernel tuning, and a WebSocket-aware proxy.
+icon: Server
+---
+
+A Linux VM is often the simplest production deployment for a known, stable workload. It gives you
+direct control over file limits, kernel settings, CPU scheduling, network queues, and the process
+lifecycle. Start with one host only if a host restart is an acceptable outage; use at least two
+hosts and a shared adapter for availability.
+
+## Host layout
+
+Use separate paths for the binary, configuration, secrets, and service account:
+
+```text
+/usr/local/bin/sockudo
+/etc/sockudo/config.toml
+/etc/sockudo/sockudo.env
+/etc/systemd/system/sockudo.service
+```
+
+The service account needs read access to its configuration and secret-backed files. Sockudo does
+not need root privileges when it binds to ports `6001` and `9601`.
+
+```bash
+sudo useradd --system --home /var/lib/sockudo --create-home --shell /usr/sbin/nologin sockudo
+sudo install -o root -g root -m 0755 target/release/sockudo /usr/local/bin/sockudo
+sudo install -d -o root -g sockudo -m 0750 /etc/sockudo
+sudo install -o root -g sockudo -m 0640 config/production.toml /etc/sockudo/config.toml
+```
+
+Keep `/etc/sockudo/sockudo.env` at mode `0640` or stricter. Do not put secrets directly in the
+systemd unit because unit contents are commonly collected in diagnostics and configuration
+management.
+
+## systemd unit
+
+```ini
+[Unit]
+Description=Sockudo realtime server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=sockudo
+Group=sockudo
+WorkingDirectory=/var/lib/sockudo
+EnvironmentFile=-/etc/sockudo/sockudo.env
+ExecStart=/usr/local/bin/sockudo --config /etc/sockudo/config.toml
+Restart=on-failure
+RestartSec=2s
+LimitNOFILE=1048576
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Set `TimeoutStopSec` longer than `shutdown_grace_period`. Add `ReadWritePaths=` only when a selected
+feature genuinely writes to local disk. A stricter security directive may need adjustment for a
+provider SDK or a TLS key path; keep any exception narrow.
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now sockudo
+sudo systemctl status sockudo
+```
+
+## File descriptor limits
+
+Every accepted socket consumes a file descriptor, as do logs, shared-backend connections, metrics,
+and internal listeners. Budget:
+
+```text
+required nofile >= planned sockets + backend connections + listeners + operational reserve
+```
+
+Use at least 10–20% reserve and never set `SOCKUDO_MAX_CONNECTIONS` equal to the hard `nofile`
+limit.
+
+`/etc/security/limits.d/*.conf` applies to PAM login sessions. It does not reliably change a
+systemd service. `LimitNOFILE=` in the unit is the relevant setting.
+
+Verify the running process rather than the shell:
+
+```bash
+systemctl show sockudo -p LimitNOFILE
+cat /proc/"$(pidof sockudo)"/limits | grep -i 'open files'
+ls /proc/"$(pidof sockudo)"/fd | wc -l
+```
+
+Also check system-wide pressure:
+
+```bash
+sysctl fs.file-max fs.nr_open
+cat /proc/sys/fs/file-nr
+```
+
+## Baseline kernel profile
+
+Treat this as a starting profile for a dedicated Sockudo node, not a universal requirement:
+
+```ini
+# /etc/sysctl.d/99-sockudo.conf
+
+# Listen and SYN queues for connection bursts.
+net.core.somaxconn = 65535
+net.ipv4.tcp_max_syn_backlog = 65535
+
+# Input backlog; raise only when packet drops show the default is too small.
+net.core.netdev_max_backlog = 16384
+
+# Detect dead peers eventually at the TCP layer. Sockudo protocol heartbeats
+# remain the primary application-level liveness mechanism.
+net.ipv4.tcp_keepalive_time = 600
+net.ipv4.tcp_keepalive_intvl = 60
+net.ipv4.tcp_keepalive_probes = 5
+
+# Avoid restarting congestion control from the initial window after idle.
+net.ipv4.tcp_slow_start_after_idle = 0
+```
+
+Apply and verify:
+
+```bash
+sudo sysctl --system
+sysctl net.core.somaxconn net.ipv4.tcp_max_syn_backlog
+sysctl net.core.netdev_max_backlog
+sysctl net.ipv4.tcp_keepalive_time net.ipv4.tcp_keepalive_intvl net.ipv4.tcp_keepalive_probes
+```
+
+Why these are not all “set once and forget” values:
+
+- a larger `somaxconn` helps only if the application's listen backlog and accept loop can use it
+- a larger SYN queue helps connection bursts, not steady-state message fanout
+- a larger `netdev_max_backlog` can trade drops for latency and memory when CPU is already saturated
+- TCP keepalive does not replace Sockudo's protocol ping/pong and should not fire more aggressively
+  than necessary
+- modern Linux already autotunes TCP buffers; raising `rmem_max` and `wmem_max` without high
+  bandwidth-delay-product evidence can increase per-socket memory risk
+
+Optional settings such as `tcp_fin_timeout`, socket buffer ceilings, IRQ affinity, CPU isolation,
+busy polling, and NIC ring sizes should follow a measured bottleneck. Record the before/after
+kernel counters and repeat the same workload.
+
+Do not widen `ip_local_port_range` to increase inbound WebSocket capacity. Inbound sockets use the
+server's listening port. The ephemeral range matters for high-volume outbound connections from
+Sockudo, a NAT gateway, or the load generator.
+
+## Inspect the network path
+
+Useful counters during a connect or reconnect surge:
+
+```bash
+ss -s
+ss -lnt
+nstat -az | grep -E 'ListenOverflows|ListenDrops|TCPBacklogDrop|TCPSynRetrans'
+ip -s link
+ethtool -S eth0
+```
+
+Interpret them together:
+
+- `ListenOverflows` or `ListenDrops` suggests the accept/listen path cannot keep up
+- interface drops suggest host networking, vNIC, or CPU pressure
+- SYN retransmits can be the client network, load balancer, firewall, or server
+- no server-side drops with low achieved load usually points upstream or at the generator
+
+## Reverse proxy example
+
+Terminate TLS at a load balancer or a carefully configured reverse proxy. NGINX needs HTTP/1.1
+upgrade forwarding and long enough timeouts:
+
+```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+upstream sockudo {
+    least_conn;
+    server 10.0.1.10:6001 max_fails=3 fail_timeout=10s;
+    server 10.0.2.10:6001 max_fails=3 fail_timeout=10s;
+}
+
+server {
+    listen 443 ssl;
+    server_name ws.example.com;
+
+    location / {
+        proxy_pass http://sockudo;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 180s;
+        proxy_send_timeout 180s;
+        proxy_buffering off;
+    }
+}
+```
+
+The default Sockudo `activity_timeout` is 120 seconds. Set every proxy or load-balancer idle timeout
+above the longest expected interval between application or heartbeat traffic, with margin. A
+180-second starting value works with the default, but validate it with the actual client SDKs and
+network path.
+
+If the proxy adds entries to `X-Forwarded-For`, configure `RATE_LIMITER_API_TRUST_HOPS` and
+`RATE_LIMITER_WS_TRUST_HOPS` to the exact trusted proxy count. Never trust a client-supplied chain
+from the public internet.
+
+## One host versus several
+
+| Concern | One host | Two or more hosts |
+| --- | --- | --- |
+| Adapter | `local` is valid | Use Redis, NATS, or another horizontal adapter |
+| App definitions | Static memory app can work | All nodes need identical static apps, or use a shared app manager |
+| Rate limits | Memory is per host | Use Redis or Redis Cluster for cluster-wide limits |
+| Queue | Memory work is lost with the host | Use a durable shared queue for webhooks and push |
+| History and mutations | Memory can be acceptable for tests | Use a supported durable backend |
+| Load balancer | Optional reverse proxy | Required, with health checks and drain |
+
+For multiple nodes, set `fallback_to_local = false`. A production cluster should fail readiness or
+startup when its horizontal adapter is unavailable instead of silently splitting into isolated
+local islands.
+
+## Drain and upgrade
+
+1. Remove the host from load-balancer readiness.
+2. Wait for the balancer's deregistration delay or connection drain policy.
+3. Stop Sockudo with `systemctl stop sockudo`.
+4. Allow `TimeoutStopSec` to cover Sockudo's configured shutdown grace.
+5. Replace the binary and configuration atomically.
+6. Start the service, wait for `/up/<app-id>`, then restore load-balancer membership.
+
+Watch reconnect attempts, recovery success, adapter errors, and connection distribution throughout
+the rollout. Continue with [Capacity planning](/docs/deployment/capacity-planning) before setting a
+production connection limit.
