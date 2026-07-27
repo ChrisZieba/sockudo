@@ -1,0 +1,170 @@
+---
+title: Docker and Compose
+description: Run Sockudo in containers with mounted configuration, correct limits, health checks, and shared backends.
+icon: Container
+---
+
+The published Sockudo image runs as a non-root user and starts the binary with
+`--config /app/config/config.json`. For production, pin a release tag, mount or generate the exact
+configuration, inject secrets separately, and set limits on the container itself.
+
+## Production-like docker run
+
+```bash
+docker run -d \
+  --name sockudo \
+  --restart unless-stopped \
+  --init \
+  --stop-timeout 45 \
+  --ulimit nofile=262144:262144 \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+  --mount type=bind,src="$PWD/config.toml",dst=/app/config/production.toml,readonly \
+  --env-file "$PWD/sockudo.env" \
+  -p 6001:6001 \
+  -p 127.0.0.1:9601:9601 \
+  ghcr.io/sockudo/sockudo:4.7.0 \
+  sockudo --config /app/config/production.toml
+```
+
+The arguments after the image replace its default command, so include both `sockudo` and
+`--config`. Mount metrics only on a private or loopback interface unless the network policy already
+restricts it.
+
+The `CONFIG_FILE` environment value embedded in the image is descriptive; the server selects a
+non-default file through `--config`.
+
+## Compose profile
+
+This example keeps the Sockudo process immutable and connects it to an external or separately
+managed Redis:
+
+```yaml
+name: sockudo
+
+services:
+  sockudo:
+    image: ghcr.io/sockudo/sockudo:4.7.0
+    command: ["sockudo", "--config", "/app/config/production.toml"]
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    ports:
+      - "6001:6001"
+      - "127.0.0.1:9601:9601"
+    volumes:
+      - ./config/production.toml:/app/config/production.toml:ro
+    env_file:
+      - ./secrets/sockudo.env
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "6001"
+      METRICS_HOST: "0.0.0.0"
+      METRICS_PORT: "9601"
+      INSTANCE_PROCESS_ID: "compose-1"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:6001/up/production"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: local
+      options:
+        max-size: "20m"
+        max-file: "5"
+```
+
+For local development, adding Redis to the same Compose project is convenient. In production, a
+single-host Redis container has the same host failure domain as Sockudo. Use a managed or
+independently operated Redis topology when the shared adapter, cache, queue, or rate limiter must
+survive that host.
+
+## Configuration and secrets
+
+Prefer this separation:
+
+- mount the complete non-secret TOML or JSON read-only
+- supply secret-backed environment variables through the orchestrator
+- mount TLS keys, provider credentials, and service-account JSON as read-only secret files
+- reference secret file paths from Sockudo configuration or environment
+
+An `env_file` is still a plaintext secret file on the Docker host. Limit its owner and mode, keep it
+out of image build context and source control, and rotate it through the host's secret-management
+workflow.
+
+Do not use Docker build arguments for credentials. Build arguments and layers can remain visible in
+image metadata or caches.
+
+## Limits: host versus container
+
+Three different layers can cap a container:
+
+| Layer | Check | Configure |
+| --- | --- | --- |
+| Sockudo admission | `SOCKUDO_MAX_CONNECTIONS` | Static config or environment |
+| Process `nofile` | `docker exec sockudo sh -c 'ulimit -n'` | `--ulimit` or Compose `ulimits` |
+| Host kernel and service manager | `sysctl`, Docker daemon unit limits | Host image, sysctl, and daemon configuration |
+
+Changing `/etc/security/limits.d` inside the image does not raise the running container's file
+limit. Set it through the runtime and verify from inside the container.
+
+Host-level connection queues and NIC settings remain host concerns. Namespaced sysctls may be set
+per container, but only after confirming the runtime supports them and the value is safe for other
+workloads.
+
+## CPU and memory
+
+Start with a memory limit that leaves room for peak sockets, payload buffers, adapter queues, and
+allocator fragmentation. An out-of-memory kill disconnects every client on that container at once.
+
+CPU quotas can create latency cliffs during reconnect or fanout bursts. Set CPU reservations, watch
+throttling metrics, and add a hard CPU limit only when multi-tenant isolation requires one and the
+load test includes the same quota.
+
+Measure:
+
+```bash
+docker stats sockudo
+docker inspect sockudo --format '{{json .HostConfig.Ulimits}}'
+docker exec sockudo sh -c 'ulimit -n; cat /proc/1/limits'
+docker exec sockudo sh -c 'curl -fsS http://127.0.0.1:6001/live'
+```
+
+## Health and startup ordering
+
+Use `/live` when the runtime needs to decide whether the process is alive. Use `/up` or
+`/up/<app-id>` when the load balancer needs dependency-aware readiness.
+
+Compose `depends_on` can order startup, but it does not make a dependency permanently available.
+Sockudo must still expose failed readiness and operators must alert on adapter, cache, queue, and
+app-manager failures.
+
+Do not restart a healthy process merely because Redis or a database is briefly slow. Repeated
+container restarts amplify reconnect load.
+
+## Multi-host containers
+
+Moving Compose services onto two VMs does not create Sockudo clustering automatically. Every
+Sockudo replica must have:
+
+- the same app identity and policy, or access to one shared app manager
+- a unique `INSTANCE_PROCESS_ID`
+- a shared horizontal adapter
+- a shared cache for cross-node coordination and distributed limits
+- durable queue and state backends where the enabled features require them
+- a WebSocket-aware load balancer with readiness and connection drain
+
+Do not place a local memory adapter behind a multi-host load balancer. Clients connected to
+different hosts would occupy isolated realtime islands.
+
+For larger container deployments, use the [Kubernetes and Helm](/docs/deployment/kubernetes)
+guide. For one dedicated container host, also apply the measured host guidance from
+[Linux VM and bare metal](/docs/deployment/linux).

@@ -6,6 +6,10 @@ icon: Braces
 
 `@sockudo/client` is the official JavaScript and TypeScript realtime SDK. It preserves the Pusher subscribe/bind model and adds runtime-specific entrypoints.
 
+The default is Protocol V1 compatibility. Set `protocolVersion: 2` for
+Sockudo-native recovery, rewind, filters, deltas, binary wire formats, and
+versioned-message metadata.
+
 ## Install
 
 Install the published package from npm:
@@ -50,6 +54,52 @@ channel.bind("price-updated", (payload) => {
 });
 ```
 
+For self-hosted production, `wsHost` should be the public ingress or load
+balancer name, `wssPort` is normally `443`, and `forceTLS` should be `true`.
+Specify `enabledTransports: ["ws"]` only when debugging a direct local
+connection; allowing both secure and fallback transports is safer across
+browser and mobile runtimes.
+
+## Connection lifecycle
+
+Observe the connection separately from channel subscription state:
+
+```ts
+client.connection.bind("state_change", ({ previous, current }) => {
+  console.log(`connection: ${previous} -> ${current}`);
+});
+client.connection.bind("error", (error) => {
+  console.error("Sockudo connection error", error);
+});
+
+const channel = client.subscribe("orders");
+channel.bind("sockudo:subscription_succeeded", () => {
+  console.log("orders is live");
+});
+channel.bind("sockudo:subscription_error", (error) => {
+  console.error("orders subscription failed", error);
+});
+```
+
+A connected socket can still have an unauthorized or pending channel. Gate
+channel-dependent UI on `subscription_succeeded`, not only the global
+`connected` event.
+
+Keep the binding callback when you need to remove one handler, or remove the
+whole subscription when its owning component or job ends:
+
+```ts
+const onOrder = (order: unknown) => console.log(order);
+channel.bind("order.created", onOrder);
+
+channel.unbind("order.created", onOrder);
+client.unsubscribe("orders");
+client.disconnect();
+```
+
+Framework hooks clean up their own bindings when components unmount. When using
+the core client directly, lifecycle cleanup is your responsibility.
+
 ## Binary wire formats
 
 Protocol V2 can negotiate JSON, MessagePack, or Protobuf with `wireFormat`.
@@ -90,6 +140,24 @@ const client = new Sockudo("app-key", {
 const presence = client.subscribe("presence-lobby");
 presence.bind("pusher:member_added", console.log);
 ```
+
+The auth endpoint must validate the current application session and authorize
+the exact `channel_name` sent by the SDK before signing. For presence channels,
+derive `user_id` on the server; do not trust a client-supplied identity. The
+client bundle contains only the public app key.
+
+```ts
+presence.bind("pusher:subscription_succeeded", (members) => {
+  console.log("initial members", members);
+});
+presence.bind("pusher:member_removed", (member) => {
+  console.log("left", member);
+});
+```
+
+Configure `userAuthentication.endpoint` and call `client.signin()` when using
+user-targeted events or watchlists. The backend signs the current `socket_id`
+and authenticated user data.
 
 ## React
 
@@ -190,6 +258,34 @@ const versions = await channel.getMessageVersions("42", {
 });
 ```
 
+The proxy endpoint must authenticate the caller, authorize access to the
+channel, and sign the upstream HTTP request with the app secret. Use
+`until_attach` channel history for a gap-free late join: first attach, then load
+history ending at the server-provided attach serial, then apply buffered live
+events.
+
+## Encrypted channels
+
+Use the encryption entrypoint for `private-encrypted-*` channels:
+
+```ts
+import SockudoEncrypted from "@sockudo/client/with-encryption";
+
+const encryptedClient = new SockudoEncrypted("app-key", {
+  wsHost: "realtime.example.com",
+  forceTLS: true,
+  channelAuthorization: { endpoint: "/sockudo/auth" },
+});
+
+encryptedClient
+  .subscribe("private-encrypted-documents")
+  .bind("doc.updated", (payload) => console.log(payload));
+```
+
+Your auth response supplies the derived channel `shared_secret`. Keep the
+encryption master key on the trusted backend. End-to-end encryption complements
+TLS and authorization; it does not replace either.
+
 ## Push proxy helpers
 
 Browser push registration should flow through your backend. Keep app secrets and provider credentials server-side.
@@ -207,3 +303,20 @@ await fetch("/sockudo/push/devices", {
 ```
 
 Use a server SDK to publish push after validating user and tenant policy.
+
+## Error handling and production guidance
+
+- Reuse one client per browser tab, worker, or native application runtime.
+- Create the client outside React render functions and Vue component setup.
+- Use the runtime-specific entrypoint so bundlers do not pull in incompatible
+  browser or Node transports.
+- Treat auth `401`/`403` as an application-permission problem, not a reconnect
+  loop.
+- On `sockudo:resume_failed`, clear derived state and fetch an authoritative
+  snapshot before applying new events.
+- Make handlers idempotent and validate unknown payloads at the application
+  boundary.
+- Unbind handlers, unsubscribe unused channels, and disconnect during
+  application shutdown.
+- Never expose the app secret, push credentials, or encryption master key in a
+  browser or mobile bundle.

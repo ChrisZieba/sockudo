@@ -1,0 +1,310 @@
+---
+title: Static configuration
+description: Configure Sockudo with TOML or JSON, understand environment precedence, and keep secrets out of static files.
+icon: FileCog
+---
+
+Sockudo supports a static TOML file, a legacy-compatible JSON file, and runtime environment
+overrides. Use a file for the complete deployment shape. Use environment variables for the subset
+of settings that vary per environment and for secret references supplied by the platform.
+
+## Loading order
+
+Configuration is resolved in this order; each later source wins:
+
+1. compiled defaults
+2. `config/config.toml` from the process working directory, when it exists and parses
+3. otherwise `config/config.json` from the process working directory
+4. the file passed with `--config`, when it loads successfully
+5. supported environment-variable overrides
+6. final configuration validation
+
+An explicit `.toml` path is parsed as TOML. Other filename extensions are parsed as JSON. Prefer a
+`.toml` or `.json` suffix so the format is obvious.
+
+```bash
+sockudo --config /etc/sockudo/config.toml
+sockudo --config /etc/sockudo/config.json
+```
+
+Use `--config` to select a non-default path. The `CONFIG_FILE` environment variable present in some
+container environments does not select the file by itself; the published image's default command
+passes it an explicit path.
+
+The current server logs an explicit file read or parse failure and retains the configuration
+resolved before that file. In production, alert on `explicit configuration load failed` and require
+the `explicit configuration applied` log before sending traffic. Validate the file in CI rather
+than relying only on process startup.
+
+Configuration is read at startup. Change it through a rollout or service restart; there is no
+general-purpose hot reload.
+
+## TOML or JSON?
+
+| Format | Prefer it when | Notes |
+| --- | --- | --- |
+| TOML | Humans maintain the file and comments are valuable. | Preferred for bare-metal, VM, and source deployments. |
+| JSON | A chart, control plane, or program generates the file. | Useful for Helm `configJson` and legacy installations; comments are not allowed. |
+| Environment only | A small, single-app deployment uses only supported overrides. | Not every nested policy has an environment equivalent. |
+
+TOML and JSON deserialize into the same `ServerOptions` structure. Missing fields receive code
+defaults; a static file is not merged field-by-field with the auto-discovered file. The selected
+file becomes the complete file-based configuration, then environment overrides are applied.
+
+## Equivalent single-node files
+
+This TOML profile keeps all state in one process and is suitable for a first production-like test,
+not for failover:
+
+```toml
+mode = "production"
+host = "0.0.0.0"
+port = 6001
+debug = false
+max_connections = 20000
+activity_timeout = 120
+shutdown_grace_period = 30
+
+[adapter]
+driver = "local"
+
+[cache]
+driver = "memory"
+
+[queue]
+driver = "memory"
+
+[rate_limiter]
+enabled = true
+driver = "memory"
+
+[metrics]
+enabled = true
+driver = "prometheus"
+host = "0.0.0.0"
+port = 9601
+
+[app_manager]
+driver = "memory"
+
+[app_manager.array]
+[[app_manager.array.apps]]
+id = "example"
+key = "replace-me"
+secret = "replace-me"
+enabled = true
+
+[app_manager.array.apps.policy.limits]
+max_connections = 20000
+max_client_events_per_second = 100
+
+[app_manager.array.apps.policy.features]
+enable_client_messages = false
+enable_user_authentication = true
+
+[app_manager.array.apps.policy.channels]
+allowed_origins = ["https://app.example.com"]
+```
+
+The equivalent JSON is:
+
+```json
+{
+  "mode": "production",
+  "host": "0.0.0.0",
+  "port": 6001,
+  "debug": false,
+  "max_connections": 20000,
+  "activity_timeout": 120,
+  "shutdown_grace_period": 30,
+  "adapter": {
+    "driver": "local"
+  },
+  "cache": {
+    "driver": "memory"
+  },
+  "queue": {
+    "driver": "memory"
+  },
+  "rate_limiter": {
+    "enabled": true,
+    "driver": "memory"
+  },
+  "metrics": {
+    "enabled": true,
+    "driver": "prometheus",
+    "host": "0.0.0.0",
+    "port": 9601
+  },
+  "app_manager": {
+    "driver": "memory",
+    "array": {
+      "apps": [
+        {
+          "id": "example",
+          "key": "replace-me",
+          "secret": "replace-me",
+          "enabled": true,
+          "policy": {
+            "limits": {
+              "max_connections": 20000,
+              "max_client_events_per_second": 100
+            },
+            "features": {
+              "enable_client_messages": false,
+              "enable_user_authentication": true
+            },
+            "channels": {
+              "allowed_origins": ["https://app.example.com"]
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+Replace the example credentials before use. For a committed production file, remove the entire
+inline app definition and bootstrap the app from a secret-backed environment, or use a persistent
+app manager.
+
+## Clustered Redis profile
+
+The stable structure can remain in TOML:
+
+```toml
+mode = "production"
+host = "0.0.0.0"
+port = 6001
+max_connections = 50000
+shutdown_grace_period = 30
+
+[adapter]
+driver = "redis"
+fallback_to_local = false
+
+[cache]
+driver = "redis"
+
+[queue]
+driver = "redis"
+
+[rate_limiter]
+enabled = true
+driver = "redis"
+
+[app_manager]
+driver = "memory"
+
+[metrics]
+enabled = true
+host = "0.0.0.0"
+port = 9601
+```
+
+Inject the shared address, node identity, and one immutable app at runtime:
+
+```bash
+REDIS_URL=rediss://sockudo@redis.internal:6379/0
+INSTANCE_PROCESS_ID=sockudo-a-01
+SOCKUDO_DEFAULT_APP_ENABLED=true
+SOCKUDO_DEFAULT_APP_ID=production
+SOCKUDO_DEFAULT_APP_KEY=secret-store-value
+SOCKUDO_DEFAULT_APP_SECRET=secret-store-value
+SOCKUDO_DEFAULT_APP_ALLOWED_ORIGINS=https://app.example.com
+```
+
+`REDIS_URL` updates the Redis adapter, cache, queue, and rate limiter connection. Driver selection
+still must be `redis`, either in the file or through `ADAPTER_DRIVER`, `CACHE_DRIVER`,
+`QUEUE_DRIVER`, and `RATE_LIMITER_DRIVER`.
+
+Use a persistent app manager instead of environment bootstrap when operators create, rotate, or
+disable multiple applications without rebuilding the deployment.
+
+## What belongs where
+
+| Setting | Static file | Environment | Secret store |
+| --- | --- | --- | --- |
+| Driver selection and feature gates | Yes | Optional rollout override | No |
+| Nested app/channel policy | Yes, or persistent app manager | Only the documented subset | Credentials only |
+| Retention, buffer, and queue reliability | Yes | Use supported overrides sparingly | No |
+| Per-environment hostnames and ports | Template or generated file | Yes | Only if address contains credentials |
+| App keys and secrets | Avoid in committed files | Inject from secret reference | Yes |
+| Redis, SQL, broker passwords | Avoid | Inject from secret reference | Yes |
+| TLS private keys and push provider keys | File path or credential reference | Path/reference only | Yes |
+
+Do not place secrets in image layers, Helm values committed to Git, Kubernetes ConfigMaps, process
+arguments, or Terraform plan output.
+
+## Environment override behavior
+
+Environment variables are explicit mappings in the Sockudo configuration loader, not a generic
+`SECTION_FIELD=value` translation. The [environment variable reference](/docs/reference/environment-variables)
+is the authoritative list.
+
+Several app-bootstrap variables have deliberate replacement behavior:
+
+- a complete `SOCKUDO_DEFAULT_APP_ID`, `SOCKUDO_DEFAULT_APP_KEY`, and
+  `SOCKUDO_DEFAULT_APP_SECRET` set registers the environment-backed default app
+- `SOCKUDO_DEFAULT_APP_ENABLED=false` disables that registration
+- `SOCKUDO_SKIP_INLINE_APPS=true` skips apps declared inside the file
+- `APP_MANAGER_REGISTER_INLINE_APPS=false` also prevents inline registration
+
+Avoid mixing an inline app and environment bootstrap accidentally. Choose one source for each app
+and confirm the startup messages.
+
+## Container and Kubernetes mounts
+
+Mount a read-only file into the published container and replace the default command:
+
+```bash
+docker run --rm \
+  --mount type=bind,src="$PWD/config.toml",dst=/app/config/production.toml,readonly \
+  ghcr.io/sockudo/sockudo:4.7.0 \
+  sockudo --config /app/config/production.toml
+```
+
+In Kubernetes, mount non-secret structure from a ConfigMap and inject secrets separately:
+
+```yaml
+containers:
+  - name: sockudo
+    args: ["--config", "/etc/sockudo/config.toml"]
+    envFrom:
+      - secretRef:
+          name: sockudo-runtime
+    volumeMounts:
+      - name: config
+        mountPath: /etc/sockudo
+        readOnly: true
+volumes:
+  - name: config
+    configMap:
+      name: sockudo-config
+```
+
+The Helm chart also accepts `configJson` for advanced generated configuration and
+`extraEnvFrom` for Secret or ConfigMap references.
+
+## Validate before rollout
+
+At minimum:
+
+```bash
+taplo check config.toml
+jq empty config.json
+sockudo --config /etc/sockudo/config.toml
+```
+
+For the startup check, use the same binary, features, environment, working directory, and mounted
+secrets as production. Confirm:
+
+- `explicit configuration applied`
+- `Applied environment variable overrides`
+- no `configuration validation failed`
+- `/live` returns success
+- `/up/<app-id>` returns success after shared dependencies are available
+
+Then continue with the [Linux](/docs/deployment/linux),
+[Docker](/docs/deployment/docker), or [Kubernetes](/docs/deployment/kubernetes) guide.

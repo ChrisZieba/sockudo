@@ -177,9 +177,16 @@ id = "app-id"
 key = "app-key"
 secret = "app-secret"
 enabled = true
+
+[app_manager.array.apps.policy.limits]
 max_connections = 10000
+
+[app_manager.array.apps.policy.features]
 enable_client_messages = false
 ```
+
+For exact loading precedence, equivalent JSON, secret injection, and clustered examples, see
+[Static configuration](/docs/deployment/static-configuration).
 
 ## Kubernetes with Helm
 
@@ -193,7 +200,8 @@ helm install sockudo ./charts/sockudo \
   --set serviceMonitor.enabled=true
 ```
 
-Use Kubernetes when you need autoscaling, service monitors, disruption budgets, secret-backed app credentials, and cluster-level rollout controls.
+Use Kubernetes when you need autoscaling, service monitors, disruption budgets, secret-backed app credentials, and cluster-level rollout controls. Continue with the production
+[Kubernetes and Helm guide](/docs/deployment/kubernetes).
 
 ## Verify
 
@@ -202,4 +210,5 @@ curl -f http://127.0.0.1:6001/up
 curl -f http://127.0.0.1:9601/metrics | head
 ```
 
-When health is green, continue with [First connection](/docs/getting-started/first-connection).
+When health is green, continue with [First connection](/docs/getting-started/first-connection). Before
+shipping, follow the [Deployment guide](/docs/deployment).

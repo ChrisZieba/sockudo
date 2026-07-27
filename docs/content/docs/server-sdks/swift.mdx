@@ -17,6 +17,10 @@ the `v2.1.0` Git tag and the mirror repository's root `Package.swift` manifest:
 .product(name: "Sockudo", package: "sockudo-http-swift")
 ```
 
+The package manifest supports Swift 5.3+, iOS 13+, macOS 10.15+, tvOS 13+, and watchOS
+6+. It also exports a `Pusher` compatibility product for existing integrations;
+new code should use `Sockudo`.
+
 ## Configure
 
 ```swift
@@ -27,9 +31,15 @@ let sockudo = Sockudo(options: try SockudoClientOptions(
     key: "app-key",
     secret: "app-secret",
     host: "127.0.0.1",
-    port: 6001
+    port: 6001,
+    useTLS: false
 ))
 ```
+
+`useTLS` defaults to `true`. Keep it enabled in production and use an HTTPS API
+hostname. Construct the client once in service/application state and reuse it.
+Initializers validate options and throw; propagate or handle those errors
+instead of using `try!`.
 
 ## Publish
 
@@ -51,6 +61,42 @@ sockudo.trigger(event: event) { result in
 }
 ```
 
+Publish to multiple channels or batch independent events:
+
+```swift
+let multi = try Event(
+    name: "order.updated",
+    data: ["id": "ord_123", "status": "paid"],
+    channels: [
+        Channel(name: "tenant-42:orders", type: .public),
+        Channel(name: "user-7:orders", type: .public),
+    ],
+    idempotencyKey: "order-paid:ord_123:v3"
+)
+
+let created = try Event(
+    name: "order.created",
+    data: ["id": "ord_124"],
+    channel: Channel(name: "orders", type: .public)
+)
+let paid = try Event(
+    name: "order.paid",
+    data: ["id": "ord_124"],
+    channel: Channel(name: "orders", type: .public)
+)
+
+sockudo.trigger(event: multi) { result in
+    handlePublishResult(result)
+}
+sockudo.trigger(events: [created, paid]) { result in
+    handlePublishResult(result)
+}
+```
+
+Use an event's `socketId` to exclude the originating connection. Batches accept
+up to 10 events. Any publish that may be retried needs a stable
+business-derived idempotency key.
+
 ## Auth
 
 ```swift
@@ -67,6 +113,81 @@ sockudo.authenticate(channel: presenceChannel, socketId: "123.456", userData: us
     print(result)
 }
 ```
+
+The SDK signs after your handler authenticates the session and authorizes the
+exact channel. Derive presence identity from trusted application state. Use
+`authenticateUser` for user-targeted events.
+
+## Webhooks
+
+Pass the original request to `verifyWebhook` before processing its body:
+
+```swift
+sockudo.verifyWebhook(request: receivedRequest) { result in
+    switch result {
+    case .success(let webhook):
+        enqueue(events: webhook.events)
+    case .failure:
+        rejectWebhook()
+    }
+}
+```
+
+Do not deserialize, normalize, or log the raw body before signature
+verification. Make downstream processing idempotent.
+
+## State and history
+
+```swift
+sockudo.channels(
+    withFilter: .presence,
+    attributeOptions: .userCount
+) { result in
+    handleChannels(result)
+}
+
+let orders = Channel(name: "orders", type: .public)
+sockudo.history(
+    for: orders,
+    options: .init(limit: 50, direction: "newest_first")
+) { result in
+    handleHistory(result)
+}
+
+let presence = Channel(name: "lobby", type: .presence)
+sockudo.presenceSnapshot(
+    for: presence,
+    options: .init(atSerial: 4)
+) { result in
+    handleSnapshot(result)
+}
+```
+
+Current state is an operational snapshot. Bound history pages and pass opaque
+cursors back unchanged.
+
+## End-to-end encrypted channels
+
+Pass a base64-encoded 32-byte `encryptionMasterKey` in
+`SockudoClientOptions`, then use a channel with type `.encrypted`. The SDK
+encrypts payloads and derives the auth shared secret. A single event cannot mix
+encrypted and unencrypted channels. Keep the master key in a secret manager
+and continue to use TLS.
+
+## User connection management
+
+```swift
+sockudo.terminateUserConnections(userId: "user-42") { result in
+    handleUserControl(result)
+}
+
+sockudo.forceReconnectUser(userId: "user-42") { result in
+    handleUserControl(result)
+}
+```
+
+Terminate for immediate revocation; force reconnect when the user should
+obtain refreshed auth or routing state.
 
 ## Push notifications
 
@@ -101,3 +222,19 @@ sockudo.publishPush(request: [
 ```
 
 Use Swift server SDKs in trusted services, not inside untrusted client apps with app secrets.
+
+## Errors, concurrency, and production guidance
+
+Every asynchronous operation completes with `Result`. Handle both cases and
+avoid force-unwrapping or `try!` in production. Retry only transient transport
+errors, `429`, and suitable server responses with bounded backoff. Retried
+publishes must retain their original idempotency key.
+
+- Reuse the configured client and its URL session.
+- Keep the SDK operation deadline below the enclosing request or job deadline.
+- Dispatch completion work to the appropriate actor or queue for your
+  application.
+- Keep credentials, signed URLs, raw webhooks, event data, and provider tokens
+  out of logs.
+- Test duplicate attempts, key rotation, webhook retries, and graceful service
+  shutdown.

@@ -1,0 +1,333 @@
+---
+title: Kubernetes and Helm
+description: Deploy Sockudo with production Helm values, safe probes, disruption controls, ingress, and node tuning.
+icon: Boxes
+---
+
+Kubernetes is a good Sockudo platform when you need repeatable rollouts, failure-domain placement,
+secret injection, metrics discovery, and several replicas. It does not remove the state model:
+pods still need shared adapters and stores, and scale-down still disconnects their clients.
+
+## Install the chart
+
+```bash
+helm upgrade --install sockudo ./charts/sockudo \
+  --namespace sockudo \
+  --create-namespace \
+  --values values-production.yaml
+```
+
+Pin the chart and image version in GitOps or release automation. Do not deploy `latest`.
+
+## Production values example
+
+The following is a regional three-pod baseline with one immutable app sourced from a Kubernetes
+Secret and Redis used for fanout, cache, queue, and rate limits:
+
+```yaml
+replicaCount: 3
+
+image:
+  repository: ghcr.io/sockudo/sockudo
+  tag: "4.7.0"
+  pullPolicy: IfNotPresent
+
+config:
+  mode: production
+  debug: false
+  logOutputFormat: json
+  rustLog: "info,sockudo=info"
+  shutdownGracePeriod: 30
+  adapterDriver: redis
+  appManagerDriver: memory
+  cacheDriver: redis
+  queueDriver: redis
+  rateLimiterDriver: redis
+  rateLimiter:
+    enabled: true
+    apiMaxRequests: 1000
+    apiWindowSeconds: 60
+    apiTrustHops: 1
+    wsMaxRequests: 100
+    wsWindowSeconds: 60
+    wsTrustHops: 1
+  metrics:
+    enabled: true
+
+defaultApp:
+  enabled: true
+  existingSecret: sockudo-app
+  maxConnections: 50000
+  enableClientMessages: false
+  enableUserAuthentication: true
+
+redis:
+  host: redis.internal
+  port: 6379
+  existingSecret: sockudo-redis
+
+extraEnv:
+  - name: SOCKUDO_MAX_CONNECTIONS
+    value: "50000"
+  - name: ADAPTER_FALLBACK_TO_LOCAL
+    value: "false"
+  - name: SOCKUDO_DEFAULT_APP_ALLOWED_ORIGINS
+    value: "https://app.example.com"
+
+resources:
+  requests:
+    cpu: "1"
+    memory: 1Gi
+  limits:
+    memory: 2Gi
+
+readinessProbe:
+  httpGet:
+    path: /up/production
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+livenessProbe:
+  httpGet:
+    path: /live
+    port: http
+  periodSeconds: 20
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+startupProbe:
+  httpGet:
+    path: /live
+    port: http
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 30
+
+terminationGracePeriodSeconds: 45
+
+pdb:
+  enabled: true
+  minAvailable: 2
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: sockudo
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "180"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "180"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  hosts:
+    - host: ws.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: sockudo-tls
+      hosts:
+        - ws.example.com
+```
+
+Adapt the topology label selector when the release name or chart labels differ. If application
+records must change dynamically, select a durable app manager instead of `memory` and configure its
+database credentials from a Secret.
+
+Create the one-app Secret without placing values in the shell history or a checked-in manifest.
+The required keys are:
+
+```text
+default-app-id
+default-app-key
+default-app-secret
+```
+
+For advanced nested configuration, use the chart's `configJson` value or mount your own static
+file. Keep secret values out of `configJson`; combine it with `extraEnvFrom` or file-backed Secrets.
+
+## Probes
+
+Use different endpoints for different decisions:
+
+| Probe | Endpoint | Meaning |
+| --- | --- | --- |
+| Startup | `/live` | The process has started. |
+| Liveness | `/live` | The process runtime is alive. |
+| Readiness | `/up` or `/up/<app-id>` | Required apps and shared dependencies are available. |
+
+Do not use dependency-aware `/up` as liveness. Restarting every pod because Redis is slow creates a
+reconnect storm and does not repair Redis.
+
+Set probe timeout below its period and above normal dependency-check latency. Sockudo's
+`health_check_timeout_ms` bounds each dependency check separately.
+
+## Resources and connection admission
+
+Persistent connections do not map cleanly onto CPU-only autoscaling:
+
+- memory rises with sockets, subscriptions, pending writes, and per-connection feature state
+- CPU rises with handshake, auth, messages, fanout, compression, filtering, and reconnect bursts
+- a pod can have low CPU while holding too many quiet sockets to remove safely
+
+Set `SOCKUDO_MAX_CONNECTIONS` on every pod so a single replica cannot absorb more connections than
+its measured memory and file-descriptor budget. Keep minimum replicas high enough for the peak
+quiet-socket count even when CPU is low.
+
+CPU limits can throttle a pod during the exact reconnect or fanout burst it needs to process.
+Requests plus a memory limit are a reasonable starting point on a dedicated node pool. Add a CPU
+limit only when isolation requires it and benchmark with the same quota.
+
+## Autoscaling
+
+The chart can configure an HPA:
+
+```yaml
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 12
+  targetCPUUtilizationPercentage: 65
+  targetMemoryUtilizationPercentage: 75
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+```
+
+CPU and memory are fallback signals, not a complete realtime scaling policy. A stronger setup also
+uses active connections per pod, connection admission rejections, event-loop or fanout latency,
+adapter backlog, and reconnect rate through an external/custom metrics adapter.
+
+Scale up early. Scale down slowly and one pod at a time. Every removed pod makes its clients
+reconnect, so an aggressive HPA can oscillate and manufacture load.
+
+## Rollouts and disruptions
+
+Set:
+
+- a PodDisruptionBudget that leaves enough connection capacity online
+- zone or host topology spread
+- a termination grace period longer than `SHUTDOWN_GRACE_PERIOD`
+- a rollout `maxUnavailable` compatible with the PDB and remaining socket capacity
+- load-balancer deregistration or endpoint propagation time inside the drain budget
+
+During a rollout, watch connection count by pod. Kubernetes considers replica count, not how many
+sockets each replica owns. One terminating pod may hold a disproportionate share after a long
+uptime.
+
+If strict connection drain is required, remove readiness first, wait for endpoint and load-balancer
+propagation, then terminate. Test this behavior with the actual ingress controller; it is not
+identical across controllers.
+
+## Ingress and load balancers
+
+Confirm all layers:
+
+- accept HTTP/1.1 WebSocket upgrades
+- preserve `Upgrade` and `Connection` semantics
+- have idle timeouts above the heartbeat interval with margin
+- do not buffer WebSocket traffic
+- expose a dependency-aware readiness path
+- drain targets during pod termination
+
+The ingress annotation example above is specific to ingress-nginx. Use the equivalent settings for
+AWS Load Balancer Controller, Google Cloud Load Balancing, Azure Application Gateway, Traefik,
+Envoy, HAProxy, or a service mesh.
+
+Sticky sessions are not required for basic pub/sub with a shared adapter. They can reduce
+reconnect-to-new-node churn, but must not substitute for shared state.
+
+When preserving client IPs with `externalTrafficPolicy: Local` or proxy-protocol features, retest
+load distribution and health checks. Source-IP preservation can reduce the set of eligible nodes.
+
+## Pod and node sysctls
+
+First deploy with provider defaults and inspect counters. Managed Kubernetes node images already
+ship with non-trivial tuning, and an unnecessary override can reduce stability.
+
+Kubernetes classifies sysctls as safe or unsafe. Safe, namespaced values can be applied in the pod
+security context when the cluster version and admission policy allow them:
+
+```yaml
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  sysctls:
+    - name: net.ipv4.tcp_keepalive_time
+      value: "600"
+    - name: net.ipv4.tcp_keepalive_intvl
+      value: "60"
+    - name: net.ipv4.tcp_keepalive_probes
+      value: "5"
+```
+
+`net.core.somaxconn` is commonly treated as unsafe. A pod-level value requires both:
+
+1. an exact kubelet `allowedUnsafeSysctls` entry on every eligible node
+2. the matching `podSecurityContext.sysctls` value and an admission policy that permits it
+
+See Kubernetes' [sysctl documentation](https://kubernetes.io/docs/tasks/administer-cluster/sysctl-cluster/)
+and the provider-specific node-pool guide before enabling it. Do not grant a privileged container
+or broad `net.*` permission just to set one value.
+
+Node-level sysctl configuration and pod network namespaces are distinct. Verify the effective value
+inside the scheduled pod:
+
+```bash
+kubectl exec -n sockudo deploy/sockudo -- cat /proc/sys/net/core/somaxconn
+kubectl exec -n sockudo deploy/sockudo -- sh -c 'ulimit -n; cat /proc/1/limits'
+```
+
+Kubernetes has no portable pod field for POSIX `rlimit` values. The effective `nofile` comes from
+the container runtime and node image. If it is too low, change the runtime/node configuration or
+use a provider-supported node image customization, then verify again inside the pod.
+
+Provider examples are in [Cloud platforms](/docs/deployment/cloud-platforms).
+
+## Network capacity
+
+High socket counts can hit infrastructure before the pod:
+
+- load-balancer connection and target limits
+- node vNIC packets-per-second or bandwidth limits
+- CNI IP allocation and conntrack tables
+- NAT gateway state for outbound dependencies or load generators
+- cross-zone traffic and broker latency
+
+Inbound WebSockets do not consume a Sockudo pod's local ephemeral port range. Avoid “fixing”
+`ip_local_port_range` unless evidence points to an outbound connection or NAT bottleneck.
+
+## Verify the deployed state
+
+```bash
+helm get values sockudo -n sockudo
+kubectl get pods -n sockudo -o wide
+kubectl get pdb -n sockudo
+kubectl exec -n sockudo deploy/sockudo -- sh -c 'ulimit -n'
+kubectl port-forward -n sockudo svc/sockudo 6001:6001
+curl -fsS http://127.0.0.1:6001/live
+curl -fsS http://127.0.0.1:6001/up/production
+```
+
+Then run a node drain and a rolling restart under load. A manifest that renders successfully is not
+yet a tested realtime deployment.

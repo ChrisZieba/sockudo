@@ -358,6 +358,11 @@ Major runtime sections:
 
 Reference docs:
 
+- [Deployment guide](docs/content/docs/deployment/index.mdx)
+- [Static configuration](docs/content/docs/deployment/static-configuration.mdx)
+- [Kubernetes and Helm](docs/content/docs/deployment/kubernetes.mdx)
+- [Cloud platforms](docs/content/docs/deployment/cloud-platforms.mdx)
+- [Capacity planning](docs/content/docs/deployment/capacity-planning.mdx)
 - [Configuration](docs/content/docs/reference/configuration.mdx)
 - [Environment variables](docs/content/docs/reference/environment-variables.mdx)
 - [HTTP endpoints](docs/content/docs/reference/http-endpoints.mdx)

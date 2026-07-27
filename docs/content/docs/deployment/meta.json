@@ -1,0 +1,13 @@
+{
+  "title": "Deployment",
+  "icon": "Cloud",
+  "pages": [
+    "index",
+    "static-configuration",
+    "linux",
+    "docker",
+    "kubernetes",
+    "cloud-platforms",
+    "capacity-planning"
+  ]
+}

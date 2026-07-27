@@ -1,0 +1,350 @@
+---
+title: Capacity planning and benchmarks
+description: Size Sockudo from measured connection, fanout, memory, network, and failure budgets without benchmarking the load generator by accident.
+icon: Gauge
+---
+
+There is no single “connections per node” number. A quiet public-channel socket, a presence member,
+a filtered Protocol V2 subscriber, and a slow client receiving large payloads have different memory,
+CPU, and network costs. Capacity is the lowest limit across Sockudo, the process, the node, the load
+balancer, shared backends, and the client generator.
+
+## Name the workload
+
+Always report at least these independent dimensions:
+
+| Dimension | Example | Why it changes the result |
+| --- | ---: | --- |
+| Concurrent connected sockets | 100,000 | Drives file descriptors, memory, LB state, and heartbeat work. |
+| New connections per second | 2,000/s | Drives TCP/TLS handshake, auth, and reconnect CPU. |
+| Subscriptions per socket | 5 | Drives local channel state and adapter subscription behavior. |
+| Subscribe/unsubscribe cycles | 500/s | Drives churn and presence/count coordination. |
+| Backend publishes per second | 1,000/s | Measures ingest and adapter work. |
+| Average subscribers per publish | 100 | Converts publishes into 100,000 client deliveries/s. |
+| Payload size | 1 KiB | Drives serialization, buffers, broker traffic, and egress. |
+| Private/presence percentage | 30% / 10% | Adds auth and membership work. |
+| Protocol features | V2 recovery + deltas | Adds continuity, cache, compression, or storage work. |
+| Client RTT and TLS | 180 ms, TLS 1.3 | Changes ramp, handshake, ack, and reconnect timing. |
+
+Never publish “messages per second” without saying whether it means accepted publishes, adapter
+messages, or delivered client frames.
+
+## Capacity is the minimum budget
+
+For one Sockudo node:
+
+```text
+safe connections = min(
+  Sockudo admission limit,
+  process file-descriptor budget,
+  measured memory budget,
+  measured CPU/latency budget,
+  node and vNIC limits,
+  load-balancer target limits,
+  shared-backend budget
+) - operational headroom
+```
+
+Use 20–30% headroom after a stable test, more when traffic is bursty or failure of one node must be
+absorbed by the others.
+
+For an `N`-node cluster that must survive one node loss:
+
+```text
+normal per-node target <= cluster peak connections / (N - 1)
+```
+
+That is an availability constraint, not just a scaling calculation. The remaining nodes also need
+CPU, network, broker, and memory headroom for the reconnect burst.
+
+## File descriptor budget
+
+Estimate:
+
+```text
+nofile soft limit
+- backend sockets
+- listener, metrics, logging, and runtime descriptors
+- 10–20% descriptor reserve
+= maximum socket descriptor budget
+```
+
+Then set `SOCKUDO_MAX_CONNECTIONS` below that result. Verify the actual process:
+
+```bash
+pid="$(pidof sockudo)"
+cat "/proc/$pid/limits" | grep -i 'open files'
+find "/proc/$pid/fd" -maxdepth 1 -type l | wc -l
+```
+
+In a container or pod, run the check inside that container. Host login limits do not prove the
+container process limit.
+
+## Measure memory per workload
+
+Do not borrow a per-socket number from another server or another Sockudo feature set.
+
+1. Start the exact release build, allocator, config, and container limit.
+2. Hold the server idle and record steady resident memory.
+3. Ramp to a known socket and subscription count.
+4. Wait for allocations, buffers, and metrics to settle.
+5. Exercise the intended message, presence, filter, delta, and recovery workload.
+6. Record both steady and peak resident memory.
+7. Repeat at several counts; do not extrapolate from 100 sockets to 100,000.
+
+Approximate the marginal result:
+
+```text
+marginal bytes per socket =
+  (steady RSS at high count - baseline RSS) / active sockets
+```
+
+Use peak RSS, not only marginal steady memory, when setting a cgroup or pod memory limit. Include
+allocator fragmentation, slow-client buffers, adapter queues, recovery buffers, and rolling-deploy
+overlap.
+
+An OOM kill is a correlated disconnect event. Leave enough margin to avoid turning a transient
+fanout burst into a reconnect storm.
+
+## CPU and event throughput
+
+Separate tests for:
+
+- connection and TLS handshake rate
+- public subscribe/unsubscribe churn
+- private and presence authentication
+- presence first-join and last-leave transitions
+- backend publish admission
+- fanout deliveries
+- delta compression and tag filtering
+- durable history and version writes
+- replay and reconnect recovery
+- webhook and push queue work
+
+A workload at 1,000 publishes/s with one subscriber is not comparable to 1,000 publishes/s with
+10,000 subscribers.
+
+Approximate client delivery rate:
+
+```text
+deliveries/s = publishes/s × average matching subscribers per publish
+```
+
+Adapter and serialization cost may scale with publishes while egress and per-client write cost scale
+with deliveries.
+
+## Network budget
+
+Approximate payload egress before protocol, TLS, and TCP overhead:
+
+```text
+payload egress bytes/s =
+  publishes/s × matching subscribers × average delivered payload bytes
+```
+
+Also account for:
+
+- WebSocket frame and Sockudo/Pusher envelope size
+- TLS and TCP/IP overhead
+- heartbeat traffic for every quiet socket
+- retransmissions at the measured client RTT and loss
+- cross-zone or cross-node adapter traffic
+- metrics, webhook, history, and push traffic
+
+Cloud VM “up to” bandwidth and packets-per-second limits can produce a sharp knee. Inspect vNIC and
+load-balancer metrics while increasing load.
+
+## The load generator is often the first limit
+
+A remote benchmark can fail without Sockudo being saturated.
+
+Check every generator for:
+
+- CPU and scheduler saturation
+- memory and garbage collection
+- its own `nofile` limit
+- local ephemeral port exhaustion
+- `TIME_WAIT` accumulation between repeated runs
+- source NAT or gateway connection tracking
+- NIC bandwidth and packets per second
+- DNS and TLS handshake rate
+- dropped iterations or failure to maintain the requested arrival rate
+
+One source IP connecting to one target IP and port has a finite TCP 4-tuple space, commonly much
+less than a high-density Sockudo node can accept. To test beyond it, shard across generators, source
+IPs, or target addresses. Do not “solve” a generator's ephemeral ports by changing
+`ip_local_port_range` on the Sockudo server.
+
+Inspect a Linux generator:
+
+```bash
+ulimit -n
+sysctl net.ipv4.ip_local_port_range
+ss -s
+nstat -az | grep -E 'TCPSynRetrans|TCPAbort|ListenDrop'
+sar -n DEV,TCP,ETCP 1
+```
+
+If achieved request rate falls while Sockudo CPU, memory, network, queues, and latency remain flat,
+the server is probably not the limiting system.
+
+## Geography changes the benchmark
+
+Record both generator and server region. “Clients in Taiwan” is not a reproducible topology:
+document the cloud, city/region, ISP or cloud network, public or private path, RTT distribution, and
+packet loss.
+
+Long RTT changes:
+
+- how quickly sockets can be established during a fixed ramp
+- TLS handshake duration
+- subscribe/auth acknowledgement latency
+- retransmission recovery
+- reconnect convergence after a failure
+
+For geographically distributed users:
+
+1. run generators in the actual client regions
+2. synchronize their start time
+3. report each region separately as well as the aggregate
+4. keep server-side publish load independent from client-region socket generation
+5. compare public internet and private cloud paths only when clearly labeled
+
+A short test may end before a high-RTT generator reaches the intended connection count. Report
+achieved active sockets over time, not only configured virtual users.
+
+## Use distinct benchmark phases
+
+### 1. Connect ramp
+
+Measure connection success, TLS and WebSocket upgrade latency, admission rejections, and achieved
+connections per second. Add jitter so the default test is not an unrealistic simultaneous SYN
+flood, then run a separate reconnect-storm test intentionally.
+
+### 2. Quiet-socket soak
+
+Hold target connections long enough to observe memory stability, heartbeats, load-balancer idle
+behavior, NAT state, and unexpected platform timeouts.
+
+### 3. Subscription workload
+
+Apply the real channel cardinality, subscriptions per socket, private/presence mix, and room churn.
+
+### 4. Publish and fanout
+
+Ramp accepted publishes and matching subscribers independently. Track delivery correctness and
+end-to-end p50, p95, and p99 latency.
+
+### 5. Failure and recovery
+
+Remove a Sockudo node, interrupt the adapter, and slow a durable store. Measure reconnect time,
+recovery success, duplicates, gaps, readiness changes, and backlog drain.
+
+### 6. Cooldown
+
+Allow connections and `TIME_WAIT` state to clear, or start from a fresh generator fleet. Back-to-back
+runs without cooldown are not independent.
+
+## Repository benchmarks
+
+### Subscription churn
+
+`benches/subscription-churn.js` models room switching. Churn rate is approximately:
+
+```text
+cycles/s = VUS / (ROOM_SWITCH_INTERVAL_MS / 1000)
+```
+
+For 10,000 sockets and about 500 unsubscribe/subscribe cycles per second:
+
+```bash
+k6 run \
+  -e WS_HOSTS=wss://ws.example.com/app/app-key \
+  -e VUS=10000 \
+  -e CHANNEL_COUNT=4000 \
+  -e ROOM_SWITCH_INTERVAL_MS=20000 \
+  -e SOCKET_LIFETIME_MS=600000 \
+  -e DURATION=10m \
+  benches/subscription-churn.js
+```
+
+Shard `WS_HOSTS` or run several generators when one process or source IP approaches its limit.
+
+### Horizontal adapter fanout
+
+`benches/adapter-horizontal.js` records successful publishes, client deliveries, delivery ratio,
+and latency:
+
+```bash
+SUBSCRIBERS=900 \
+CHANNELS=100 \
+MESSAGES_PER_SECOND=1000 \
+WARMUP_SECONDS=30 \
+DURATION_SECONDS=120 \
+DRAIN_SECONDS=20 \
+RESULT_PATH=/tmp/sockudo-adapter.json \
+k6 run --quiet benches/adapter-horizontal.js
+```
+
+Use the same image, nodes, subscriber distribution, payload, warmup, and generator placement when
+comparing adapters.
+
+## Diagnose the first knee
+
+| Observation | Likely area | Next evidence |
+| --- | --- | --- |
+| Connect failures, Sockudo mostly idle | Generator, LB, firewall, NAT, SYN path | Generator ports/CPU, LB target errors, SYN retransmits, listen drops |
+| `ListenOverflows` rises | Host listen/accept path | CPU, `somaxconn`, SYN backlog, connection ramp shape |
+| High Sockudo CPU, low broker latency | Protocol, auth, compression, filtering, fanout | Flamegraph/profile and feature-isolated tests |
+| Low Sockudo CPU, broker latency/backlog rises | Adapter, queue, cache, or database | Backend CPU, connections, command latency, network |
+| Memory climbs after clients stabilize | Buffers, retained state, leak, slow clients | Heap/RSS profile, send queues, feature comparison |
+| P99 rises, throughput still correct | Queueing before saturation | Per-stage latency and utilization; reduce offered load |
+| Delivery ratio falls but publishes succeed | Fanout, slow clients, generator receive path | Per-node delivery counters, socket errors, client CPU |
+| Reconnect test collapses only after node loss | Insufficient failure headroom | Remaining-node admission, LB distribution, backend burst |
+
+Stop increasing the offered load at the first sustained latency or correctness failure. The
+maximum technically accepted rate beyond that point is not the production capacity.
+
+## Benchmark report template
+
+Publish enough information for another operator to reproduce the result:
+
+```text
+Sockudo version and commit:
+Build features and release profile:
+Allocator and container image:
+Server region, instance type, vCPU, RAM, NIC:
+Replica count and per-node max_connections:
+Load balancer and timeout:
+Adapter, cache, queue, app manager, history:
+Backend topology and region:
+Protocol version and enabled features:
+Generator version, count, regions, source IP count:
+RTT p50/p95 and packet loss:
+TLS termination path:
+Connection ramp and achieved sockets:
+Subscriptions, channels, presence/private mix, churn:
+Publish rate, matching subscribers, delivery rate:
+Payload and wire size:
+Duration, warmup, drain, and cooldown:
+Success/error/duplicate/gap counts:
+Latency p50/p95/p99:
+Sockudo, generator, LB, node, and backend utilization:
+```
+
+Without that context, benchmark numbers are anecdotes.
+
+## Set the production limit
+
+After the stable knee is known:
+
+1. choose a point below the first latency, error, or resource cliff
+2. subtract failure and rollout headroom
+3. set `SOCKUDO_MAX_CONNECTIONS` per node
+4. configure load-balancer and autoscaling thresholds to add capacity before admission rejects
+5. alert on connection utilization, rejection rate, memory, CPU throttling, network, adapter
+   latency, and recovery failures
+6. rerun after changing the binary, features, instance type, kernel, runtime, CNI, load balancer, or
+   shared backend
+
+Capacity belongs to the complete deployment, not the Sockudo process in isolation.

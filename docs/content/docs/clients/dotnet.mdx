@@ -6,6 +6,10 @@ icon: MonitorSmartphone
 
 `Sockudo.Client` is the official .NET realtime SDK. It defaults to Protocol V2 and supports V1 compatibility, public, private, presence, encrypted channels, recovery, filters, MessagePack, Protobuf, and delta reconstruction.
 
+The current monorepo package targets .NET 10. Choose
+[`SockudoServer`](/docs/server-sdks/dotnet) instead when the process needs app
+credentials to publish or authorize clients over HTTP.
+
 ## Install
 
 Install the published NuGet package:
@@ -44,6 +48,40 @@ channel.Bind("price-updated", (data, meta) => Console.WriteLine(data));
 await client.ConnectAsync();
 ```
 
+For production, use the public ingress or load-balancer hostname with
+`ForceTls = true`. Reuse one client for the application lifetime rather than
+opening a WebSocket per operation.
+
+## Connection lifecycle
+
+```csharp
+var stateToken = client.Bind("state_change", (value, _) =>
+{
+    var change = (StateChange)value!;
+    Console.WriteLine($"connection: {change.Previous} -> {change.Current}");
+});
+client.Bind("connected", (_, _) =>
+    Console.WriteLine($"socket id: {client.SocketId}"));
+client.Bind("connecting", (_, _) =>
+    Console.WriteLine("connecting"));
+client.Bind("error", (error, _) =>
+    Console.Error.WriteLine(error));
+
+await client.ConnectAsync();
+```
+
+A connected socket can still have a pending or rejected channel. Wait for the
+subscription-success event before treating channel data as live. Clean up
+bindings and subscriptions with `Unbind`, `UnsubscribeAsync`, and
+`DisconnectAsync`:
+
+```csharp
+channel.Unbind("price-updated");
+client.Unbind("state_change", stateToken);
+await client.UnsubscribeAsync("public-updates");
+await client.DisconnectAsync();
+```
+
 ## Auth
 
 ```csharp
@@ -61,17 +99,54 @@ var client = new SockudoClient(
 );
 ```
 
+The endpoint authenticates the caller, authorizes the exact requested channel,
+and signs with the app secret. Derive presence identity from the backend
+session; never trust a user ID supplied by the client.
+
+Protocol V2 can use scoped capability tokens with refresh:
+
+```csharp
+var client = new SockudoClient(
+    "app-key",
+    new SockudoOptions(
+        Cluster: "local",
+        WsHost: "realtime.example.com",
+        ForceTls: true,
+        TokenAuthentication: new TokenAuthenticationOptions(
+            TokenProvider: cancellationToken =>
+                FetchSockudoTokenAsync(cancellationToken)
+        )
+    )
+);
+```
+
+JWT expiry metadata enables proactive refresh. Token expiration and revocation
+are also exposed as typed errors.
+
 ## Presence
 
 ```csharp
 var channel = client.Subscribe("presence-lobby");
 
-channel.Bind("pusher:subscription_succeeded", (data, meta) =>
+channel.Bind("sockudo:subscription_succeeded", (data, meta) =>
     Console.WriteLine($"members: {data}"));
-channel.Bind("pusher:member_added", (data, meta) =>
+channel.Bind("sockudo:member_added", (data, meta) =>
     Console.WriteLine($"joined: {data}"));
-channel.Bind("pusher:member_removed", (data, meta) =>
+channel.Bind("sockudo:member_removed", (data, meta) =>
     Console.WriteLine($"left: {data}"));
+```
+
+Protocol V2 presence data can change without a leave/rejoin:
+
+```csharp
+var presence = (PresenceChannel)channel;
+presence.Bind("sockudo:presence_update", (member, _) =>
+    Console.WriteLine(member));
+
+await presence.UpdateAsync(new Dictionary<string, object?>
+{
+    ["status"] = "editing",
+});
 ```
 
 ## Filters
@@ -89,6 +164,28 @@ var channel = client.Subscribe(
     )
 );
 ```
+
+Combine filters with delta compression and bounded rewind for high-volume
+state feeds:
+
+```csharp
+var orderBook = client.Subscribe(
+    "orderbook:btc-usd",
+    new SubscriptionOptions(
+        Delta: new ChannelDeltaSettings(
+            Enabled: true,
+            Algorithm: DeltaAlgorithm.Xdelta3
+        ),
+        Rewind: new SubscriptionRewind.Seconds(30)
+    )
+);
+
+client.Bind("sockudo:resume_failed", (data, _) =>
+    Console.WriteLine($"reload authoritative state: {data}"));
+```
+
+On a failed resume or missing delta base, discard derived state and load a
+fresh snapshot.
 
 ## Presence history proxy
 
@@ -109,6 +206,46 @@ var channel = (PresenceChannel)client.Subscribe("presence-lobby");
 var page = await channel.HistoryAsync(
     new PresenceHistoryParams(Limit: 50, Direction: "newest_first")
 );
+```
+
+Proxy endpoints keep the app secret server-side. They must authenticate the
+caller, check channel access, bound page sizes, and forward opaque cursors.
+Channel history with `UntilAttach: true` provides a gap-free late join.
+
+## Versioned and encrypted messages
+
+Configure `VersionedMessages.Endpoint` to create and mutate messages through a
+trusted backend:
+
+```csharp
+var chat = client.Subscribe("chat:room-1");
+var created = await chat.CreateVersionedMessageAsync(
+    "chat.message",
+    "Hello",
+    new VersionedMessageCreateOptions(MessageId: "message-1")
+);
+await chat.AppendVersionedMessageAsync(created.MessageSerial, " world");
+await chat.UpdateVersionedMessageAsync(
+    created.MessageSerial,
+    new VersionedMessageMutationOptions(Data: "Hello world!")
+);
+```
+
+Apply V2 update, delete, and append actions in serial order. If an append
+arrives without a known base, fetch the latest visible version first.
+
+`private-encrypted-*` payloads decrypt automatically when channel auth returns
+the derived `SharedSecret`. Keep the encryption master key on the backend and
+continue to use TLS.
+
+## User sign-in
+
+Configure `UserAuthenticationOptions` and sign in after connecting when the
+application uses user-targeted events or watchlists:
+
+```csharp
+await client.ConnectAsync();
+await client.User.SignInAsync();
 ```
 
 ## Push proxy helper
@@ -141,3 +278,16 @@ var publish = await push.PublishAsync(
 ```
 
 The helper points at your backend proxy. Keep Sockudo app secrets on the backend.
+
+## Production checklist
+
+- Register the client as a singleton or hosted-service dependency and dispose
+  it during shutdown.
+- Pass cancellation tokens through long-running application operations.
+- Keep callbacks short and move blocking work away from the receive path.
+- Handle auth failure, token expiry, rate limiting, and transport failure as
+  different cases.
+- Make event processing idempotent and reload state after failed recovery.
+- Protect history, mutation, and push proxy endpoints with the application's
+  normal authorization.
+- Test reconnects, service restarts, token rotation, and graceful host shutdown.

@@ -14,7 +14,7 @@ Sockudo has four major surfaces:
 | --- | --- | --- |
 | WebSocket server | Accepts client connections, subscriptions, auth results, presence transitions, and realtime events. | [First connection](/docs/getting-started/first-connection) |
 | HTTP API | Lets trusted backends publish events, inspect channels, read history, mutate messages, and manage push. | [HTTP API](/docs/server/http-api) |
-| Client SDKs | Browser, mobile, desktop, and .NET realtime clients that subscribe and react to events. | [Realtime Clients](/docs/clients) |
+| Client SDKs | Browser, mobile, desktop, .NET, and Python realtime clients that subscribe and react to events. | [Realtime Clients](/docs/clients) |
 | Server SDKs | Backend libraries that sign auth responses, publish events, validate webhooks, and call REST endpoints. | [Server SDKs](/docs/server-sdks) |
 
 ## Pick your path
@@ -23,7 +23,7 @@ Sockudo has four major surfaces:
 | --- | --- | --- |
 | A Pusher replacement | [Migration](/docs/getting-started/migration) and [Protocol reference](/docs/reference/protocol) | Existing clients connecting through Protocol V1 with unchanged auth and publish semantics. |
 | A new realtime product | [First connection](/docs/getting-started/first-connection) and [Authentication](/docs/getting-started/authentication) | Public, private, and presence channels wired through client and server SDKs. |
-| A clustered production deployment | [Scaling](/docs/server/scaling), [Security](/docs/server/security), and [Observability](/docs/server/observability) | Load-balanced nodes, shared adapter, health probes, metrics, and dependency-specific alerts. |
+| A clustered production deployment | [Deployment](/docs/deployment), [Scaling](/docs/server/scaling), and [Observability](/docs/server/observability) | Load-balanced nodes, shared adapter, health probes, metrics, and dependency-specific alerts. |
 | A durable collaboration or AI workflow | [Protocol V2](/docs/clients/protocol-v2), [History and recovery](/docs/server/history-recovery), and [Mutable messages](/docs/server/mutable-messages) | Serial continuity, message IDs, rewind, annotations, and safe retry behavior. |
 
 ## Protocol modes
@@ -83,4 +83,5 @@ A production deployment usually has:
   <Card title="Connect a client" href="/docs/getting-started/first-connection" description="Subscribe to a channel and publish from a backend." />
   <Card title="Add authentication" href="/docs/getting-started/authentication" description="Private, presence, encrypted, and user authentication." />
   <Card title="Migrate from Pusher" href="/docs/getting-started/migration" description="Compatibility notes and cutover strategy." />
+  <Card title="Deploy to production" href="/docs/deployment" description="Static configuration, Linux, Docker, Kubernetes, cloud platforms, and capacity planning." />
 </Cards>

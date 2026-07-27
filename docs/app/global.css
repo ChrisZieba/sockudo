@@ -2345,6 +2345,15 @@ body {
   box-shadow: 0 22px 52px -40px color-mix(in srgb, var(--color-fd-primary) 55%, transparent);
 }
 
+.prose :where(figure.shiki) :where(pre),
+.prose [data-rehype-pretty-code-figure] :where(pre) {
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 .prose :where(table) {
   border-color: color-mix(in srgb, var(--color-fd-primary) 18%, var(--color-fd-border));
   background: color-mix(in srgb, var(--color-fd-card) 94%, transparent);

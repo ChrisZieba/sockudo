@@ -33,6 +33,11 @@ var options = new SockudoOptions
 var sockudo = new Sockudo(APP_ID, APP_KEY, APP_SECRET, options);
 ```
 
+Register one `Sockudo` instance as a singleton and reuse it. `Host` overrides
+`Cluster`; `Encrypted` selects HTTPS; `RestClientTimeout` bounds requests; and
+`BatchEventDataSizeLimit` can reject oversized event data before sending it.
+Use HTTPS when the API crosses an untrusted network.
+
 ## Publish
 
 ```csharp
@@ -46,6 +51,36 @@ ITriggerResult result = await sockudo.TriggerAsync(
     }
 ).ConfigureAwait(false);
 ```
+
+Publish to several channels or send a batch:
+
+```csharp
+await sockudo.TriggerAsync(
+    new[] { "tenant-42:orders", "user-7:orders" },
+    "order.updated",
+    new { id = "ord_123", status = "paid" }
+).ConfigureAwait(false);
+
+await sockudo.TriggerAsync(new[]
+{
+    new Event
+    {
+        Channel = "orders",
+        EventName = "order.created",
+        Data = new { id = "ord_124" },
+    },
+    new Event
+    {
+        Channel = "orders",
+        EventName = "order.paid",
+        Data = new { id = "ord_124" },
+    },
+}).ConfigureAwait(false);
+```
+
+Set `TriggerOptions.SocketId` to exclude a sender that already applied the
+change. Use a stable `IdempotencyKey` for every publish that may be retried.
+Set `BatchEventDataSizeLimit` to the server's event-size limit to fail early.
 
 ## Auth
 
@@ -61,6 +96,15 @@ var channelData = new PresenceChannelData
 var presenceAuth = sockudo.Authenticate("presence-lobby", socketId, channelData).ToJson();
 ```
 
+Authentication methods sign a response; your endpoint must first authenticate
+the application session, authorize the exact channel, and derive presence
+identity from trusted state.
+
+For `private-encrypted-*`, set a 32-byte `EncryptionMasterKey` in
+`SockudoOptions`. The SDK encrypts published payloads and derives the channel
+shared secret used during auth. Keep the master key in a secret manager and
+continue to use TLS.
+
 ## State
 
 ```csharp
@@ -70,6 +114,59 @@ var channel = await sockudo.FetchStateForChannelAsync<object>("orders")
 var users = await sockudo.FetchUsersFromPresenceChannelAsync<object>("presence-lobby")
     .ConfigureAwait(false);
 ```
+
+Read bounded history and forward opaque cursors unchanged:
+
+```csharp
+var page = await sockudo.FetchHistoryForChannelAsync<object>(
+    "orders",
+    new { limit = 50, direction = "newest_first" }
+).ConfigureAwait(false);
+
+var presencePage = await sockudo.FetchPresenceHistoryForChannelAsync<object>(
+    "presence-lobby",
+    new { limit = 50, direction = "newest_first" }
+).ConfigureAwait(false);
+
+var snapshot = await sockudo.FetchPresenceSnapshotForChannelAsync<object>(
+    "presence-lobby",
+    new { at_serial = 4 }
+).ConfigureAwait(false);
+```
+
+Application state is an operational snapshot and should not be used as an
+authorization database.
+
+## Webhooks
+
+Preserve the original body and validate before deserializing business data:
+
+```csharp
+var webhook = sockudo.ProcessWebHook(receivedSignature, rawBody);
+if (!webhook.IsValid)
+{
+    return Results.Unauthorized();
+}
+
+await queue.EnqueueAsync(webhook.Events, cancellationToken);
+return Results.Accepted();
+```
+
+Do not normalize or log the raw body or signature. Make downstream processing
+idempotent.
+
+## User connection management
+
+```csharp
+await sockudo.TerminateUserConnectionsAsync("user-42")
+    .ConfigureAwait(false);
+
+await sockudo.ForceReconnectUserAsync("user-42")
+    .ConfigureAwait(false);
+```
+
+Terminate for immediate revocation; force reconnect when clients should obtain
+new auth or routing state.
 
 ## Signed push request
 
@@ -101,3 +198,19 @@ request.Headers.Add("X-Sockudo-Push-Capability", "push-admin");
 ```
 
 Prefer a first-class push helper when available in your SDK version; the signed request shape is the same.
+
+## Errors, retries, and application lifetime
+
+Inspect `ITriggerResult` and `IGetResult<T>` before using response data.
+Validation failures such as `EventDataSizeExceededException` should not be
+retried unchanged. Retry only transient HTTP failures, `429`, and suitable
+server errors with bounded backoff and the original idempotency key.
+
+- Register the SDK client as a singleton and reuse its HTTP resources.
+- Set `RestClientTimeout` below the ASP.NET request or worker deadline.
+- Pass cancellation through surrounding application operations where the SDK
+  overload supports it.
+- Keep credentials, event bodies, signed requests, webhooks, and provider
+  tokens out of logs.
+- Test payload limits, duplicate attempts, webhook retries, credential
+  rotation, and graceful host shutdown.

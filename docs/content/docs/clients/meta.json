@@ -8,6 +8,7 @@
     "kotlin",
     "flutter",
     "dotnet",
+    "python",
     "protocol-v2",
     "filters-delta",
     "presence-history"

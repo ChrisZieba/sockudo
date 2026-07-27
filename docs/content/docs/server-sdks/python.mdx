@@ -4,6 +4,11 @@ description: Use the Python sync or async SDK for publishing, auth, history, ann
 icon: FileCode
 ---
 
+`sockudo-http-python` is the trusted HTTP SDK for APIs, workers, and web
+frameworks. It publishes and signs requests; it does not maintain a WebSocket
+subscription. Use [`sockudo-python`](/docs/clients/python) for an asyncio
+realtime consumer.
+
 ## Install
 
 ```bash
@@ -23,6 +28,21 @@ sockudo = Sockudo(
 )
 ```
 
+The package supports Python 3.9+. Create one client per process, reuse its
+HTTP pool, and close it during shutdown. Important options are:
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `timeout` | `4.0` seconds | Bound each HTTP operation |
+| `max_retries` | `3` | Retry eligible network/server failures |
+| `retry_base_delay` | `0.1` seconds | Base for retry backoff |
+| `auto_idempotency` | `False` | Generate keys when the caller omits one |
+| `http2` | `True` | Allow HTTP/2 where supported |
+| `verify_tls` | `True` | Verify the server certificate or use a CA bundle |
+
+Use `use_tls=True` in production. Do not disable certificate verification to
+work around a deployment problem.
+
 ## Publish
 
 ```python
@@ -35,6 +55,28 @@ sockudo.trigger(
     TriggerOptions(idempotency_key="order-created-ord_123"),
 )
 ```
+
+Inspect the returned `Result` rather than assuming a non-throwing call
+succeeded:
+
+```python
+result = sockudo.trigger(
+    ["tenant-42:orders", "user-7:orders"],
+    "order.updated",
+    {"id": "ord_123", "status": "paid"},
+    TriggerOptions(
+        socket_id="123.456",
+        idempotency_key="order-paid:ord_123:v3",
+    ),
+)
+
+if not result.ok:
+    raise RuntimeError(f"Sockudo publish failed: {result.status}")
+```
+
+Use batch publishing for independent events that can share one request. A
+business-derived idempotency key is preferable to auto-generation when
+separate workers may retry the same logical operation.
 
 ## Async
 
@@ -49,6 +91,11 @@ async with AsyncSockudo(
 ) as sockudo:
     await sockudo.trigger("orders", "order.created", {"id": "ord_123"})
 ```
+
+Use the synchronous client in traditional WSGI code and `AsyncSockudo` in
+ASGI/asyncio code. Do not call the synchronous client directly on an event
+loop. The context manager closes `httpx` resources; call `sockudo.close()` for a
+long-lived synchronous instance during process shutdown.
 
 ## Auth
 
@@ -65,6 +112,38 @@ presence_body = sockudo.authenticate(
 
 user_body = sockudo.authenticate_user("123.456", {"id": "user-42"})
 ```
+
+Authentication helpers only produce signatures. Your route must first
+authenticate the application session and authorize the exact channel. Derive
+presence and user identity from trusted server-side data.
+
+Configure `encryption_master_key_base64` to authorize and publish to
+`private-encrypted-*` channels. Keep that key in a secret manager and never
+return it to a client; the SDK returns only the derived shared secret.
+
+## State, user controls, and pagination
+
+```python
+from sockudo_http_python import ChannelsParams, PresenceHistoryParams
+
+channels = sockudo.list_channels(
+    ChannelsParams(
+        filter_by_prefix="presence-",
+        info=["subscription_count", "user_count"],
+    )
+)
+users = sockudo.get_channel_users("presence-lobby")
+presence_page = sockudo.get_channel_presence_history(
+    "presence-lobby",
+    PresenceHistoryParams(limit=50, direction="newest_first"),
+)
+
+sockudo.terminate_user_connections("user-42")
+sockudo.force_reconnect_user("user-42")
+```
+
+Treat state as an operational snapshot. Pass history cursors back unchanged and
+keep pages bounded.
 
 ## History and annotations
 
@@ -85,6 +164,37 @@ sockudo.publish_annotation(
     ),
 )
 ```
+
+Versioned update, append, and delete operations should use stable operation
+identities in the surrounding workflow. Preserve message and version serial
+order in downstream state. Annotation names and client IDs are application
+data; authorize them before publishing.
+
+## Webhooks
+
+Validate the signature against the exact raw request bytes before decoding
+JSON:
+
+```python
+validity = sockudo.validate_webhook_signature(
+    request.headers["X-Pusher-Key"],
+    request.headers["X-Pusher-Signature"],
+    raw_body,
+)
+
+if validity.value != "valid":
+    raise PermissionError("invalid Sockudo webhook")
+
+webhook = sockudo.parse_webhook(
+    request.headers["X-Pusher-Key"],
+    request.headers["X-Pusher-Signature"],
+    raw_body,
+)
+enqueue_events(webhook.events)
+```
+
+Configure your framework route so middleware does not replace or normalize the
+raw body before validation. Do not log the raw body or signature.
 
 ## Push notifications
 
@@ -118,3 +228,19 @@ sockudo.list_channel_push_subscriptions(PushSubscriptionParams(device_id="androi
 ```
 
 Push helper methods force `sync = False` and return the API result for status inspection.
+
+## Errors and production guidance
+
+Ordinary HTTP operations return `Result` with `Status.SUCCESS`,
+`CLIENT_ERROR`, `AUTHENTICATION_ERROR`, `SERVER_ERROR`, or `NETWORK_ERROR`.
+Only retry when `result.status.should_retry()` is true, or when your policy
+explicitly handles `429`. Retried publishes must carry an idempotency key.
+
+- Reuse the sync or async client and close it cleanly.
+- Keep the SDK timeout shorter than the request or job deadline.
+- Use a trusted CA bundle through `verify_tls` for private PKI.
+- Keep app secrets, signed URLs, webhook bodies, and provider tokens out of
+  logs.
+- Rate-limit auth and history proxy routes.
+- Test duplicate publish attempts, token/key rotation, network interruption,
+  and graceful worker shutdown.

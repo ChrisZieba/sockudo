@@ -23,6 +23,28 @@ archived/legacy mirrors.
 | .NET | `SockudoServer` | [.NET](/docs/server-sdks/dotnet) |
 | Swift | `Sockudo` via SwiftPM | [Swift](/docs/server-sdks/swift) |
 
+These packages share the Sockudo/Pusher HTTP signing protocol but differ in
+their typed helpers. When a new Sockudo endpoint is not yet wrapped by a
+language SDK, use its generic signed-request helper or generated signed URI
+rather than implementing HMAC signing independently.
+
+## Realtime client or server SDK?
+
+Use a server SDK in a trusted web application, API, worker, or job process. It
+does not maintain a WebSocket subscription. Use a
+[realtime client](/docs/clients) in browsers, mobile apps, desktop apps, or
+backend consumers that need to receive events continuously.
+
+| Task | Realtime client | Server SDK |
+| --- | --- | --- |
+| Subscribe and receive events | Yes | No |
+| Publish application events | Client events only where allowed | Yes |
+| Hold app secret | Never | Yes |
+| Authorize private/presence channels | Calls your backend | Signs the response |
+| Validate webhooks | No | Yes |
+| Query history and application state | Through a trusted proxy | Directly |
+| Manage push credentials and delivery | Through a trusted proxy | Directly |
+
 ## What belongs on the server
 
 - event publishing and batch publishing
@@ -31,6 +53,95 @@ archived/legacy mirrors.
 - webhook signature validation
 - history, versioned messages, annotations, and presence history reads
 - push device registration, channel push subscriptions, provider credentials, publish, scheduling, status, and delivery callbacks
+
+## Configure one reusable client
+
+Every SDK needs the app ID, public key, secret, HTTP host, port, and TLS mode.
+Load credentials from a secret manager or environment at process startup,
+validate them once, and reuse the configured client. Reuse preserves HTTP
+keep-alive pools and avoids per-request setup overhead.
+
+For a typical deployment:
+
+| Setting | Local development | Production |
+| --- | --- | --- |
+| Host | `127.0.0.1` | Internal service DNS or HTTPS API hostname |
+| Port | `6001` | Service port or `443` |
+| TLS | Optional | Required across untrusted networks |
+| Timeout | Short, explicit | Explicit and below the caller's deadline |
+| Credentials | Local test app | Secret manager, scoped per environment |
+
+Do not log connection URLs containing credentials, signed query strings,
+authorization responses, provider tokens, raw webhooks, or encryption keys.
+
+## Publishing model
+
+Use a single publish for one logical event, a multi-channel publish when the
+same event must reach several channels, and a batch when several independent
+events can share one HTTP request. Respect the per-SDK and server limits shown
+in each language guide.
+
+Exclude the originating `socket_id` when the sender has already applied its own
+change optimistically. Attach a stable idempotency key derived from the
+business operation whenever a request may be retried:
+
+```text
+order.created:tenant-42:order-123:version-1
+```
+
+An idempotency key identifies a logical operation, not an HTTP attempt. Reusing
+one key for different payloads can hide a real update.
+
+## Authorization endpoints
+
+A correct private or presence authorization handler performs this sequence:
+
+1. Authenticate the application's user session.
+2. Validate the `socket_id` and requested `channel_name`.
+3. Check tenant and resource access for that exact channel.
+4. Derive presence `user_id` and `user_info` from trusted application data.
+5. Ask the server SDK to sign the response.
+6. Return only the signed response to the client.
+
+Signing is not authorization by itself. Never implement an endpoint that signs
+every requested channel, and never accept presence identity directly from the
+untrusted client.
+
+For `private-encrypted-*`, configure the SDK's encryption master key and return
+the derived channel shared secret. Store and rotate the master key like any
+other high-value application secret.
+
+## Webhook handling
+
+Validate the signature against the exact raw request bytes before JSON
+decoding. Body parsing, whitespace normalization, or character re-encoding can
+change the signed bytes. Return a non-success response for an invalid signature
+and avoid logging the raw body.
+
+After validation, enqueue business processing and acknowledge quickly.
+Webhook handlers should be idempotent because delivery may be retried.
+
+## Errors, timeouts, and retries
+
+Retry only transient transport failures, `429`, and appropriate `5xx`
+responses. Do not retry validation, authentication, or authorization failures
+without changing the request. Use exponential backoff with jitter and a bounded
+attempt count.
+
+Publish retries require an idempotency key. Keep the SDK timeout shorter than
+the enclosing HTTP request or job deadline so the caller has time to handle the
+result. Record status code, operation, latency, and retry count without logging
+credentials or message content.
+
+## State, history, and pagination
+
+Application-state endpoints are operational snapshots, not a transactional
+database. Use them for occupied-channel and presence diagnostics rather than
+authorization decisions.
+
+History and presence history use bounded pages and opaque cursors. Pass cursors
+back unchanged; do not parse or construct them. A client performing a gap-free
+late join should subscribe first and request history through its attach serial.
 
 ## Push as a backend concern
 
@@ -55,3 +166,7 @@ await sockudo.publishPush({
 4. Validate private and presence channel access before signing.
 5. Validate webhook signatures before parsing business logic.
 6. Treat push publish responses as admission records and inspect status asynchronously.
+7. Set explicit connect/request timeouts and bounded retries.
+8. Monitor request latency, response status, rate limits, and webhook failures.
+9. Test credential rotation, duplicate delivery, Sockudo restarts, and network
+   interruption before production rollout.

@@ -30,6 +30,27 @@ const sockudo = new Sockudo({
 });
 ```
 
+The package supports Node.js 16+ and ships TypeScript declarations. Create one
+instance at application startup and reuse it so HTTP connections can be pooled.
+
+| Option | Meaning | Typical production value |
+| --- | --- | --- |
+| `host` | HTTP API host without a scheme | Internal service DNS or API hostname |
+| `port` | HTTP API port | Service port or `443` |
+| `useTLS` | Use HTTPS | `true` outside a trusted local network |
+| `timeout` | Request timeout in milliseconds | Lower than the route or job deadline |
+| `agent` | Custom Node HTTP(S) agent | Keep-alive, proxy, and pool settings |
+
+You can also parse a connection URL:
+
+```ts
+const sockudo = Sockudo.forURL(
+  "https://app-key:app-secret@realtime-api.example.com/apps/app-id",
+);
+```
+
+Keep that URL in a secret manager and never write it to logs.
+
 ## Publish
 
 ```ts
@@ -42,6 +63,27 @@ await sockudo.triggerBatch([
   { channel: "orders", name: "order.paid", data: { id: "ord_124" } },
 ]);
 ```
+
+Publish the same event to several channels with an array, and exclude an
+originating socket when the sender already updated optimistically:
+
+```ts
+await sockudo.trigger(
+  ["tenant-42:orders", "user-7:orders"],
+  "order.updated",
+  { id: "ord_124", status: "paid" },
+  {
+    socket_id: "123.456",
+    idempotency_key: "order-paid:ord_124:v3",
+  },
+);
+```
+
+A multi-channel publish supports up to 100 channels; a batch supports up to 10
+events. Use a stable idempotency key for every publish that a queue worker or
+HTTP handler may retry. Passing `idempotency_key: true` asks the SDK to generate
+a UUID, but a business-derived key is better when separate attempts may run in
+different processes.
 
 ## Auth
 
@@ -61,6 +103,54 @@ app.post("/sockudo/auth", express.urlencoded({ extended: false }), (req, res) =>
 });
 ```
 
+Call application authorization before `authorizeChannel`; signing alone grants
+access. For user-targeted events, expose a separate authenticated endpoint:
+
+```ts
+app.post("/sockudo/user-auth", express.urlencoded({ extended: false }), (req, res) => {
+  const user = requireUser(req);
+  res.json(sockudo.authenticateUser(req.body.socket_id, {
+    id: user.id,
+    user_info: { name: user.name },
+  }));
+});
+```
+
+Disconnect or force reconnect all sockets for a compromised or changed user:
+
+```ts
+await sockudo.terminateUserConnections("user-42");
+await sockudo.forceReconnectUser("user-42");
+```
+
+## Webhooks
+
+Signature verification requires the exact raw body. In Express, install a raw
+parser on the webhook route before a global JSON parser consumes it:
+
+```ts
+app.post(
+  "/sockudo/webhook",
+  express.raw({ type: "application/json" }),
+  (req, res) => {
+    const webhook = sockudo.webhook({
+      rawBody: req.body.toString(),
+      headers: req.headers,
+    });
+
+    if (!webhook.isValid()) {
+      return res.status(401).send("invalid signature");
+    }
+
+    enqueueWebhookEvents(webhook.getEvents());
+    return res.sendStatus(202);
+  },
+);
+```
+
+During credential rotation, `isValid()` can accept additional old key/secret
+pairs for a bounded overlap window. Do not log the raw webhook or signature.
+
 ## State and history
 
 ```ts
@@ -71,6 +161,10 @@ const history = await sockudo.channelHistory("orders", {
   direction: "newest_first",
 });
 ```
+
+State queries describe current occupancy and should not be used as an
+authorization database. History cursors are opaque: pass `next_cursor` back to
+the next call unchanged and bound each page.
 
 ## Push notifications
 
@@ -102,3 +196,29 @@ const status = await sockudo.getPublishStatus(accepted.publish_id);
 ```
 
 Push helpers force async delivery with `sync: false` for production-safe fanout.
+
+## Errors, retries, and shutdown
+
+HTTP failures reject with `RequestError`, which exposes a status code for
+classification. Retry transient network errors, `429`, and suitable `5xx`
+responses with bounded backoff; do not retry `401`, `403`, or invalid payloads
+unchanged.
+
+```ts
+try {
+  await sockudo.trigger("orders", "order.created", payload, {
+    idempotency_key: operationId,
+  });
+} catch (error) {
+  if (error instanceof Sockudo.RequestError && error.statusCode === 429) {
+    await retryLater(operationId);
+  } else {
+    throw error;
+  }
+}
+```
+
+Reuse the client instead of constructing it per request, set a timeout below
+the caller's deadline, and drain application jobs during graceful shutdown.
+Never log `error.url` or `error.body` without redaction because they can contain
+signed parameters or application data.

@@ -29,16 +29,65 @@ sockudo.setPort(6001);
 sockudo.setEncrypted(false);
 ```
 
+Create one instance and reuse it; the client is thread-safe and keeps a pooled
+HTTP connection manager. You can also configure it from
+`http://key:secret@host:port/apps/app-id`, but that URL contains credentials
+and must not be logged.
+
+Use `setEncrypted(true)` for HTTPS in production. Configure the synchronous or
+asynchronous HTTP client when you need an outbound proxy, connection pool
+limits, or request timeouts.
+
 ## Publish
 
 ```java
 Map<String, Object> data = new HashMap<>();
 data.put("id", "ord_123");
 
-TriggerOptions options = new TriggerOptions();
-options.setIdempotencyKey("order-created-ord_123");
+Result result = sockudo.trigger(
+    "orders",
+    "order.created",
+    data,
+    null,
+    "order-created-ord_123"
+);
+```
 
-sockudo.trigger("orders", "order.created", data, options);
+The SDK also supports multi-channel and batch publishing:
+
+```java
+sockudo.trigger(
+    List.of("tenant-42:orders", "user-7:orders"),
+    "order.updated",
+    Map.of("id", "ord_123", "status", "paid")
+);
+
+List<Event> batch = List.of(
+    new Event("orders", "order.created", Map.of("id", "ord_124")),
+    new Event("orders", "order.paid", Map.of("id", "ord_124"))
+);
+sockudo.trigger(batch);
+```
+
+Use the overload accepting a socket ID to exclude the originating connection.
+The five-argument overload accepts both `socketId` and `idempotencyKey`; each
+batch `Event` can also carry those values. Attach a stable key to any request
+that a job or HTTP handler may retry.
+
+All requests return `Result`. Inspect `getStatus()` and `getMessage()` rather
+than assuming a completed call succeeded:
+
+```java
+Result result = sockudo.trigger(
+    "orders",
+    "order.created",
+    data,
+    null,
+    "order-created-ord_123"
+);
+if (result.getStatus() != Status.SUCCESS) {
+    throw new IllegalStateException("Sockudo publish failed: " + result.getStatus());
+}
 ```
 
 ## Auth
@@ -56,6 +105,11 @@ String presenceAuth = sockudo.authenticate(
 );
 ```
 
+Authenticate the application session and authorize the exact channel before
+signing. Build `PresenceUser` from trusted server-side identity. Use
+`authenticateUser` for user-targeted events, then
+`terminateUserConnections` or `forceReconnectUser` when permissions change.
+
 ## Async
 
 ```java
@@ -66,6 +120,78 @@ async.setPort(6001);
 CompletableFuture<Result> result =
     async.trigger("orders", "order.created", Collections.singletonMap("id", "ord_123"));
 ```
+
+Compose the returned future and handle errors explicitly:
+
+```java
+async.trigger(
+        "orders",
+        "order.created",
+        data,
+        null,
+        "order-created-ord_123"
+    )
+    .thenAccept(response -> recordStatus(response.getStatus()))
+    .exceptionally(error -> {
+        scheduleRetry(operationId, error);
+        return null;
+    });
+```
+
+Tune the async client rather than blocking on every future. Async execution is
+not a durable queue; persist work separately when it must survive process
+failure.
+
+## State and history
+
+```java
+Result channels = sockudo.get(
+    "/channels",
+    Map.of("filter_by_prefix", "presence-", "info", "user_count")
+);
+Result users = sockudo.get("/channels/presence-lobby/users");
+
+Result page = sockudo.getChannelHistory(
+    "orders",
+    Map.of("limit", "50", "direction", "newest_first")
+);
+Result next = sockudo.getChannelHistory(
+    "orders",
+    Map.of("cursor", opaqueCursor)
+);
+```
+
+Presence history and snapshots have corresponding helpers. State is an
+operational snapshot; keep pages bounded and forward cursors unchanged.
+
+## Webhooks
+
+Validate the signature against the exact raw body before parsing:
+
+```java
+Validity validity = sockudo.validateWebhookSignature(
+    xPusherKey,
+    xPusherSignature,
+    rawBody
+);
+if (validity != Validity.VALID) {
+    throw new SecurityException("invalid Sockudo webhook");
+}
+
+Webhook webhook = sockudo.parseWebhook(rawBody);
+enqueueWebhookEvents(webhook.getEvents());
+```
+
+The parser preserves unknown event names and fields for forward compatibility.
+Do not log the raw body or signature.
+
+## End-to-end encrypted channels
+
+Pass a base64-encoded 32-byte encryption master key to the SDK constructor and
+publish only to `private-encrypted-*` names. The SDK encrypts the payload and
+derives the shared secret returned during auth. Do not mix encrypted and
+unencrypted channels in one publish, and keep the master key in a secret
+manager.
 
 ## Push notifications
 
@@ -96,3 +222,22 @@ sockudo.publishPush(request);
 ```
 
 Push helpers set `sync` to `false` and include the required Sockudo push capability header.
+
+## Concurrency, errors, and production guidance
+
+The synchronous client is thread-safe. Its default connection pool is small;
+increase `PoolingHttpClientConnectionManager.setDefaultMaxPerRoute` for
+high-concurrency services and set explicit timeouts.
+
+Retry only transient network errors, `429`, and suitable server failures with
+bounded exponential backoff. A retried publish must retain its original
+idempotency key. Authentication and validation errors require a request or
+configuration change.
+
+- Reuse the sync or async client.
+- Keep the SDK deadline shorter than the caller's deadline.
+- Validate and rate-limit auth/history endpoints.
+- Keep credentials, signed URIs, raw webhooks, payloads, and provider tokens
+  out of logs.
+- Test connection-pool saturation, duplicate attempts, credential rotation,
+  and graceful application shutdown.

@@ -35,6 +35,14 @@ sockudo = Sockudo::Client.new(
 )
 ```
 
+Create one client in an initializer and reuse it. `use_tls` defaults to `true`;
+a custom `port` takes precedence. You can also load
+`SOCKUDO_URL=http://KEY:SECRET@HOST:PORT/apps/APP_ID` with
+`Sockudo::Client.from_env`, but treat the full URL as a secret and never log it.
+
+For applications behind an outbound proxy, configure `Sockudo.http_proxy`.
+Keep the SDK request timeout below the Rails request or job deadline.
+
 ## Publish
 
 ```ruby
@@ -51,6 +59,24 @@ sockudo.trigger_batch([
 ])
 ```
 
+Publish the same event to several channels with an array and exclude an
+originating connection when it already applied the update:
+
+```ruby
+sockudo.trigger(
+  ["tenant-42:orders", "user-7:orders"],
+  "order.updated",
+  { id: "ord_123", status: "paid" },
+  {
+    socket_id: "123.456",
+    idempotency_key: "order-paid:ord_123:v3"
+  }
+)
+```
+
+Multi-channel and batch calls accept up to 10 entries. Use a stable
+idempotency key for every publish that Active Job or another worker may retry.
+
 ## Auth
 
 ```ruby
@@ -64,6 +90,14 @@ presence_auth = sockudo.authenticate(
 )
 ```
 
+Signing is the last step of authorization. Authenticate the application
+session, validate the exact requested channel, and derive `user_id` from
+trusted server-side state before calling `authenticate`.
+
+Use `authenticate_user` for user-targeted events. When access changes,
+`terminate_user_connections` disconnects a user immediately and
+`force_reconnect_user` closes sockets with a reconnect instruction.
+
 ## Webhooks
 
 ```ruby
@@ -76,6 +110,58 @@ else
   head :unauthorized
 end
 ```
+
+Build the webhook from the original `Rack::Request` so validation sees the raw
+body and headers. Validate before processing, enqueue the events, and return
+quickly. Do not log the request body or signature.
+
+## State and history
+
+```ruby
+channels = sockudo.channels(filter_by_prefix: "presence-")
+info = sockudo.channel_info("presence-lobby", info: "user_count")
+users = sockudo.channel_users("presence-lobby")
+
+page = sockudo.channel_history(
+  "orders",
+  limit: 50,
+  direction: "newest_first"
+)
+next_page = sockudo.channel_history("orders", cursor: page[:next_cursor])
+
+presence_page = sockudo.channel_presence_history(
+  "presence-lobby",
+  limit: 50
+)
+snapshot = sockudo.channel_presence_snapshot(
+  "presence-lobby",
+  at_serial: 4
+)
+```
+
+State is an operational snapshot. Keep history pages bounded and pass opaque
+cursors back unchanged.
+
+## Async requests
+
+`trigger_async` and `get_async` use EventMachine when its reactor is active and
+otherwise return a threaded `HTTPClient::Connection` immediately:
+
+```ruby
+sockudo.trigger_async(
+  "orders",
+  "order.created",
+  { id: "ord_123" },
+  { idempotency_key: "order-created:ord_123" }
+).callback do
+  Rails.logger.info("sockudo publish accepted")
+end.errback do |error|
+  retry_publish_later(error)
+end
+```
+
+Use background jobs for work that must outlive a web request; an async method
+alone is not a durable queue.
 
 ## Push notifications
 
@@ -106,3 +192,36 @@ status = sockudo.get_publish_status(accepted[:publish_id])
 ```
 
 Use Rails jobs for push fanout workflows that also touch your product database.
+
+## Errors, logging, and retries
+
+All errors inherit from `Sockudo::Error`:
+
+```ruby
+begin
+  sockudo.trigger(
+    "orders",
+    "order.created",
+    payload,
+    idempotency_key: operation_id
+  )
+rescue Sockudo::AuthenticationError
+  # Fix credentials; do not retry unchanged.
+rescue Sockudo::HTTPError => error
+  retry_publish_later(error)
+rescue Sockudo::Error => error
+  report_sdk_error(error)
+end
+```
+
+Set `Sockudo.logger = Rails.logger` to use the application logger, but redact
+credentials, signed URLs, provider tokens, and event content. Retry only
+transient network failures, `429`, and suitable `5xx` responses with bounded
+backoff and the original idempotency key.
+
+- Reuse the client from a Rails initializer.
+- Keep request deadlines shorter than the web or job timeout.
+- Authorize and rate-limit auth/history endpoints.
+- Use jobs for fanout and push workflows.
+- Test duplicate delivery, credential rotation, webhook retries, and worker
+  shutdown.
