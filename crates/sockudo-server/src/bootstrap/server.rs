@@ -3,14 +3,15 @@ use super::push::workers::start_push_monolith_workers;
 #[cfg(feature = "push")]
 use super::push::{PushAdmissionSnapshot, create_push_queue, create_push_store};
 use super::{MetricsFactory, ServerState, SockudoServer};
-use crate::cleanup::CleanupSender;
 use crate::cleanup::multi_worker::MultiWorkerCleanupSystem;
+use crate::cleanup::{CleanupSender, PresenceCleanupContext};
 use crate::history::create_history_store;
 #[cfg(feature = "versioned-messages")]
 use crate::history::{create_annotation_store, create_version_store};
 use crate::presence_history::create_presence_history_store;
 use sockudo_adapter::ConnectionHandler;
 use sockudo_adapter::factory::AdapterFactory;
+use sockudo_adapter::presence::PresenceManager;
 use sockudo_app::AppManagerFactory;
 use sockudo_cache::CacheManagerFactory;
 use sockudo_core::auth::AuthValidator;
@@ -581,6 +582,7 @@ impl SockudoServer {
 
         // Initialize cleanup queue if enabled
         let cleanup_config = config.cleanup.clone();
+        let presence_manager = Arc::new(PresenceManager::new());
 
         // Validate cleanup configuration
         if let Err(e) = cleanup_config.validate() {
@@ -592,12 +594,16 @@ impl SockudoServer {
         }
 
         let (cleanup_queue, cleanup_worker_handles) = if cleanup_config.async_enabled {
+            let presence_cleanup = PresenceCleanupContext {
+                history_store: Arc::clone(&presence_history_store),
+                history_config: config.presence_history.clone(),
+                manager: Arc::clone(&presence_manager),
+            };
             let multi_worker_system = MultiWorkerCleanupSystem::new(
                 connection_manager.clone(),
                 app_manager.clone(),
                 Some(webhook_integration.clone()),
-                presence_history_store.clone(),
-                config.presence_history.clone(),
+                presence_cleanup,
                 cleanup_config.clone(),
                 metrics.clone(),
             );
@@ -946,6 +952,7 @@ impl SockudoServer {
             builder = builder.version_store(version_store);
         }
         builder = builder.presence_history_store(presence_history_store);
+        builder = builder.presence_manager(presence_manager);
         #[cfg(feature = "versioned-messages")]
         {
             builder = builder.annotation_store(annotation_store);

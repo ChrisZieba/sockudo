@@ -103,10 +103,17 @@ use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value, json};
 #[cfg(feature = "delta")]
 use std::time::Instant;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     future::Future,
-    sync::{Arc, Mutex, OnceLock, RwLock, Weak, atomic::Ordering},
+    sync::{
+        Arc, Mutex, OnceLock, RwLock, Weak,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    },
     time::Duration,
+};
+use tokio::{
+    sync::{Mutex as AsyncMutex, Notify},
+    time::Instant as TokioInstant,
 };
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -488,6 +495,29 @@ struct AblyLiveSession {
     app_id: String,
     authorization: Arc<RwLock<ConnectionAuthorization>>,
     command_tx: crossfire::MAsyncTx<crossfire::mpsc::Array<AblySessionCommand>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct AblyPresenceConnectionKey {
+    app_id: String,
+    connection_id: String,
+}
+
+#[derive(Debug)]
+struct AblyPendingPresenceRemoval {
+    key: AblyPresenceConnectionKey,
+    session_id: String,
+    generation: u64,
+}
+
+#[derive(Default)]
+struct AblyPresenceRemovalQueue {
+    deadlines: AsyncMutex<BTreeMap<TokioInstant, VecDeque<AblyPendingPresenceRemoval>>>,
+    pending_generations: DashMap<AblyPresenceConnectionKey, u64>,
+    next_generation: AtomicU64,
+    pending_count: AtomicUsize,
+    worker_started: AtomicBool,
+    notify: Notify,
 }
 
 #[derive(Clone)]
@@ -1029,6 +1059,7 @@ pub struct AblyCompatHub {
     revocations: Mutex<AblyRevocationStore>,
     live_sessions: DashMap<String, AblyLiveSession>,
     session_echo: DashMap<String, bool>,
+    presence_removals: Arc<AblyPresenceRemovalQueue>,
     presence_registry: Arc<PresenceRegistry>,
     handler: OnceLock<Weak<ConnectionHandler>>,
     nonces: DashMap<String, i64>,
@@ -1835,6 +1866,273 @@ impl AblyCompatHub {
         Ok(Some(compiled))
     }
 
+    async fn schedule_pending_presence_removal(
+        self: &Arc<Self>,
+        app_id: &str,
+        connection_id: &str,
+        session_id: &str,
+        delay_ms: u64,
+    ) -> SockudoResult<()> {
+        if self
+            .presence_removals
+            .pending_count
+            .fetch_add(1, Ordering::AcqRel)
+            >= ABLY_COMPAT_MAX_PENDING_PRESENCE_REMOVALS
+        {
+            self.presence_removals
+                .pending_count
+                .fetch_sub(1, Ordering::AcqRel);
+            return Err(SockudoError::OverCapacity);
+        }
+
+        let key = AblyPresenceConnectionKey {
+            app_id: app_id.to_string(),
+            connection_id: connection_id.to_string(),
+        };
+        let generation = self
+            .presence_removals
+            .next_generation
+            .fetch_add(1, Ordering::Relaxed);
+        self.presence_removals
+            .pending_generations
+            .insert(key.clone(), generation);
+        let deadline = TokioInstant::now() + Duration::from_millis(delay_ms);
+        {
+            let mut deadlines = self.presence_removals.deadlines.lock().await;
+            deadlines
+                .entry(deadline)
+                .or_default()
+                .push_back(AblyPendingPresenceRemoval {
+                    key,
+                    session_id: session_id.to_string(),
+                    generation,
+                });
+        }
+        self.ensure_presence_removal_worker();
+        self.presence_removals.notify.notify_one();
+        Ok(())
+    }
+
+    fn ensure_presence_removal_worker(self: &Arc<Self>) {
+        if self
+            .presence_removals
+            .worker_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        let weak_hub = Arc::downgrade(self);
+        let queue = Arc::clone(&self.presence_removals);
+        tokio::spawn(async move {
+            Self::run_presence_removal_worker(weak_hub, queue).await;
+        });
+    }
+
+    async fn run_presence_removal_worker(
+        weak_hub: Weak<Self>,
+        queue: Arc<AblyPresenceRemovalQueue>,
+    ) {
+        loop {
+            let next_deadline = {
+                let deadlines = queue.deadlines.lock().await;
+                let next_deadline = deadlines.keys().next().copied();
+                if next_deadline.is_none() {
+                    // This store happens while holding the queue lock. A producer
+                    // therefore either observes the running worker and leaves a
+                    // visible deadline, or observes false and starts a new worker.
+                    queue.worker_started.store(false, Ordering::Release);
+                }
+                next_deadline
+            };
+            let Some(deadline) = next_deadline else {
+                return;
+            };
+
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => {}
+                _ = queue.notify.notified() => continue,
+            }
+
+            let due = {
+                let mut deadlines = queue.deadlines.lock().await;
+                let now = TokioInstant::now();
+                let mut due = Vec::new();
+                while let Some((&deadline, _)) = deadlines.first_key_value() {
+                    if deadline > now {
+                        break;
+                    }
+                    if let Some((_, mut bucket)) = deadlines.pop_first() {
+                        due.reserve(bucket.len());
+                        due.extend(bucket.drain(..));
+                    }
+                }
+                due
+            };
+            let Some(hub) = weak_hub.upgrade() else {
+                return;
+            };
+            for removal in due {
+                queue.pending_count.fetch_sub(1, Ordering::AcqRel);
+                hub.process_pending_presence_removal(removal).await;
+            }
+        }
+    }
+
+    async fn process_pending_presence_removal(&self, removal: AblyPendingPresenceRemoval) {
+        if self
+            .presence_removals
+            .pending_generations
+            .remove_if(&removal.key, |_, generation| {
+                *generation == removal.generation
+            })
+            .is_none()
+        {
+            return;
+        }
+        if !self
+            .claim_pending_presence_removal(&removal.key, &removal.session_id)
+            .await
+        {
+            return;
+        }
+        self.remove_presence_connection(
+            &removal.key.app_id,
+            &removal.key.connection_id,
+            PresenceHistoryEventCause::Timeout,
+        )
+        .await;
+    }
+
+    async fn claim_pending_presence_removal(
+        &self,
+        key: &AblyPresenceConnectionKey,
+        session_id: &str,
+    ) -> bool {
+        let Some(cache) = &self.cache else {
+            return true;
+        };
+        match cache
+            .compare_and_remove(
+                &session_owner_cache_key(&key.app_id, &key.connection_id),
+                session_id,
+            )
+            .await
+        {
+            Ok(claimed) => claimed,
+            Err(error) => {
+                self.metrics.mark_backend_failure();
+                warn!(
+                    protocol = "ably",
+                    app_id = %key.app_id,
+                    connection_id = %key.connection_id,
+                    error = %error,
+                    "presence removal session owner claim failed"
+                );
+                // The connection-state expiry sweep is the bounded fallback when
+                // distributed ownership cannot be claimed safely.
+                false
+            }
+        }
+    }
+
+    async fn remove_presence_connection(
+        &self,
+        app_id: &str,
+        connection_id: &str,
+        cause: PresenceHistoryEventCause,
+    ) {
+        let handler = self.handler.get().and_then(Weak::upgrade);
+        let removals = if let Some(handler) = handler.as_ref() {
+            match handler.app_manager().find_by_id(app_id).await {
+                Ok(Some(app)) => PresenceService::new(Arc::clone(handler))
+                    .unregister_connection(&app, connection_id, cause)
+                    .await
+                    .map(|removals| {
+                        let mut grouped = BTreeMap::<String, Vec<PresenceChange>>::new();
+                        for removal in removals {
+                            grouped
+                                .entry(removal.channel)
+                                .or_default()
+                                .push(PresenceChange {
+                                    action: PresenceChangeAction::Leave,
+                                    member: removal.member,
+                                    // Server-generated disconnect leaves are
+                                    // synthesized. Omitting the item ID makes
+                                    // Ably SDKs order them by timestamp instead
+                                    // of rejecting the reused enter serial.
+                                    wire_id: None,
+                                });
+                        }
+                        grouped
+                    }),
+                Ok(None) => Ok(self.remove_connection_presence(app_id, connection_id)),
+                Err(error) => Err(error),
+            }
+        } else {
+            Ok(self.remove_connection_presence(app_id, connection_id))
+        };
+        let removals = match removals {
+            Ok(removals) => removals,
+            Err(error) => {
+                warn!(
+                    protocol = "ably",
+                    app_id = %app_id,
+                    connection_id = %connection_id,
+                    error = %error,
+                    "failed to persist timed out ably presence leaves"
+                );
+                self.remove_connection_presence(app_id, connection_id)
+            }
+        };
+        for (channel, changes) in removals {
+            let replication = PresenceReplication {
+                changes,
+                unregister_connection: None,
+            };
+            if let Some(handler) = handler.as_ref() {
+                if let Err(error) = handler.fanout_presence(app_id, &channel, replication).await {
+                    warn!(
+                        protocol = "ably",
+                        app_id = %app_id,
+                        channel = %channel,
+                        error = %error,
+                        "failed to replicate timed out presence leaves"
+                    );
+                }
+            } else if let Err(error) = self.deliver_presence(app_id, &channel, &replication) {
+                warn!(
+                    protocol = "ably",
+                    app_id = %app_id,
+                    channel = %channel,
+                    error = %error,
+                    "failed to deliver timed out presence leaves"
+                );
+            }
+        }
+        if let Some(handler) = handler.as_ref()
+            && let Err(error) = handler
+                .fanout_presence(
+                    app_id,
+                    "",
+                    PresenceReplication {
+                        changes: Vec::new(),
+                        unregister_connection: Some(connection_id.to_string()),
+                    },
+                )
+                .await
+        {
+            warn!(
+                protocol = "ably",
+                app_id = %app_id,
+                connection_id = %connection_id,
+                error = %error,
+                "failed to replicate timed out presence connection removal"
+            );
+        }
+    }
+
     async fn expire(&self, now: i64) {
         let expired_connections = self
             .sessions
@@ -1875,98 +2173,12 @@ impl AblyCompatHub {
             self.metrics.expiry.fetch_add(1, Ordering::Relaxed);
         }
         for (connection_id, app_id) in expired_connections {
-            let handler = self.handler.get().and_then(Weak::upgrade);
-            let removals = if let Some(handler) = handler.as_ref() {
-                match handler.app_manager().find_by_id(&app_id).await {
-                    Ok(Some(app)) => PresenceService::new(Arc::clone(handler))
-                        .unregister_connection(
-                            &app,
-                            &connection_id,
-                            PresenceHistoryEventCause::Timeout,
-                        )
-                        .await
-                        .map(|removals| {
-                            let mut grouped = BTreeMap::<String, Vec<PresenceChange>>::new();
-                            for removal in removals {
-                                let wire_id = Some(removal.member.id.clone());
-                                grouped
-                                    .entry(removal.channel)
-                                    .or_default()
-                                    .push(PresenceChange {
-                                        action: PresenceChangeAction::Leave,
-                                        member: removal.member,
-                                        wire_id,
-                                    });
-                            }
-                            grouped
-                        }),
-                    Ok(None) => Ok(self.remove_connection_presence(&app_id, &connection_id)),
-                    Err(error) => Err(error),
-                }
-            } else {
-                Ok(self.remove_connection_presence(&app_id, &connection_id))
-            };
-            let removals = match removals {
-                Ok(removals) => removals,
-                Err(error) => {
-                    warn!(
-                        protocol = "ably",
-                        app_id = %app_id,
-                        connection_id = %connection_id,
-                        error = %error,
-                        "failed to persist expired Ably presence leaves"
-                    );
-                    self.remove_connection_presence(&app_id, &connection_id)
-                }
-            };
-            for (channel, changes) in removals {
-                let replication = PresenceReplication {
-                    changes,
-                    unregister_connection: None,
-                };
-                if let Some(handler) = handler.as_ref() {
-                    if let Err(error) = handler
-                        .fanout_presence(&app_id, &channel, replication)
-                        .await
-                    {
-                        warn!(
-                            protocol = "ably",
-                            app_id = %app_id,
-                            channel = %channel,
-                            error = %error,
-                            "failed to replicate expired presence leaves"
-                        );
-                    }
-                } else if let Err(error) = self.deliver_presence(&app_id, &channel, &replication) {
-                    warn!(
-                        protocol = "ably",
-                        app_id = %app_id,
-                        channel = %channel,
-                        error = %error,
-                        "failed to deliver expired presence leaves"
-                    );
-                }
-            }
-            if let Some(handler) = handler.as_ref()
-                && let Err(error) = handler
-                    .fanout_presence(
-                        &app_id,
-                        "",
-                        PresenceReplication {
-                            changes: Vec::new(),
-                            unregister_connection: Some(connection_id.clone()),
-                        },
-                    )
-                    .await
-            {
-                warn!(
-                    protocol = "ably",
-                    app_id = %app_id,
-                    connection_id = %connection_id,
-                    error = %error,
-                    "failed to replicate expired presence connection removal"
-                );
-            }
+            self.remove_presence_connection(
+                &app_id,
+                &connection_id,
+                PresenceHistoryEventCause::Timeout,
+            )
+            .await;
         }
     }
 
@@ -2241,14 +2453,13 @@ impl AblyCompatHub {
         {
             let mut member = removal.member;
             member.timestamp_ms = now_ms();
-            let wire_id = Some(member.id.clone());
             leaves
                 .entry(removal.channel)
                 .or_default()
                 .push(PresenceChange {
                     action: PresenceChangeAction::Leave,
                     member,
-                    wire_id,
+                    wire_id: None,
                 });
         }
         leaves
@@ -3043,9 +3254,19 @@ impl AblyCompatHub {
         connection_id: String,
         session: AblyLiveSession,
     ) -> Option<crossfire::MAsyncTx<crossfire::mpsc::Array<AblySessionCommand>>> {
+        self.cancel_pending_presence_removal(&session.app_id, &connection_id);
         self.live_sessions
             .insert(connection_id, session)
             .map(|previous| previous.command_tx)
+    }
+
+    fn cancel_pending_presence_removal(&self, app_id: &str, connection_id: &str) {
+        self.presence_removals
+            .pending_generations
+            .remove(&AblyPresenceConnectionKey {
+                app_id: app_id.to_string(),
+                connection_id: connection_id.to_string(),
+            });
     }
 
     async fn claim_session_owner(

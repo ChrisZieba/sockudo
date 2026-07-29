@@ -1,5 +1,7 @@
 use crossfire::mpsc;
+use sockudo_core::channel::PresenceMemberInfo;
 use sockudo_core::websocket::{DisconnectCause, SocketId};
+use std::collections::HashMap;
 use std::time::Instant;
 
 pub type CleanupChannelFlavor = mpsc::Array<DisconnectTask>;
@@ -53,6 +55,7 @@ pub struct DisconnectTask {
 #[derive(Debug, Clone)]
 pub struct ConnectionCleanupInfo {
     pub presence_channels: Vec<String>,
+    pub presence_members: HashMap<String, PresenceMemberInfo>,
     pub auth_info: Option<AuthInfo>,
 }
 

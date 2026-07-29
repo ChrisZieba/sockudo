@@ -35,10 +35,13 @@ pub(crate) const FLAG_RESUMED: u64 = 1 << 2;
 pub(crate) const FLAG_ATTACH_RESUME: u64 = 1 << 5;
 pub(crate) const DEFAULT_CONNECTION_STATE_TTL_MS: u64 = 120_000;
 pub(crate) const DEFAULT_MAX_IDLE_INTERVAL_MS: u64 = 15_000;
+pub(crate) const DEFAULT_REMAIN_PRESENT_FOR_MS: u64 = 15_000;
+pub(crate) const MIN_REMAIN_PRESENT_FOR_MS: u64 = 1_000;
 pub(crate) const DEFAULT_MAX_MESSAGE_SIZE: u64 = 64 * 1024;
 pub(crate) const DEFAULT_TOKEN_TTL_MS: i64 = 60 * 60 * 1000;
 pub(crate) const ABLY_COMPAT_MAX_REPLAY_MESSAGES: usize = 4096;
 pub(crate) const ABLY_COMPAT_MAX_SESSIONS: usize = 100_000;
+pub(crate) const ABLY_COMPAT_MAX_PENDING_PRESENCE_REMOVALS: usize = 100_000;
 pub(crate) const ABLY_COMPAT_MAX_TOKENS: usize = 100_000;
 pub(crate) const ABLY_COMPAT_EXPIRY_SWEEP_MS: u64 = 30_000;
 

@@ -372,6 +372,14 @@ See [Logging](/docs/reference/logging) for level policy, stable lifecycle fields
 | `EVENT_NAME_FILTERING_MAX_EVENTS_PER_FILTER` | Maximum event names in one subscription filter. |
 | `EVENT_NAME_FILTERING_MAX_EVENT_NAME_LENGTH` | Maximum event name length inside a filter. |
 
+## Presence
+
+| Variable | Purpose |
+| --- | --- |
+| `PRESENCE_UPDATE_RATE_LIMIT_PER_MEMBER_PER_SECOND` | Maximum presence updates accepted per member per second. |
+| `PRESENCE_UNGRACEFUL_TIMEOUT_SECONDS` | Protocol V1/Pusher presence lease after an abrupt disconnect. Defaults to immediate removal. |
+| `PRESENCE_V2_UNGRACEFUL_TIMEOUT_SECONDS` | Protocol V2 presence lease after an abrupt disconnect. Defaults to 15 seconds. |
+
 ## History, idempotency, versioning, and annotations
 
 | Variable | Purpose |

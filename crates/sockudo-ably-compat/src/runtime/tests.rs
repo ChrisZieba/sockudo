@@ -892,6 +892,23 @@ fn close_and_disconnect_actions_have_distinct_terminal_outcomes() {
 }
 
 #[test]
+fn remain_present_for_uses_ably_default_and_bounds() {
+    assert_eq!(
+        normalized_remain_present_for_ms(None),
+        DEFAULT_REMAIN_PRESENT_FOR_MS
+    );
+    assert_eq!(
+        normalized_remain_present_for_ms(Some(0)),
+        MIN_REMAIN_PRESENT_FOR_MS
+    );
+    assert_eq!(normalized_remain_present_for_ms(Some(5_000)), 5_000);
+    assert_eq!(
+        normalized_remain_present_for_ms(Some(u64::MAX)),
+        DEFAULT_REMAIN_PRESENT_FOR_MS
+    );
+}
+
+#[test]
 fn presence_reentry_preserves_only_valid_same_connection_ids() {
     let connection_id = "connection-a";
     assert_eq!(
@@ -910,6 +927,282 @@ fn presence_reentry_preserves_only_valid_same_connection_ids() {
         ably_presence_message_id(None, connection_id, 9, 1),
         "connection-a:9:1"
     );
+}
+
+#[test]
+fn synthesized_disconnect_leave_omits_the_enter_message_id() {
+    let hub = AblyCompatHub::default();
+    hub.presence_registry
+        .register_connection("app", "connection-a");
+    hub.presence_registry
+        .enter(
+            "app",
+            "room",
+            PresenceRecord {
+                connection_id: "connection-a".to_string(),
+                client_id: "client-a".to_string(),
+                id: "connection-a:1:0".to_string(),
+                data: None,
+                encoding: None,
+                extras: None,
+                timestamp_ms: 1,
+            },
+        )
+        .expect("presence entry succeeds");
+
+    let removals = hub.remove_connection_presence("app", "connection-a");
+    let change = removals
+        .get("room")
+        .and_then(|changes| changes.first())
+        .expect("disconnect produces a leave");
+    let wire = ably_presence_from_change(change);
+
+    assert_eq!(wire.action, Some(3));
+    assert!(wire.id.is_none());
+    assert!(wire.timestamp.is_some_and(|timestamp| timestamp > 1));
+}
+
+#[tokio::test]
+async fn abrupt_disconnect_presence_removal_runs_after_its_deadline() {
+    let hub = Arc::new(AblyCompatHub::default());
+    hub.presence_registry
+        .register_connection("app", "connection-a");
+    hub.presence_registry
+        .enter(
+            "app",
+            "room",
+            PresenceRecord {
+                connection_id: "connection-a".to_string(),
+                client_id: "client-a".to_string(),
+                id: "connection-a:1:0".to_string(),
+                data: None,
+                encoding: None,
+                extras: None,
+                timestamp_ms: 1,
+            },
+        )
+        .expect("presence entry succeeds");
+
+    hub.schedule_pending_presence_removal("app", "connection-a", "disconnected-session", 1)
+        .await
+        .expect("presence removal is scheduled");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while hub
+            .presence_registry
+            .connection_has_members("app", "connection-a")
+        {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("presence removal worker completes");
+
+    assert!(hub.presence_snapshot("app", "room").is_empty());
+    assert_eq!(
+        hub.presence_removals.pending_count.load(Ordering::Acquire),
+        0
+    );
+}
+
+#[tokio::test]
+async fn recovered_live_session_cancels_pending_presence_removal() {
+    let hub = Arc::new(AblyCompatHub::default());
+    hub.presence_registry
+        .register_connection("app", "connection-a");
+    hub.presence_registry
+        .enter(
+            "app",
+            "room",
+            PresenceRecord {
+                connection_id: "connection-a".to_string(),
+                client_id: "client-a".to_string(),
+                id: "connection-a:1:0".to_string(),
+                data: None,
+                encoding: None,
+                extras: None,
+                timestamp_ms: 1,
+            },
+        )
+        .expect("presence entry succeeds");
+    hub.schedule_pending_presence_removal("app", "connection-a", "disconnected-session", 20)
+        .await
+        .expect("presence removal is scheduled");
+    let (command_tx, _command_rx) = crossfire::mpsc::bounded_async(1);
+    assert!(
+        hub.register_live_session(
+            "connection-a".to_string(),
+            AblyLiveSession {
+                session_id: "recovered-session".to_string(),
+                app_id: "app".to_string(),
+                authorization: Arc::new(RwLock::new(ConnectionAuthorization {
+                    generation: 1,
+                    client_id: Some("client-a".to_string()),
+                    connection_client_id: Some("client-a".to_string()),
+                    capabilities: None,
+                    issued_ms: now_ms(),
+                    expires_ms: None,
+                    credential_id: "test".to_string(),
+                    revocable: false,
+                    revocation_key: None,
+                })),
+                command_tx,
+            },
+        )
+        .is_none()
+    );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while hub.presence_removals.pending_count.load(Ordering::Acquire) != 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("cancelled removal reaches its deadline");
+
+    assert!(
+        hub.presence_registry
+            .connection_has_members("app", "connection-a")
+    );
+}
+
+#[tokio::test]
+async fn second_disconnect_uses_a_new_presence_removal_deadline() {
+    let hub = Arc::new(AblyCompatHub::default());
+    hub.presence_registry
+        .register_connection("app", "connection-a");
+    hub.presence_registry
+        .enter(
+            "app",
+            "room",
+            PresenceRecord {
+                connection_id: "connection-a".to_string(),
+                client_id: "client-a".to_string(),
+                id: "connection-a:1:0".to_string(),
+                data: None,
+                encoding: None,
+                extras: None,
+                timestamp_ms: 1,
+            },
+        )
+        .expect("presence entry succeeds");
+    hub.schedule_pending_presence_removal("app", "connection-a", "first-session", 20)
+        .await
+        .expect("first removal is scheduled");
+    let (command_tx, _command_rx) = crossfire::mpsc::bounded_async(1);
+    hub.register_live_session(
+        "connection-a".to_string(),
+        AblyLiveSession {
+            session_id: "second-session".to_string(),
+            app_id: "app".to_string(),
+            authorization: Arc::new(RwLock::new(ConnectionAuthorization {
+                generation: 1,
+                client_id: Some("client-a".to_string()),
+                connection_client_id: Some("client-a".to_string()),
+                capabilities: None,
+                issued_ms: now_ms(),
+                expires_ms: None,
+                credential_id: "test".to_string(),
+                revocable: false,
+                revocation_key: None,
+            })),
+            command_tx,
+        },
+    );
+    hub.unregister_live_session("connection-a", "second-session");
+    hub.schedule_pending_presence_removal("app", "connection-a", "second-session", 100)
+        .await
+        .expect("second removal is scheduled");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        hub.presence_registry
+            .connection_has_members("app", "connection-a"),
+        "the first session deadline must not remove the recovered session"
+    );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while hub
+            .presence_registry
+            .connection_has_members("app", "connection-a")
+        {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the second session deadline removes presence");
+}
+
+#[tokio::test]
+async fn recovered_shared_owner_cancels_the_old_nodes_presence_deadline() {
+    let cache: Arc<dyn CacheManager> = Arc::new(MemoryCacheManager::new(
+        "presence-owner-handoff".to_string(),
+        MemoryCacheOptions::default(),
+    ));
+    let presence_registry = Arc::new(PresenceRegistry::default());
+    let dependencies = AblyCompatDependencies {
+        cache: Some(cache),
+        presence_registry: Arc::clone(&presence_registry),
+        ..Default::default()
+    };
+    let first = AblyCompatRuntime::new(dependencies.clone());
+    let second = AblyCompatRuntime::new(dependencies);
+    presence_registry.register_connection("app", "connection-a");
+    presence_registry
+        .enter(
+            "app",
+            "room",
+            PresenceRecord {
+                connection_id: "connection-a".to_string(),
+                client_id: "client-a".to_string(),
+                id: "connection-a:1:0".to_string(),
+                data: None,
+                encoding: None,
+                extras: None,
+                timestamp_ms: 1,
+            },
+        )
+        .expect("presence entry succeeds");
+    first
+        .hub
+        .claim_session_owner("app", "connection-a", "first-session")
+        .await
+        .expect("first node claims the session");
+    first
+        .hub
+        .schedule_pending_presence_removal("app", "connection-a", "first-session", 20)
+        .await
+        .expect("first removal is scheduled");
+
+    second
+        .hub
+        .claim_session_owner("app", "connection-a", "second-session")
+        .await
+        .expect("second node claims the recovered session");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while first
+            .hub
+            .presence_removals
+            .pending_count
+            .load(Ordering::Acquire)
+            != 0
+        {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the old node reaches its cancelled deadline");
+    assert!(presence_registry.connection_has_members("app", "connection-a"));
+
+    second
+        .hub
+        .schedule_pending_presence_removal("app", "connection-a", "second-session", 20)
+        .await
+        .expect("second removal is scheduled");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while presence_registry.connection_has_members("app", "connection-a") {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the recovered owner's deadline removes presence");
 }
 
 #[test]
@@ -1911,6 +2204,20 @@ fn token_request_mac_uses_canonical_newline_terminated_input() {
 }
 
 #[test]
+fn token_request_integer_accepts_decimal_json_strings() {
+    assert_eq!(
+        parse_token_request_integer(Some(&serde_json::json!("1785332178132")), "timestamp")
+            .unwrap(),
+        Some(1_785_332_178_132)
+    );
+    assert_eq!(
+        parse_token_request_integer(Some(&serde_json::json!(1234)), "ttl").unwrap(),
+        Some(1234)
+    );
+    assert!(parse_token_request_integer(Some(&serde_json::json!("12.5")), "ttl").is_err());
+}
+
+#[test]
 fn jwt_timestamp_conversion_rejects_seconds_that_overflow_milliseconds() {
     let maximum_valid = i64::MAX / 1_000;
     let minimum_valid = i64::MIN / 1_000;
@@ -1966,6 +2273,44 @@ fn embedded_jwt_verifies_signature_key_and_inner_credential() {
     assert_eq!(verified.embedded_token.as_deref(), Some(inner.as_str()));
     assert!(verify_ably_signed_jwt(&outer, "other.key", "secret").is_err());
     assert!(verify_ably_signed_jwt(&outer, "app.key", "wrong").is_err());
+}
+
+#[test]
+fn unsigned_embedded_token_envelope_accepts_token_from_jws_claims() {
+    let outer = sign_test_jwt(
+        serde_json::json!({"typ":"JWT","alg":"HS256"}),
+        serde_json::json!({
+            "iat":1_700_000_000_i64,
+            "exp":1_700_000_600_i64,
+            "x-ably-token":"sockudo-ably-token",
+        }),
+        "irrelevant",
+    );
+
+    let envelope = parse_embedded_ably_token_envelope(&outer)
+        .unwrap()
+        .expect("embedded token envelope");
+    assert_eq!(envelope.token, "sockudo-ably-token");
+    assert_eq!(envelope.expires_ms, Some(1_700_000_600_000));
+}
+
+#[test]
+fn unsigned_embedded_token_envelope_accepts_token_from_jwe_header() {
+    let protected = general_purpose::STANDARD.encode(
+        serde_json::to_vec(&serde_json::json!({
+            "alg":"HS256",
+            "enc":"A256GCM",
+            "x-ably-token":"sockudo-ably-token",
+        }))
+        .unwrap(),
+    );
+    let outer = format!("{protected}.encrypted-key.iv.ciphertext.tag");
+
+    let envelope = parse_embedded_ably_token_envelope(&outer)
+        .unwrap()
+        .expect("embedded token envelope");
+    assert_eq!(envelope.token, "sockudo-ably-token");
+    assert_eq!(envelope.expires_ms, None);
 }
 
 #[test]

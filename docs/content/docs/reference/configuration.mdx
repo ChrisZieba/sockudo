@@ -65,10 +65,12 @@ new key authentication. Tokens from a key with `revocable_tokens = true` are
 also rejected after that key is disabled, revoked, expired, or replaced with a
 different `rotation_id`. Secrets and bearer tokens are never written to logs.
 
-TokenRequest timestamps are accepted only within the configured skew. Nonces
-are claimed atomically in the configured cache for `nonce_ttl_seconds`, and
-issued token records use the same cache, allowing issuance on one node and use
-on another. Use a shared cache driver such as Redis in multi-node deployments.
+TokenRequest `timestamp` and `ttl` values accept JSON integers or decimal
+integer strings, matching values commonly forwarded from auth URL query
+parameters. Timestamps are accepted only within the configured skew. Nonces are
+claimed atomically in the configured cache for `nonce_ttl_seconds`, and issued
+token records use the same cache, allowing issuance on one node and use on
+another. Use a shared cache driver such as Redis in multi-node deployments.
 
 The server's `ably-compat` Cargo feature explicitly enables native AI Transport,
 recovery, delta, and push support. Runtime `[ably_compat].enabled` and the key

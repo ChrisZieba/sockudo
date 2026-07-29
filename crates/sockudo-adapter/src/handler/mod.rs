@@ -200,6 +200,7 @@ pub struct ConnectionHandlerBuilder {
     annotation_store: Option<Arc<dyn AnnotationStore + Send + Sync>>,
     version_store: Option<Arc<dyn VersionStore + Send + Sync>>,
     presence_history_store: Option<Arc<dyn PresenceHistoryStore + Send + Sync>>,
+    presence_manager: Option<Arc<PresenceManager>>,
     presence_registry: Option<Arc<PresenceRegistry>>,
     realtime_egress_tap: Option<Arc<dyn RealtimeEgressTap>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
@@ -227,6 +228,7 @@ impl ConnectionHandlerBuilder {
             annotation_store: None,
             version_store: None,
             presence_history_store: None,
+            presence_manager: None,
             presence_registry: None,
             realtime_egress_tap: None,
             webhook_integration: None,
@@ -271,6 +273,11 @@ impl ConnectionHandlerBuilder {
         presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
     ) -> Self {
         self.presence_history_store = Some(presence_history_store);
+        self
+    }
+
+    pub fn presence_manager(mut self, presence_manager: Arc<PresenceManager>) -> Self {
+        self.presence_manager = Some(presence_manager);
         self
     }
 
@@ -398,7 +405,9 @@ impl ConnectionHandlerBuilder {
             cleanup_circuit_breaker_opened_at: Arc::new(AtomicU64::new(0)),
             #[cfg(feature = "delta")]
             delta_compression,
-            presence_manager: Arc::new(PresenceManager::new()),
+            presence_manager: self
+                .presence_manager
+                .unwrap_or_else(|| Arc::new(PresenceManager::new())),
             presence_registry: self
                 .presence_registry
                 .unwrap_or_else(|| Arc::new(PresenceRegistry::default())),

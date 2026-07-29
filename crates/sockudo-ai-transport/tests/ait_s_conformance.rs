@@ -528,12 +528,15 @@ fn ait_s069_to_s073_rollup_table_and_reduced_state_are_deterministic() {
 fn ait_s084_085_presence_timeout_defaults_off_and_can_be_configured() {
     let default = PresenceConfig::default();
     assert_eq!(default.ungraceful_timeout_seconds, 0);
+    assert_eq!(default.v2_ungraceful_timeout_seconds, 15);
 
     let enabled = PresenceConfig {
         ungraceful_timeout_seconds: 15,
+        v2_ungraceful_timeout_seconds: 30,
         ..PresenceConfig::default()
     };
     assert_eq!(enabled.ungraceful_timeout_seconds, 15);
+    assert_eq!(enabled.v2_ungraceful_timeout_seconds, 30);
 }
 
 #[test]

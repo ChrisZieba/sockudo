@@ -17,6 +17,7 @@ mod tests {
             timestamp: Instant::now(),
             connection_info: Some(ConnectionCleanupInfo {
                 presence_channels: vec!["presence-room1".to_string()],
+                presence_members: std::collections::HashMap::new(),
                 auth_info: Some(AuthInfo {
                     user_id: "user123".to_string(),
                     user_info: None,

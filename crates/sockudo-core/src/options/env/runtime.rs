@@ -113,6 +113,10 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         "PRESENCE_UNGRACEFUL_TIMEOUT_SECONDS",
         options.presence.ungraceful_timeout_seconds,
     );
+    options.presence.v2_ungraceful_timeout_seconds = parse_env::<u64>(
+        "PRESENCE_V2_UNGRACEFUL_TIMEOUT_SECONDS",
+        options.presence.v2_ungraceful_timeout_seconds,
+    );
     if let Ok(prefix) = std::env::var("RATE_LIMITER_REDIS_PREFIX") {
         options.rate_limiter.redis.prefix = Some(prefix);
     }

@@ -437,6 +437,8 @@ max_member_size_in_kb = 2
 update_rate_limit_per_member_per_second = 10
 # 0 preserves legacy immediate member_removed timing. AI agent channels commonly use 15.
 ungraceful_timeout_seconds = 0
+# Protocol V2 separates a short presence lease from its longer recovery state.
+v2_ungraceful_timeout_seconds = 15
 
 [http_api]
 request_limit_in_mb = 10

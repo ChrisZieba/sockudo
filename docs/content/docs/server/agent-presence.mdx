@@ -37,6 +37,10 @@ Limits and access:
 
 Late joiners see the latest member data in the presence snapshot returned with `subscription_succeeded`.
 
-`[presence].ungraceful_timeout_seconds` controls abnormal disconnect grace. The default is `0`, preserving legacy immediate `member_removed` timing. For agent channels, use `15` seconds so transient transport loss does not produce a leave/enter flap. Clean unsubscribe and clean WebSocket close still remove immediately.
+`[presence].ungraceful_timeout_seconds` controls Protocol V1 abnormal disconnect
+grace and defaults to `0`, preserving legacy immediate `member_removed` timing.
+Protocol V2 uses `[presence].v2_ungraceful_timeout_seconds`, which defaults to
+`15` seconds so transient transport loss does not produce a leave/enter flap.
+Clean unsubscribe and clean WebSocket close still remove immediately.
 
 Presence update ordering is independent from channel message ordering. Treat presence status as latest-known member state, not as a causal marker for `ai-output` or mutable-message delivery.
