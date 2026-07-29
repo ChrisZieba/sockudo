@@ -53,8 +53,12 @@ export class PostgresAppsRepository implements AppsRepository {
       SELECT id, key, secret, enabled, policy, webhooks, allowed_origins,
              max_connections, enable_client_messages,
              max_backend_events_per_second, max_client_events_per_second,
-             max_read_requests_per_second, enable_user_authentication,
-             enable_watchlist_events
+             max_read_requests_per_second, max_presence_members_per_channel,
+             max_presence_member_size_in_kb, max_channel_name_length,
+             max_event_channels_at_once, max_event_name_length,
+             max_event_payload_in_kb, max_event_batch_size,
+             enable_user_authentication, enable_watchlist_events,
+             channel_delta_compression, idempotency, connection_recovery
       FROM ${this.table}
       ORDER BY id ASC
     `);
@@ -74,9 +78,29 @@ export class PostgresAppsRepository implements AppsRepository {
           row.max_backend_events_per_second as number | null,
         max_read_requests_per_second:
           row.max_read_requests_per_second as number | null,
+        max_presence_members_per_channel:
+          row.max_presence_members_per_channel as number | null,
+        max_presence_member_size_in_kb:
+          row.max_presence_member_size_in_kb as number | null,
+        max_channel_name_length: row.max_channel_name_length as number | null,
+        max_event_channels_at_once:
+          row.max_event_channels_at_once as number | null,
+        max_event_name_length: row.max_event_name_length as number | null,
+        max_event_payload_in_kb:
+          row.max_event_payload_in_kb as number | null,
+        max_event_batch_size: row.max_event_batch_size as number | null,
         enable_user_authentication:
           row.enable_user_authentication as boolean | null,
         enable_watchlist_events: row.enable_watchlist_events as boolean | null,
+        channel_delta_compression: parseJsonbValue<
+          AppPolicy["channels"]["channel_delta_compression"]
+        >(row.channel_delta_compression),
+        idempotency: parseJsonbValue<AppPolicy["idempotency"]>(
+          row.idempotency,
+        ),
+        connection_recovery: parseJsonbValue<
+          AppPolicy["connection_recovery"]
+        >(row.connection_recovery),
       }),
     );
   }
@@ -87,8 +111,12 @@ export class PostgresAppsRepository implements AppsRepository {
       SELECT id, key, secret, enabled, policy, webhooks, allowed_origins,
              max_connections, enable_client_messages,
              max_backend_events_per_second, max_client_events_per_second,
-             max_read_requests_per_second, enable_user_authentication,
-             enable_watchlist_events
+             max_read_requests_per_second, max_presence_members_per_channel,
+             max_presence_member_size_in_kb, max_channel_name_length,
+             max_event_channels_at_once, max_event_name_length,
+             max_event_payload_in_kb, max_event_batch_size,
+             enable_user_authentication, enable_watchlist_events,
+             channel_delta_compression, idempotency, connection_recovery
       FROM ${this.table}
       WHERE id = $1
     `,
@@ -111,9 +139,26 @@ export class PostgresAppsRepository implements AppsRepository {
         row.max_backend_events_per_second as number | null,
       max_read_requests_per_second:
         row.max_read_requests_per_second as number | null,
+      max_presence_members_per_channel:
+        row.max_presence_members_per_channel as number | null,
+      max_presence_member_size_in_kb:
+        row.max_presence_member_size_in_kb as number | null,
+      max_channel_name_length: row.max_channel_name_length as number | null,
+      max_event_channels_at_once:
+        row.max_event_channels_at_once as number | null,
+      max_event_name_length: row.max_event_name_length as number | null,
+      max_event_payload_in_kb: row.max_event_payload_in_kb as number | null,
+      max_event_batch_size: row.max_event_batch_size as number | null,
       enable_user_authentication:
         row.enable_user_authentication as boolean | null,
       enable_watchlist_events: row.enable_watchlist_events as boolean | null,
+      channel_delta_compression: parseJsonbValue<
+        AppPolicy["channels"]["channel_delta_compression"]
+      >(row.channel_delta_compression),
+      idempotency: parseJsonbValue<AppPolicy["idempotency"]>(row.idempotency),
+      connection_recovery: parseJsonbValue<
+        AppPolicy["connection_recovery"]
+      >(row.connection_recovery),
     });
   }
 
@@ -132,10 +177,12 @@ export class PostgresAppsRepository implements AppsRepository {
         max_event_channels_at_once, max_event_name_length,
         max_event_payload_in_kb, max_event_batch_size,
         enable_user_authentication, enable_watchlist_events,
-        policy, webhooks, allowed_origins
+        policy, webhooks, allowed_origins, channel_delta_compression,
+        idempotency, connection_recovery
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-        $17, $18, $19::text::jsonb, $20::text::jsonb, $21::text::jsonb
+        $17, $18, $19::text::jsonb, $20::text::jsonb, $21::text::jsonb,
+        $22::text::jsonb, $23::text::jsonb, $24::text::jsonb
       )
     `,
       [
@@ -160,6 +207,9 @@ export class PostgresAppsRepository implements AppsRepository {
         JSON.stringify(policy),
         JSON.stringify(policy.webhooks ?? []),
         JSON.stringify(policy.channels.allowed_origins ?? ["*"]),
+        JSON.stringify(policy.channels.channel_delta_compression ?? null),
+        JSON.stringify(policy.idempotency ?? null),
+        JSON.stringify(policy.connection_recovery ?? null),
       ],
     );
 
@@ -172,14 +222,9 @@ export class PostgresAppsRepository implements AppsRepository {
     const existing = await this.findById(id);
     if (!existing) throw new Error("App not found");
 
-    const policy = mergePolicy({
-      ...existing.policy,
-      ...input.policy,
-      limits: { ...existing.policy.limits, ...input.policy?.limits },
-      features: { ...existing.policy.features, ...input.policy?.features },
-      channels: { ...existing.policy.channels, ...input.policy?.channels },
-      webhooks: input.policy?.webhooks ?? existing.policy.webhooks,
-    });
+    const policy = input.replace_policy
+      ? mergePolicy(input.policy)
+      : mergePolicy(input.policy, existing.policy);
     const flat = policyToFlat(policy);
     const key = input.key ?? existing.key;
     const secret = input.secret ?? existing.secret;
@@ -197,8 +242,11 @@ export class PostgresAppsRepository implements AppsRepository {
         max_event_batch_size = $15, enable_user_authentication = $16,
         enable_watchlist_events = $17, policy = $18::text::jsonb,
         webhooks = $19::text::jsonb, allowed_origins = $20::text::jsonb,
+        channel_delta_compression = $21::text::jsonb,
+        idempotency = $22::text::jsonb,
+        connection_recovery = $23::text::jsonb,
         updated_at = CURRENT_TIMESTAMP
-      WHERE id = $21
+      WHERE id = $24
     `,
       [
         key,
@@ -221,6 +269,9 @@ export class PostgresAppsRepository implements AppsRepository {
         JSON.stringify(policy),
         JSON.stringify(policy.webhooks ?? []),
         JSON.stringify(policy.channels.allowed_origins ?? ["*"]),
+        JSON.stringify(policy.channels.channel_delta_compression ?? null),
+        JSON.stringify(policy.idempotency ?? null),
+        JSON.stringify(policy.connection_recovery ?? null),
         id,
       ],
     );

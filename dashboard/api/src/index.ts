@@ -8,6 +8,7 @@ import { createAppsRoutes } from "./routes/apps.ts";
 import { createWebhooksRoutes } from "./routes/webhooks.ts";
 import { createUsersRoutes } from "./routes/users.ts";
 import { createOpsRoutes } from "./routes/ops.ts";
+import { createPushRoutes } from "./routes/push.ts";
 
 const appsRepo = createAppsRepository();
 const dashboard = await bootstrapDashboard();
@@ -36,6 +37,7 @@ app.route("/api/v1/auth", createAuthRoutes(dashboard.users));
 app.route("/api/v1/users", createUsersRoutes(dashboard.users));
 app.route("/api/v1/apps", createAppsRoutes(appsRepo, dashboard.users));
 app.route("/api/v1/apps", createWebhooksRoutes(appsRepo, dashboard.users));
+app.route("/api/v1/apps", createPushRoutes(appsRepo, dashboard.users));
 app.route("/api/v1/ops", createOpsRoutes(dashboard.users));
 
 const server = Bun.serve({
@@ -65,4 +67,4 @@ process.on("SIGINT", async () => {
   process.exit(0);
 });
 
-export default app;
+export { app };

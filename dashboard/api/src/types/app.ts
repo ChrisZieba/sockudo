@@ -39,6 +39,12 @@ export interface AppLimitsPolicy {
   max_event_batch_size?: number;
   decay_seconds?: number;
   terminate_on_limit?: boolean;
+  message_rate_limit?: {
+    enabled: boolean;
+    max_attempts: number;
+    decay_seconds: number;
+    terminate_on_limit: boolean;
+  };
 }
 
 export interface AppFeaturesPolicy {
@@ -50,13 +56,49 @@ export interface AppFeaturesPolicy {
 export interface AppChannelsPolicy {
   allowed_origins?: string[];
   annotations_enabled?: boolean;
-  channel_namespaces?: Array<{
-    name: string;
-    channel_name_pattern: string;
-    max_channel_name_length?: number;
-    allow_user_limited_channels?: boolean;
-    annotations_enabled?: boolean;
-  }>;
+  channel_delta_compression?: Record<
+    string,
+    | "inherit"
+    | "disabled"
+    | "fossil"
+    | "xdelta3"
+    | {
+        enabled?: boolean;
+        algorithm?: "Fossil" | "Xdelta3";
+        conflation_key?: string;
+        max_messages_per_key?: number;
+        max_conflation_keys?: number;
+        enable_tags?: boolean;
+      }
+  >;
+  channel_namespaces?: ChannelNamespace[];
+}
+
+export interface NamespaceHistoryConfig {
+  rewind_enabled?: boolean;
+  retention_window_seconds?: number;
+  max_messages_per_channel?: number;
+  max_bytes_per_channel?: number;
+}
+
+export interface NamespacePresenceHistoryConfig {
+  enabled?: boolean;
+  retention_window_seconds?: number;
+  max_events_per_channel?: number;
+  max_bytes_per_channel?: number;
+}
+
+export interface ChannelNamespace {
+  name: string;
+  channel_name_pattern?: string;
+  max_channel_name_length?: number;
+  annotations_enabled?: boolean;
+  allow_user_limited_channels?: boolean;
+  allow_subscribe_for_client?: boolean;
+  allow_publish_for_client?: boolean;
+  allow_presence_for_client?: boolean;
+  history?: NamespaceHistoryConfig;
+  presence_history?: NamespacePresenceHistoryConfig;
 }
 
 export interface AppPolicy {
@@ -98,14 +140,34 @@ export interface AppCreateInput {
   key: string;
   secret: string;
   enabled?: boolean;
-  policy?: Partial<AppPolicy>;
+  policy?: AppPolicyInput;
 }
 
 export interface AppUpdateInput {
   key?: string;
   secret?: string;
   enabled?: boolean;
-  policy?: Partial<AppPolicy>;
+  policy?: AppPolicyInput;
+  /**
+   * Treat `policy` as the complete desired app policy.
+   *
+   * Dashboard section editors submit this so removing an optional override is
+   * intentional. API clients that omit it retain deep partial-merge behavior.
+   */
+  replace_policy?: boolean;
+}
+
+export interface AppPolicyInput {
+  limits?: Partial<AppLimitsPolicy>;
+  features?: Partial<AppFeaturesPolicy>;
+  channels?: Partial<AppChannelsPolicy>;
+  webhooks?: Webhook[];
+  idempotency?: Partial<NonNullable<AppPolicy["idempotency"]>>;
+  connection_recovery?: Partial<
+    NonNullable<AppPolicy["connection_recovery"]>
+  >;
+  history?: Partial<NonNullable<AppPolicy["history"]>>;
+  presence_history?: Partial<NonNullable<AppPolicy["presence_history"]>>;
 }
 
 export const DEFAULT_POLICY: AppPolicy = {
@@ -144,17 +206,42 @@ export const WEBHOOK_EVENT_TYPES = [
   "annotation_deleted",
 ] as const;
 
-export function mergePolicy(partial?: Partial<AppPolicy>): AppPolicy {
-  if (!partial) return structuredClone(DEFAULT_POLICY);
+export function mergePolicy(
+  partial?: AppPolicyInput,
+  base: AppPolicy = DEFAULT_POLICY,
+): AppPolicy {
+  if (!partial) return structuredClone(base);
+
+  const mergeOptional = <T extends object>(
+    previous: T | undefined,
+    next: Partial<T> | undefined,
+  ): T | undefined => {
+    if (next === undefined) return previous ? { ...previous } : undefined;
+    return { ...(previous ?? ({} as T)), ...next };
+  };
+
   return {
-    limits: { ...DEFAULT_POLICY.limits, ...partial.limits },
-    features: { ...DEFAULT_POLICY.features, ...partial.features },
-    channels: { ...DEFAULT_POLICY.channels, ...partial.channels },
-    webhooks: partial.webhooks ?? DEFAULT_POLICY.webhooks,
-    idempotency: partial.idempotency,
-    connection_recovery: partial.connection_recovery,
-    history: partial.history,
-    presence_history: partial.presence_history,
+    limits: {
+      ...base.limits,
+      ...partial.limits,
+      message_rate_limit: mergeOptional(
+        base.limits.message_rate_limit,
+        partial.limits?.message_rate_limit,
+      ),
+    },
+    features: { ...base.features, ...partial.features },
+    channels: { ...base.channels, ...partial.channels },
+    webhooks: partial.webhooks ?? base.webhooks,
+    idempotency: mergeOptional(base.idempotency, partial.idempotency),
+    connection_recovery: mergeOptional(
+      base.connection_recovery,
+      partial.connection_recovery,
+    ),
+    history: mergeOptional(base.history, partial.history),
+    presence_history: mergeOptional(
+      base.presence_history,
+      partial.presence_history,
+    ),
   };
 }
 

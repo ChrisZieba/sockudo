@@ -1,6 +1,6 @@
 # Sockudo Operator Dashboard
 
-Separate admin UI for managing Sockudo apps and webhooks. Dashboard **users** are stored
+Separate admin UI for managing Sockudo apps, policy, observability, webhooks, and push. Dashboard **users** are stored
 in the dashboard database (migrations), not in environment variables.
 
 ## Structure
@@ -19,9 +19,13 @@ Bun + Hono service on port **3460** (`/api/v1/*`):
 
 - **Auth** — email/password login, JWT session cookies, logout, `/auth/me`
 - **Users** — DB-backed operators with `admin` and `operator` roles; create, update, delete, change password
-- **Apps** — list, create, update, delete Sockudo applications; rotate app secrets
+- **Apps** — list, create, update, delete Sockudo applications; rotate app secrets; manage the
+  complete app policy (limits, features, channels, namespaces, history, recovery, and idempotency)
 - **Webhooks** — per-app webhook CRUD against the Sockudo app store
-- **Ops** — proxy to Sockudo `/stats`, `/usage`, `/metrics`, and health endpoints
+- **Ops** — proxy to Sockudo `/stats`, `/usage`, `/metrics`, and health endpoints; the Prometheus
+  parser preserves HELP/TYPE metadata, labels, timestamps, and histogram families
+- **Push** — allowlisted, signed proxy for provider credentials, devices, subscriptions, publish
+  status, and dead letters; reads require a dashboard session and mutations require an admin
 - **Bootstrap** — automatic migrations and optional first-admin seed on startup
 
 Supports `mysql`, `pgsql`, and `dynamodb` app managers (not `memory`).
@@ -32,8 +36,11 @@ Vue 3 + Vite operator UI on port **5174**:
 
 - **Login** — session-based sign-in against the dashboard API
 - **Apps** — browse and manage applications
-- **App detail** — edit limits, credentials, and webhooks per app
-- **Metrics** — Sockudo stats and Prometheus summary views
+- **App detail** — structured General, Limits, Channels, Reliability, and Webhooks editors
+- **Metrics** — configurable Prometheus workbench with metric discovery, value/rate/average panels,
+  per-app filtering, SVG time-series, scrape intervals, and bounded browser-local history
+- **Push manager** — upload APNs, FCM, Web Push, HMS, or WNS credentials; inspect devices and
+  subscriptions; publish notifications; inspect status and replay dead letters
 - **Users** — admin-only user management
 
 Docker services: `dashboard-api`, `dashboard-web` (see [Docker](#docker) below).
@@ -52,6 +59,10 @@ Docker services: `dashboard-api`, `dashboard-web` (see [Docker](#docker) below).
    HTTP_API_USAGE_ENABLED=true
    METRICS_ENABLED=true
    ```
+
+3. For push management, build Sockudo with the `push` feature and configure durable push storage.
+   Credential upload also requires `PUSH_CREDENTIAL_ENCRYPTION_KEY`. Provider delivery features
+   and credentials are loaded by Sockudo itself; the dashboard does not run delivery workers.
 
 ## Quick start
 
@@ -238,7 +249,28 @@ Roles: `admin` (full access including user management), `operator` (apps/webhook
 ## Cache note
 
 Sockudo caches apps in memory. After dashboard app/webhook changes, nodes may take up to
-`CACHE_TTL_SECONDS` to pick up updates.
+the app-manager database cache TTL (300 seconds by default) to pick up updates. Secret rotations,
+disables, and deletes have the same propagation window on already-running nodes.
+
+## Metrics model
+
+The dashboard API scrapes the single endpoint configured by `SOCKUDO_METRICS_URL`. Panels and a
+bounded six-hour/180-point history are stored in the operator's browser, not in the dashboard
+database. This makes the built-in workbench useful without another dependency, but it is not a
+cluster-wide time-series database. Use Prometheus plus Grafana for durable retention, alerting,
+multi-node aggregation, and long-range queries.
+
+## Push credential model
+
+- Provider material travels from an admin browser through the authenticated dashboard API to
+  Sockudo and is not stored by the dashboard.
+- Sockudo encrypts credential material and list responses expose only provider, credential ID, and
+  version. The UI therefore reports a credential as **stored**, never as active or healthy.
+- FCM and APNs credential selection is currently boot-time and app-specific; a worker restart may
+  be required after rotation.
+- Stored Web Push, HMS, and WNS credentials are not yet consumed by all monolith worker paths;
+  consult the server push configuration for the provider-specific runtime requirements.
+- The native API currently has no credential delete or provider-readiness endpoint.
 
 ## Security
 
@@ -248,3 +280,6 @@ Sockudo caches apps in memory. After dashboard app/webhook changes, nodes may ta
 - Existing sessions are rejected immediately when their user is deleted or disabled, and password changes invalidate previously issued sessions. Current database roles are applied on every protected request, so demotions take effect immediately.
 - Deploying this hardening change invalidates older dashboard cookies that lack the credential-version, issuer, and audience claims; operators must sign in again once.
 - Put the dashboard behind TLS and restrict network access.
+- Push credential uploads and notification publishing are admin-only. Signed upstream URLs,
+  app secrets, provider private keys, service-account JSON, and credential bodies are never logged
+  or returned by the dashboard proxy.

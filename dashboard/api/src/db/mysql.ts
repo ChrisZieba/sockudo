@@ -40,8 +40,12 @@ export class MysqlAppsRepository implements AppsRepository {
       SELECT id, \`key\`, secret, enabled, policy, webhooks, allowed_origins,
              max_connections, enable_client_messages,
              max_backend_events_per_second, max_client_events_per_second,
-             max_read_requests_per_second, enable_user_authentication,
-             enable_watchlist_events
+             max_read_requests_per_second, max_presence_members_per_channel,
+             max_presence_member_size_in_kb, max_channel_name_length,
+             max_event_channels_at_once, max_event_name_length,
+             max_event_payload_in_kb, max_event_batch_size,
+             enable_user_authentication, enable_watchlist_events,
+             channel_delta_compression, idempotency, connection_recovery
       FROM \`${this.table}\`
       ORDER BY id ASC
     `);
@@ -54,8 +58,12 @@ export class MysqlAppsRepository implements AppsRepository {
       SELECT id, \`key\`, secret, enabled, policy, webhooks, allowed_origins,
              max_connections, enable_client_messages,
              max_backend_events_per_second, max_client_events_per_second,
-             max_read_requests_per_second, enable_user_authentication,
-             enable_watchlist_events
+             max_read_requests_per_second, max_presence_members_per_channel,
+             max_presence_member_size_in_kb, max_channel_name_length,
+             max_event_channels_at_once, max_event_name_length,
+             max_event_payload_in_kb, max_event_batch_size,
+             enable_user_authentication, enable_watchlist_events,
+             channel_delta_compression, idempotency, connection_recovery
       FROM \`${this.table}\`
       WHERE id = ?
     `,
@@ -80,8 +88,9 @@ export class MysqlAppsRepository implements AppsRepository {
         max_event_channels_at_once, max_event_name_length,
         max_event_payload_in_kb, max_event_batch_size,
         enable_user_authentication, enable_watchlist_events,
-        policy, webhooks, allowed_origins
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        policy, webhooks, allowed_origins, channel_delta_compression,
+        idempotency, connection_recovery
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         input.id,
@@ -105,6 +114,9 @@ export class MysqlAppsRepository implements AppsRepository {
         JSON.stringify(policy),
         JSON.stringify(policy.webhooks ?? []),
         JSON.stringify(policy.channels.allowed_origins ?? ["*"]),
+        JSON.stringify(policy.channels.channel_delta_compression ?? null),
+        JSON.stringify(policy.idempotency ?? null),
+        JSON.stringify(policy.connection_recovery ?? null),
       ],
     );
 
@@ -117,14 +129,9 @@ export class MysqlAppsRepository implements AppsRepository {
     const existing = await this.findById(id);
     if (!existing) throw new Error("App not found");
 
-    const policy = mergePolicy({
-      ...existing.policy,
-      ...input.policy,
-      limits: { ...existing.policy.limits, ...input.policy?.limits },
-      features: { ...existing.policy.features, ...input.policy?.features },
-      channels: { ...existing.policy.channels, ...input.policy?.channels },
-      webhooks: input.policy?.webhooks ?? existing.policy.webhooks,
-    });
+    const policy = input.replace_policy
+      ? mergePolicy(input.policy)
+      : mergePolicy(input.policy, existing.policy);
     const flat = policyToFlat(policy);
     const key = input.key ?? existing.key;
     const secret = input.secret ?? existing.secret;
@@ -141,7 +148,8 @@ export class MysqlAppsRepository implements AppsRepository {
         max_event_name_length = ?, max_event_payload_in_kb = ?,
         max_event_batch_size = ?, enable_user_authentication = ?,
         enable_watchlist_events = ?, policy = ?, webhooks = ?,
-        allowed_origins = ?
+        allowed_origins = ?, channel_delta_compression = ?,
+        idempotency = ?, connection_recovery = ?
       WHERE id = ?
     `,
       [
@@ -165,6 +173,9 @@ export class MysqlAppsRepository implements AppsRepository {
         JSON.stringify(policy),
         JSON.stringify(policy.webhooks ?? []),
         JSON.stringify(policy.channels.allowed_origins ?? ["*"]),
+        JSON.stringify(policy.channels.channel_delta_compression ?? null),
+        JSON.stringify(policy.idempotency ?? null),
+        JSON.stringify(policy.connection_recovery ?? null),
         id,
       ],
     );
@@ -216,6 +227,34 @@ export class MysqlAppsRepository implements AppsRepository {
         row.max_read_requests_per_second != null
           ? Number(row.max_read_requests_per_second)
           : null,
+      max_presence_members_per_channel:
+        row.max_presence_members_per_channel != null
+          ? Number(row.max_presence_members_per_channel)
+          : null,
+      max_presence_member_size_in_kb:
+        row.max_presence_member_size_in_kb != null
+          ? Number(row.max_presence_member_size_in_kb)
+          : null,
+      max_channel_name_length:
+        row.max_channel_name_length != null
+          ? Number(row.max_channel_name_length)
+          : null,
+      max_event_channels_at_once:
+        row.max_event_channels_at_once != null
+          ? Number(row.max_event_channels_at_once)
+          : null,
+      max_event_name_length:
+        row.max_event_name_length != null
+          ? Number(row.max_event_name_length)
+          : null,
+      max_event_payload_in_kb:
+        row.max_event_payload_in_kb != null
+          ? Number(row.max_event_payload_in_kb)
+          : null,
+      max_event_batch_size:
+        row.max_event_batch_size != null
+          ? Number(row.max_event_batch_size)
+          : null,
       enable_user_authentication:
         row.enable_user_authentication != null
           ? Boolean(row.enable_user_authentication)
@@ -224,6 +263,13 @@ export class MysqlAppsRepository implements AppsRepository {
         row.enable_watchlist_events != null
           ? Boolean(row.enable_watchlist_events)
           : null,
+      channel_delta_compression: parseJson<
+        AppPolicy["channels"]["channel_delta_compression"]
+      >(row.channel_delta_compression),
+      idempotency: parseJson<AppPolicy["idempotency"]>(row.idempotency),
+      connection_recovery: parseJson<AppPolicy["connection_recovery"]>(
+        row.connection_recovery,
+      ),
     });
   }
 }
