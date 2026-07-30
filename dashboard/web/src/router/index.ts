@@ -25,6 +25,11 @@ const router = createRouter({
           component: () => import("@/pages/AppDetailPage.vue"),
         },
         {
+          path: "apps/:id/push",
+          name: "app-push",
+          component: () => import("@/pages/AppPushPage.vue"),
+        },
+        {
           path: "metrics",
           name: "metrics",
           component: () => import("@/pages/MetricsPage.vue"),

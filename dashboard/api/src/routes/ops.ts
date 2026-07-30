@@ -8,6 +8,7 @@ import {
   fetchSockudoHealth,
   fetchSockudoStats,
   fetchSockudoUsage,
+  parsePrometheusMetrics,
   parsePrometheusText,
   summarizeMetrics,
 } from "../services/sockudo.ts";
@@ -52,7 +53,7 @@ export function createOpsRoutes(usersRepo: UsersRepository) {
       if (c.req.query("format") === "text") {
         return c.text(text);
       }
-      return c.json({ samples: parsePrometheusText(text) });
+      return c.json(parsePrometheusMetrics(text));
     } catch (err) {
       const message = err instanceof Error ? err.message : "Metrics unavailable";
       return c.json({ error: message }, 502);

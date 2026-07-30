@@ -69,8 +69,20 @@ export function rowToApp(row: {
   max_client_events_per_second?: number;
   max_backend_events_per_second?: number | null;
   max_read_requests_per_second?: number | null;
+  max_presence_members_per_channel?: number | null;
+  max_presence_member_size_in_kb?: number | null;
+  max_channel_name_length?: number | null;
+  max_event_channels_at_once?: number | null;
+  max_event_name_length?: number | null;
+  max_event_payload_in_kb?: number | null;
+  max_event_batch_size?: number | null;
   enable_user_authentication?: boolean | null;
   enable_watchlist_events?: boolean | null;
+  channel_delta_compression?:
+    | AppPolicy["channels"]["channel_delta_compression"]
+    | null;
+  idempotency?: AppPolicy["idempotency"] | null;
+  connection_recovery?: AppPolicy["connection_recovery"] | null;
 }): AppRecord {
   if (row.policy) {
     return {
@@ -95,6 +107,16 @@ export function rowToApp(row: {
           row.max_backend_events_per_second ?? undefined,
         max_read_requests_per_second:
           row.max_read_requests_per_second ?? undefined,
+        max_presence_members_per_channel:
+          row.max_presence_members_per_channel ?? undefined,
+        max_presence_member_size_in_kb:
+          row.max_presence_member_size_in_kb ?? undefined,
+        max_channel_name_length: row.max_channel_name_length ?? undefined,
+        max_event_channels_at_once:
+          row.max_event_channels_at_once ?? undefined,
+        max_event_name_length: row.max_event_name_length ?? undefined,
+        max_event_payload_in_kb: row.max_event_payload_in_kb ?? undefined,
+        max_event_batch_size: row.max_event_batch_size ?? undefined,
       },
       features: {
         enable_client_messages: row.enable_client_messages ?? false,
@@ -103,8 +125,12 @@ export function rowToApp(row: {
       },
       channels: {
         allowed_origins: row.allowed_origins ?? ["*"],
+        channel_delta_compression:
+          row.channel_delta_compression ?? undefined,
       },
       webhooks: row.webhooks ?? [],
+      idempotency: row.idempotency ?? undefined,
+      connection_recovery: row.connection_recovery ?? undefined,
     },
   };
 }
