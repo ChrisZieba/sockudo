@@ -19,6 +19,7 @@ use tokio::time::{Duration, Instant};
 use tracing::{debug, error, warn};
 
 const MAX_PENDING_PRESENCE_REMOVALS: usize = 100_000;
+static PRESENCE_REMOVAL_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// Lock key for presence operations to prevent TOCTOU races
 /// Format: "app_id:channel:user_id"
@@ -49,7 +50,6 @@ pub struct PresenceManager {
     /// Per-user locks to prevent TOCTOU races during presence operations
     /// Maps "app_id:channel:user_id" -> async mutex for true per-key exclusivity
     presence_locks: PresenceLockMap,
-    removal_generation: AtomicU64,
     pending_removal_deadlines: Arc<Mutex<BTreeMap<Instant, VecDeque<PendingRemovalTask>>>>,
     pending_removal_count: Arc<AtomicUsize>,
     pending_removal_worker_started: AtomicBool,
@@ -66,7 +66,6 @@ impl PresenceManager {
     pub fn new() -> Self {
         Self {
             presence_locks: DashMap::with_hasher(ahash::RandomState::new()),
-            removal_generation: AtomicU64::new(1),
             pending_removal_deadlines: Arc::new(Mutex::new(BTreeMap::new())),
             pending_removal_count: Arc::new(AtomicUsize::new(0)),
             pending_removal_worker_started: AtomicBool::new(false),
@@ -448,6 +447,43 @@ impl PresenceManager {
         ungraceful_timeout_seconds: u64,
         retention: Option<sockudo_core::presence_history::PresenceHistoryRetentionPolicy>,
     ) -> Result<()> {
+        self.handle_member_removed_with_info(
+            connection_manager,
+            presence_history_store,
+            presence_history_enabled,
+            webhook_integration,
+            metrics,
+            app_config,
+            channel,
+            user_id,
+            excluding_socket,
+            cause,
+            dead_node_id,
+            None,
+            ungraceful_timeout_seconds,
+            retention,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn handle_member_removed_with_info(
+        &self,
+        connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
+        presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
+        presence_history_enabled: bool,
+        webhook_integration: Option<&Arc<WebhookIntegration>>,
+        metrics: Option<&Arc<dyn MetricsInterface + Send + Sync>>,
+        app_config: &App,
+        channel: &str,
+        user_id: &str,
+        excluding_socket: Option<&SocketId>,
+        cause: PresenceHistoryEventCause,
+        dead_node_id: Option<&str>,
+        pending_user_info: Option<sonic_rs::Value>,
+        ungraceful_timeout_seconds: u64,
+        retention: Option<sockudo_core::presence_history::PresenceHistoryRetentionPolicy>,
+    ) -> Result<()> {
         debug!(user_id = %user_id, channel = %channel, app_id = %app_config.id, "processing presence member removal");
 
         let lock_key = presence_lock_key(&app_config.id, channel, user_id);
@@ -475,16 +511,18 @@ impl PresenceManager {
             if !has_other_connections {
                 if cause == PresenceHistoryEventCause::Disconnect && ungraceful_timeout_seconds > 0
                 {
-                    let generation = self.removal_generation.fetch_add(1, Ordering::Relaxed);
-                    let user_info = if let Some(socket_id) = excluding_socket {
-                        connection_manager
-                            .get_presence_member(&app_config.id, channel, socket_id)
-                            .await
-                            .and_then(|member| member.user_info)
-                    } else {
-                        None
+                    let generation = PRESENCE_REMOVAL_GENERATION.fetch_add(1, Ordering::Relaxed);
+                    let user_info = match pending_user_info {
+                        Some(ref user_info) => Some(user_info.clone()),
+                        None => match excluding_socket {
+                            Some(socket_id) => connection_manager
+                                .get_presence_member(&app_config.id, channel, socket_id)
+                                .await
+                                .and_then(|member| member.user_info),
+                            None => None,
+                        },
                     };
-                    connection_manager
+                    let pending_result = connection_manager
                         .mark_presence_member_pending(
                             &app_config.id,
                             channel,
@@ -495,28 +533,72 @@ impl PresenceManager {
                             user_info,
                             generation,
                         )
-                        .await?;
+                        .await;
 
-                    self.schedule_pending_removal(
-                        ungraceful_timeout_seconds,
-                        PendingRemovalTask {
-                            connection_manager: Arc::clone(connection_manager),
-                            presence_history_store: Arc::clone(&presence_history_store),
-                            presence_history_enabled,
-                            webhook_integration: webhook_integration.cloned(),
-                            metrics: metrics.cloned(),
-                            app_config: app_config.clone(),
-                            channel: channel.to_string(),
-                            user_id: user_id.to_string(),
-                            socket_for_leave: excluding_socket.map(ToString::to_string),
-                            generation,
-                            retention: retention.clone(),
-                        },
-                    )
-                    .await?;
+                    match pending_result {
+                        Ok(()) => {
+                            let schedule_result = self
+                                .schedule_pending_removal(
+                                    ungraceful_timeout_seconds,
+                                    PendingRemovalTask {
+                                        connection_manager: Arc::clone(connection_manager),
+                                        presence_history_store: Arc::clone(&presence_history_store),
+                                        presence_history_enabled,
+                                        webhook_integration: webhook_integration.cloned(),
+                                        metrics: metrics.cloned(),
+                                        app_config: app_config.clone(),
+                                        channel: channel.to_string(),
+                                        user_id: user_id.to_string(),
+                                        socket_for_leave: excluding_socket.map(ToString::to_string),
+                                        generation,
+                                        retention: retention.clone(),
+                                    },
+                                )
+                                .await;
 
-                    self.cleanup_stale_locks();
-                    return Ok(());
+                            match schedule_result {
+                                Ok(()) => {
+                                    self.cleanup_stale_locks();
+                                    return Ok(());
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        app_id = %app_config.id,
+                                        channel = %channel,
+                                        user_id = %user_id,
+                                        error = %e,
+                                        "presence removal scheduling failed, removing member immediately"
+                                    );
+                                    if let Err(remove_error) = connection_manager
+                                        .remove_pending_presence_member(
+                                            &app_config.id,
+                                            channel,
+                                            user_id,
+                                            generation,
+                                        )
+                                        .await
+                                    {
+                                        error!(
+                                            app_id = %app_config.id,
+                                            channel = %channel,
+                                            user_id = %user_id,
+                                            error = %remove_error,
+                                            "pending presence rollback failed"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                app_id = %app_config.id,
+                                channel = %channel,
+                                user_id = %user_id,
+                                error = %e,
+                                "pending presence creation failed, removing member immediately"
+                            );
+                        }
+                    }
                 }
 
                 debug!(user_id = %user_id, channel = %channel, "user has no other connections, sending member_removed events");

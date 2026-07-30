@@ -179,9 +179,14 @@ max_members_per_channel = 100
 max_member_size_in_kb = 2
 update_rate_limit_per_member_per_second = 10
 ungraceful_timeout_seconds = 0
+v2_ungraceful_timeout_seconds = 15
 ```
 
-`ungraceful_timeout_seconds = 0` preserves legacy immediate `member_removed` behavior. Set it to `15` for agent presence channels that should tolerate short abnormal reconnects without leave/enter flaps.
+`ungraceful_timeout_seconds = 0` preserves Protocol V1/Pusher's legacy immediate
+`member_removed` behavior. Protocol V2 defaults
+`v2_ungraceful_timeout_seconds` to `15`, retaining presence through short abnormal
+disconnects without leave/enter flaps. Clean unsubscribe and clean WebSocket close
+remove presence immediately for both protocol versions.
 
 ## Webhooks
 

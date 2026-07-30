@@ -8,8 +8,12 @@ pub use sockudo_adapter::cleanup::{
 };
 
 // Re-export CleanupConfig and WorkerThreadsConfig from sockudo-core options
+use sockudo_adapter::presence::PresenceManager;
+use sockudo_core::options::PresenceHistoryConfig;
 pub use sockudo_core::options::{CleanupConfig, WorkerThreadsConfig};
+use sockudo_core::presence_history::PresenceHistoryStore;
 use sockudo_core::websocket::SocketId;
+use std::sync::Arc;
 
 // Re-export CancellationToken for use by callers who want graceful shutdown
 pub use tokio_util::sync::CancellationToken;
@@ -106,5 +110,13 @@ pub struct WebhookEvent {
     pub user_id: Option<String>,
     pub socket_id: Option<SocketId>,
     pub data: sonic_rs::Value,
+    pub presence_user_info: Option<sonic_rs::Value>,
     pub presence_ungraceful_timeout_seconds: u64,
+}
+
+#[derive(Clone)]
+pub struct PresenceCleanupContext {
+    pub history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
+    pub history_config: PresenceHistoryConfig,
+    pub manager: Arc<PresenceManager>,
 }

@@ -295,6 +295,23 @@ impl PresenceRegistry {
         self.has_connection(app_id, connection_id)
     }
 
+    /// Return whether a connection currently owns at least one presence member.
+    #[must_use]
+    pub fn connection_has_members(&self, app_id: &str, connection_id: &str) -> bool {
+        let apps = self.apps.pin();
+        let Some(app) = apps.get(app_id) else {
+            return false;
+        };
+        let connections = app.connections.pin();
+        let Some(connection) = connections.get(connection_id) else {
+            return false;
+        };
+        connection
+            .channels
+            .iter()
+            .any(|channel| channel.value().contains_connection(connection_id))
+    }
+
     fn capacity_shard(app_id: &str, channel: &str, client_id: &str) -> usize {
         Self::coordination_shard((app_id, channel, client_id))
     }
@@ -734,6 +751,21 @@ mod tests {
         assert_eq!(snapshot.len(), 2);
         assert_eq!(snapshot[0].id, "connection-a:1:0");
         assert_eq!(snapshot[1].id, "connection-a:2:0");
+    }
+
+    #[test]
+    fn connection_has_members_distinguishes_registration_from_presence_entry() {
+        let registry = PresenceRegistry::new(128);
+        registry.register_connection("app", "connection-a");
+        assert!(!registry.connection_has_members("app", "connection-a"));
+
+        registry
+            .enter("app", "room", member("connection-a", "client-a", 1))
+            .expect("presence entry succeeds");
+        assert!(registry.connection_has_members("app", "connection-a"));
+
+        registry.unregister_connection("app", "connection-a");
+        assert!(!registry.connection_has_members("app", "connection-a"));
     }
 
     #[test]

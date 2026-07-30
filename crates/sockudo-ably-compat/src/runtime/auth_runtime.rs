@@ -222,6 +222,7 @@ pub(super) fn parse_token_request_integer(
         .map(|value| {
             value
                 .as_i64()
+                .or_else(|| value.as_str()?.parse::<i64>().ok())
                 .ok_or_else(|| format!("TokenRequest {field} must be an integer"))
         })
         .transpose()
@@ -741,6 +742,19 @@ pub(super) struct VerifiedAblyJwt {
     pub(super) embedded_token: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct EmbeddedAblyTokenClaims {
+    #[serde(default)]
+    exp: Option<i64>,
+    #[serde(default, rename = "x-ably-token")]
+    embedded_token: Option<String>,
+}
+
+pub(super) struct EmbeddedAblyTokenEnvelope {
+    pub(super) token: String,
+    pub(super) expires_ms: Option<i64>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn resolve_ably_auth_with_expiry(
     hub: &AblyCompatHub,
@@ -865,6 +879,21 @@ pub(super) async fn resolve_ably_jwt(
         return Err(AblyAuthError::unauthorized("JWT exceeds 8 KiB"));
     }
     let original_token = token;
+    if let Some(envelope) = parse_embedded_ably_token_envelope(token)?
+        && let Some(resolved) = resolve_embedded_ably_token(
+            hub,
+            handler,
+            &envelope.token,
+            requested_client_id,
+            allow_expired,
+            envelope.expires_ms,
+            original_token,
+        )
+        .await?
+    {
+        return Ok(resolved);
+    }
+
     let mut jwe_key = None;
     let signed_token = if token.split('.').count() == 5 {
         let header = parse_ably_jose_header(token)?;
@@ -960,6 +989,63 @@ pub(super) async fn resolve_ably_jwt(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn resolve_embedded_ably_token(
+    hub: &AblyCompatHub,
+    handler: &Arc<ConnectionHandler>,
+    embedded_token: &str,
+    requested_client_id: Option<&str>,
+    allow_expired: bool,
+    outer_expires_ms: Option<i64>,
+    credential: &str,
+) -> Result<Option<ResolvedAblyAuth>, AblyAuthError> {
+    let Some(record) = hub.resolve_token(embedded_token).await else {
+        return Ok(None);
+    };
+    let now_ms = now_ms();
+    if record.revocable && !token_key_is_current(hub, &record, now_ms) {
+        return Err(AblyAuthError::unauthorized("Token has been revoked"));
+    }
+    if !allow_expired && record.expires_ms <= now_ms {
+        return Err(AblyAuthError::expired());
+    }
+    let expires_ms = if let Some(outer_expires_ms) = outer_expires_ms {
+        if !allow_expired && outer_expires_ms <= now_ms {
+            return Err(AblyAuthError::expired());
+        }
+        if outer_expires_ms > record.expires_ms {
+            return Err(AblyAuthError::unauthorized(
+                "Embedded Ably token expires before its outer JWT",
+            ));
+        }
+        outer_expires_ms
+    } else {
+        record.expires_ms
+    };
+    let app = find_enabled_app_by_id(handler, &record.app_id).await?;
+    let token_client_id = record.client_id.clone();
+    let client_id = resolve_ably_token_client_id(record.client_id, requested_client_id)?;
+    let connection_client_id =
+        if token_client_id.as_deref() == Some("*") && requested_client_id.is_none() {
+            Some("*".to_string())
+        } else {
+            client_id.clone()
+        };
+    Ok(Some(ResolvedAblyAuth {
+        app,
+        client_id,
+        connection_client_id,
+        capabilities: record.capabilities,
+        issued_ms: record.issued_ms,
+        expires_ms: Some(expires_ms),
+        credential_id: credential_id(credential),
+        revocable: record.revocable,
+        revocation_key: record.revocation_key,
+        #[cfg(feature = "push")]
+        push_device_id: None,
+    }))
+}
+
 pub(super) async fn resolve_ably_jwt_key(
     hub: &AblyCompatHub,
     handler: &Arc<ConnectionHandler>,
@@ -992,13 +1078,66 @@ pub(super) fn parse_ably_jose_header(token: &str) -> Result<AblyJoseHeader, Ably
     if protected.len() > 4 * 1024 {
         return Err(AblyAuthError::unauthorized("JOSE header exceeds 4 KiB"));
     }
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(protected)
-        .map_err(|_| AblyAuthError::invalid_credentials())?;
+    let bytes = decode_ably_base64_segment(protected)?;
     if bytes.len() > 4 * 1024 {
         return Err(AblyAuthError::unauthorized("JOSE header exceeds 4 KiB"));
     }
     serde_json::from_slice(&bytes).map_err(|_| AblyAuthError::invalid_credentials())
+}
+
+pub(super) fn parse_embedded_ably_token_envelope(
+    token: &str,
+) -> Result<Option<EmbeddedAblyTokenEnvelope>, AblyAuthError> {
+    if token.len() > 8 * 1024 {
+        return Err(AblyAuthError::unauthorized("JWT exceeds 8 KiB"));
+    }
+    let header = parse_ably_jose_header(token)?;
+    let segment_count = token.split('.').count();
+    let (claims_token, expires_ms) = match segment_count {
+        3 => {
+            let payload = token
+                .split('.')
+                .nth(1)
+                .filter(|payload| !payload.is_empty())
+                .ok_or_else(AblyAuthError::invalid_credentials)?;
+            if payload.len() > 8 * 1024 {
+                return Err(AblyAuthError::unauthorized("JWT payload exceeds 8 KiB"));
+            }
+            let bytes = decode_ably_base64_segment(payload)?;
+            if bytes.len() > 8 * 1024 {
+                return Err(AblyAuthError::unauthorized("JWT payload exceeds 8 KiB"));
+            }
+            let claims: EmbeddedAblyTokenClaims =
+                serde_json::from_slice(&bytes).map_err(|_| AblyAuthError::invalid_credentials())?;
+            let expires_ms = claims.exp.map(jwt_seconds_to_millis).transpose()?;
+            (claims.embedded_token, expires_ms)
+        }
+        5 => (None, None),
+        _ => return Ok(None),
+    };
+    let Some(embedded_token) = header.embedded_token.or(claims_token) else {
+        return Ok(None);
+    };
+    if embedded_token.is_empty() || embedded_token.len() > 8 * 1024 {
+        return Err(AblyAuthError::unauthorized(
+            "Embedded Ably token is invalid",
+        ));
+    }
+    Ok(Some(EmbeddedAblyTokenEnvelope {
+        token: embedded_token,
+        expires_ms,
+    }))
+}
+
+fn decode_ably_base64_segment(segment: &str) -> Result<Vec<u8>, AblyAuthError> {
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+
+    URL_SAFE_NO_PAD
+        .decode(segment)
+        .or_else(|_| URL_SAFE.decode(segment))
+        .or_else(|_| STANDARD_NO_PAD.decode(segment))
+        .or_else(|_| STANDARD.decode(segment))
+        .map_err(|_| AblyAuthError::invalid_credentials())
 }
 
 pub(super) fn verify_ably_signed_jwt(

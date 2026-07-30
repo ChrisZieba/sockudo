@@ -4,6 +4,7 @@ use crate::channel_manager::ChannelManager;
 use crate::cleanup::{AuthInfo, ConnectionCleanupInfo, DisconnectTask};
 use crate::horizontal_adapter::DeadNodeEvent;
 use sockudo_core::app::App;
+use sockudo_core::channel::PresenceMemberInfo;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::presence_registry::{
     PresenceChange, PresenceChangeAction, PresenceRecord, PresenceReplication,
@@ -18,6 +19,11 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
+
+struct DisconnectPresenceLease<'a> {
+    member: Option<&'a PresenceMemberInfo>,
+    timeout_seconds: u64,
+}
 
 impl ConnectionHandler {
     pub async fn send_connection_established(
@@ -331,10 +337,22 @@ impl ConnectionHandler {
         app_id: &str,
         socket_id: &SocketId,
     ) -> Result<()> {
+        let presence_ungraceful_timeout_seconds = match self
+            .connection_manager
+            .get_connection(socket_id, app_id)
+            .await
+        {
+            Some(connection) => self
+                .server_options()
+                .presence
+                .ungraceful_timeout_for_protocol(connection.protocol_version),
+            None => 0,
+        };
+
         self.handle_disconnect_with_presence_timeout(
             app_id,
             socket_id,
-            self.server_options().presence.ungraceful_timeout_seconds,
+            presence_ungraceful_timeout_seconds,
         )
         .await
     }
@@ -417,7 +435,7 @@ impl ConnectionHandler {
         // Retain the WebSocketRef outside the lock scope so we can call shutdown()
         // before queuing the cleanup task — cleanup queue latency must not extend
         // the reader/writer task lifetime.
-        let (disconnect_task, connection) = {
+        let (mut disconnect_task, connection) = {
             let connection_manager = &self.connection_manager;
             let conn_ref =
                 if let Some(c) = connection_manager.get_connection(socket_id, app_id).await {
@@ -460,6 +478,7 @@ impl ConnectionHandler {
                 connection_info: if !presence_channels.is_empty() {
                     Some(ConnectionCleanupInfo {
                         presence_channels,
+                        presence_members: HashMap::new(),
                         auth_info: user_id.map(|uid| AuthInfo {
                             user_id: uid,
                             user_info: None,
@@ -474,6 +493,12 @@ impl ConnectionHandler {
             drop(conn_locked);
             (task, conn_ref)
         };
+
+        if let Some(connection_info) = disconnect_task.connection_info.as_mut() {
+            connection_info.presence_members = self
+                .capture_presence_members(app_id, socket_id, &connection_info.presence_channels)
+                .await;
+        }
 
         // Step 2: Clear immediate timeouts (these should be fast)
         self.clear_activity_timeout(app_id, socket_id).await.ok();
@@ -596,6 +621,14 @@ impl ConnectionHandler {
         let (subscribed_channels, user_id, user_watchlist) = self
             .extract_connection_state_for_disconnect(socket_id, &app_config)
             .await?;
+        let presence_channels: Vec<String> = subscribed_channels
+            .iter()
+            .filter(|channel| channel.starts_with("presence-"))
+            .cloned()
+            .collect();
+        let presence_members = self
+            .capture_presence_members(&app_config.id, socket_id, &presence_channels)
+            .await;
 
         // Handle watchlist offline events
         if let Some(ref user_id_str) = user_id {
@@ -620,6 +653,7 @@ impl ConnectionHandler {
                 &app_config,
                 &subscribed_channels,
                 &user_id,
+                &presence_members,
                 presence_ungraceful_timeout_seconds,
             )
             .await
@@ -686,6 +720,7 @@ impl ConnectionHandler {
         app_config: &App,
         subscribed_channels: &HashSet<String>,
         user_id: &Option<String>,
+        presence_members: &HashMap<String, PresenceMemberInfo>,
         presence_ungraceful_timeout_seconds: u64,
     ) -> Result<()> {
         if subscribed_channels.is_empty() {
@@ -730,7 +765,10 @@ impl ConnectionHandler {
                                     user_id,
                                     *remaining_connections,
                                     socket_id,
-                                    presence_ungraceful_timeout_seconds,
+                                    DisconnectPresenceLease {
+                                        member: presence_members.get(channel_name),
+                                        timeout_seconds: presence_ungraceful_timeout_seconds,
+                                    },
                                 )
                                 .await?;
                             }
@@ -767,7 +805,7 @@ impl ConnectionHandler {
         user_id: &Option<String>,
         current_sub_count: usize,
         socket_id: &SocketId,
-        presence_ungraceful_timeout_seconds: u64,
+        presence_lease: DisconnectPresenceLease<'_>,
     ) -> Result<()> {
         if channel_str.starts_with("presence-") {
             if let Some(disconnected_user_id) = user_id {
@@ -777,7 +815,7 @@ impl ConnectionHandler {
                 );
                 // Use centralized presence member removal logic (instance method for race safety)
                 self.presence_manager
-                    .handle_member_removed(
+                    .handle_member_removed_with_info(
                         &self.connection_manager,
                         Arc::clone(self.presence_history_store()),
                         presence_history_policy.enabled,
@@ -789,7 +827,10 @@ impl ConnectionHandler {
                         Some(socket_id),
                         sockudo_core::presence_history::PresenceHistoryEventCause::Disconnect,
                         None,
-                        presence_ungraceful_timeout_seconds,
+                        presence_lease
+                            .member
+                            .and_then(|member| member.user_info.clone()),
+                        presence_lease.timeout_seconds,
                         Some(presence_history_policy.retention()),
                     )
                     .await
@@ -825,6 +866,25 @@ impl ConnectionHandler {
         }
 
         Ok(())
+    }
+
+    async fn capture_presence_members(
+        &self,
+        app_id: &str,
+        socket_id: &SocketId,
+        presence_channels: &[String],
+    ) -> HashMap<String, PresenceMemberInfo> {
+        let mut members = HashMap::with_capacity(presence_channels.len());
+        for channel in presence_channels {
+            if let Some(member) = self
+                .connection_manager
+                .get_presence_member(app_id, channel, socket_id)
+                .await
+            {
+                members.insert(channel.clone(), member);
+            }
+        }
+        members
     }
 
     async fn handle_disconnect_watchlist_events(

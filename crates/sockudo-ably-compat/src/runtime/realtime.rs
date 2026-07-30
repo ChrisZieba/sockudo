@@ -188,6 +188,7 @@ pub async fn handle_ably_realtime_upgrade(
     let resume = params.resume.clone();
     let recover = params.recover.clone();
     let replace_presence_on_reenter = params.remain_present_for.is_some();
+    let remain_present_for_ms = normalized_remain_present_for_ms(params.remain_present_for);
     let initial_error = credential_error.or_else(|| {
         resolved
             .expires_ms
@@ -219,6 +220,7 @@ pub async fn handle_ably_realtime_upgrade(
                     format,
                     echo: params.echo,
                     replace_presence_on_reenter,
+                    remain_present_for_ms,
                     stats_transport,
                 },
             )
@@ -295,6 +297,7 @@ pub(super) struct AblyRealtimeSocketContext {
     format: AblyFormat,
     echo: bool,
     replace_presence_on_reenter: bool,
+    remain_present_for_ms: u64,
     stats_transport: &'static str,
 }
 
@@ -312,6 +315,7 @@ pub(super) async fn run_ably_realtime_socket(
         format,
         echo,
         replace_presence_on_reenter,
+        remain_present_for_ms,
         stats_transport,
     } = context;
     let app = resolved.app.clone();
@@ -704,8 +708,8 @@ pub(super) async fn run_ably_realtime_socket(
                 .or_default()
                 .push(PresenceChange {
                     action: PresenceChangeAction::Leave,
-                    wire_id: Some(removal.member.id.clone()),
                     member: removal.member,
+                    wire_id: None,
                 });
         }
         for (channel, changes) in leaves {
@@ -795,8 +799,47 @@ pub(super) async fn run_ably_realtime_socket(
         // Cleanup from this stale socket must not recreate its recovery key.
         hub.forget_connection(&final_connection_key).await;
     }
-    hub.release_session_owner(&app.id, &connection_id, &session_id)
-        .await;
+    let defer_owner_release = if owns_session
+        && !graceful_close
+        && hub
+            .presence_registry
+            .connection_has_members(&app.id, &connection_id)
+    {
+        match hub
+            .schedule_pending_presence_removal(
+                &app.id,
+                &connection_id,
+                &session_id,
+                remain_present_for_ms,
+            )
+            .await
+        {
+            Ok(()) if hub.live_sessions.contains_key(&connection_id) => {
+                // Recovery may win between the original ownership check and
+                // scheduling. Cancel here; a later local recovery cancels from
+                // register_live_session instead.
+                hub.cancel_pending_presence_removal(&app.id, &connection_id);
+                false
+            }
+            Ok(()) => true,
+            Err(error) => {
+                warn!(
+                    protocol = "ably",
+                    app_id = %app.id,
+                    connection_id = %connection_id,
+                    error = %error,
+                    "failed to schedule presence removal"
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+    if !defer_owner_release {
+        hub.release_session_owner(&app.id, &connection_id, &session_id)
+            .await;
+    }
     heartbeat_task.abort();
     let _ = heartbeat_task.await;
     drop(sender);
@@ -822,6 +865,12 @@ pub(super) async fn run_ably_realtime_socket(
         "socket disconnected"
     );
     Ok(())
+}
+
+pub(super) fn normalized_remain_present_for_ms(requested_ms: Option<u64>) -> u64 {
+    requested_ms
+        .unwrap_or(DEFAULT_REMAIN_PRESENT_FOR_MS)
+        .clamp(MIN_REMAIN_PRESENT_FOR_MS, DEFAULT_REMAIN_PRESENT_FOR_MS)
 }
 
 pub(super) fn authorization_deadline(

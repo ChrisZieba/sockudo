@@ -1,13 +1,13 @@
-use super::{CleanupConfig, ConnectionCleanupInfo, DisconnectTask, WebhookEvent};
+use super::{
+    CleanupConfig, ConnectionCleanupInfo, DisconnectTask, PresenceCleanupContext, WebhookEvent,
+};
 use ahash::AHashMap;
 use sockudo_adapter::channel_manager::ChannelManager;
 use sockudo_adapter::connection_manager::ConnectionManager;
-use sockudo_adapter::presence::global_presence_manager;
 use sockudo_core::app::AppManager;
 use sockudo_core::channel::ChannelType;
 use sockudo_core::metrics::MetricsInterface;
-use sockudo_core::options::PresenceHistoryConfig;
-use sockudo_core::presence_history::{PresenceHistoryEventCause, PresenceHistoryStore};
+use sockudo_core::presence_history::PresenceHistoryEventCause;
 use sockudo_core::websocket::SocketId;
 use sockudo_webhook::WebhookIntegration;
 use std::sync::Arc;
@@ -20,8 +20,7 @@ pub struct CleanupWorker {
     connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
     app_manager: Arc<dyn AppManager + Send + Sync>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
-    presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
-    presence_history_config: PresenceHistoryConfig,
+    presence: PresenceCleanupContext,
     config: CleanupConfig,
     metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
 }
@@ -31,8 +30,7 @@ impl CleanupWorker {
         connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
         app_manager: Arc<dyn AppManager + Send + Sync>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
-        presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
-        presence_history_config: PresenceHistoryConfig,
+        presence: PresenceCleanupContext,
         config: CleanupConfig,
         metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
     ) -> Self {
@@ -40,8 +38,7 @@ impl CleanupWorker {
             connection_manager,
             app_manager,
             webhook_integration,
-            presence_history_store,
-            presence_history_config,
+            presence,
             config,
             metrics,
         }
@@ -153,7 +150,7 @@ impl CleanupWorker {
         }
 
         if !webhook_events.is_empty() {
-            self.process_webhooks_async(webhook_events).await;
+            self.process_cleanup_events(webhook_events).await;
         }
 
         batch.clear();
@@ -281,6 +278,10 @@ impl CleanupWorker {
                         "user_id": user_id,
                         "socket_id": task.socket_id.to_string()
                     }),
+                    presence_user_info: info
+                        .presence_members
+                        .get(channel)
+                        .and_then(|member| member.user_info.clone()),
                     presence_ungraceful_timeout_seconds: task.presence_ungraceful_timeout_seconds,
                 });
             }
@@ -302,6 +303,7 @@ impl CleanupWorker {
                     data: sonic_rs::json!({
                         "channel": channel
                     }),
+                    presence_user_info: None,
                     presence_ungraceful_timeout_seconds: 0,
                 });
             }
@@ -310,79 +312,82 @@ impl CleanupWorker {
         events
     }
 
-    async fn process_webhooks_async(&self, webhook_events: Vec<WebhookEvent>) {
-        if let Some(webhook_integration) = &self.webhook_integration {
-            debug!(
-                event_count = webhook_events.len(),
-                "processing cleanup webhook events"
-            );
+    async fn process_cleanup_events(&self, cleanup_events: Vec<WebhookEvent>) {
+        debug!(
+            event_count = cleanup_events.len(),
+            "processing disconnect cleanup events"
+        );
 
-            let mut events_by_app: AHashMap<String, Vec<WebhookEvent>> = AHashMap::new();
-            for event in webhook_events {
-                events_by_app
-                    .entry(event.app_id.clone())
-                    .or_default()
-                    .push(event);
-            }
+        let mut events_by_app: AHashMap<String, Vec<WebhookEvent>> = AHashMap::new();
+        for event in cleanup_events {
+            events_by_app
+                .entry(event.app_id.clone())
+                .or_default()
+                .push(event);
+        }
 
-            let mut webhook_handles = Vec::new();
+        let mut cleanup_handles = Vec::new();
 
-            for (app_id, events) in events_by_app {
-                let webhook_integration = webhook_integration.clone();
-                let app_manager = self.app_manager.clone();
-                let connection_manager = self.connection_manager.clone();
-                let presence_history_store = self.presence_history_store.clone();
-                let presence_history_config = self.presence_history_config.clone();
-                let handle = tokio::spawn(async move {
-                    let app_config = match app_manager.find_by_id(&app_id).await {
-                        Ok(Some(app)) => app,
-                        Ok(None) => {
-                            warn!(app_id = %app_id, "app not found for cleanup webhook events");
-                            return;
-                        }
-                        Err(e) => {
-                            error!(app_id = %app_id, error = %e, "app lookup failed for cleanup webhook events");
-                            return;
-                        }
-                    };
-
-                    for event in events {
-                        if let Err(e) = Self::send_webhook_event(
-                            &connection_manager,
-                            &webhook_integration,
-                            &presence_history_store,
-                            &presence_history_config,
-                            &app_config,
-                            &event,
-                        )
-                        .await
-                        {
-                            error!(
-                                app_id = %app_id,
-                                event = %event.event_type,
-                                error = %e,
-                                "cleanup webhook event send failed"
-                            );
-                        }
+        for (app_id, events) in events_by_app {
+            let webhook_integration = self.webhook_integration.clone();
+            let app_manager = self.app_manager.clone();
+            let connection_manager = self.connection_manager.clone();
+            let presence_history_store = Arc::clone(&self.presence.history_store);
+            let presence_history_config = self.presence.history_config.clone();
+            let presence_manager = Arc::clone(&self.presence.manager);
+            let handle = tokio::spawn(async move {
+                let app_config = match app_manager.find_by_id(&app_id).await {
+                    Ok(Some(app)) => app,
+                    Ok(None) => {
+                        warn!(app_id = %app_id, "app not found for disconnect cleanup events");
+                        return;
                     }
-                });
+                    Err(e) => {
+                        error!(app_id = %app_id, error = %e, "app lookup failed for disconnect cleanup events");
+                        return;
+                    }
+                };
 
-                webhook_handles.push(handle);
-            }
-
-            for handle in webhook_handles {
-                if let Err(e) = handle.await {
-                    error!(error = %e, "cleanup webhook task failed");
+                for event in events {
+                    if let Err(e) = Self::process_cleanup_event(
+                        &connection_manager,
+                        &presence_manager,
+                        webhook_integration.as_ref(),
+                        &presence_history_store,
+                        &presence_history_config,
+                        &app_config,
+                        &event,
+                    )
+                    .await
+                    {
+                        error!(
+                            app_id = %app_id,
+                            event = %event.event_type,
+                            error = %e,
+                            "disconnect cleanup event processing failed"
+                        );
+                    }
                 }
+            });
+
+            cleanup_handles.push(handle);
+        }
+
+        for handle in cleanup_handles {
+            if let Err(e) = handle.await {
+                error!(error = %e, "disconnect cleanup task failed");
             }
         }
     }
 
-    async fn send_webhook_event(
+    async fn process_cleanup_event(
         connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
-        webhook_integration: &Arc<WebhookIntegration>,
-        presence_history_store: &Arc<dyn PresenceHistoryStore + Send + Sync>,
-        presence_history_config: &PresenceHistoryConfig,
+        presence_manager: &sockudo_adapter::presence::PresenceManager,
+        webhook_integration: Option<&Arc<WebhookIntegration>>,
+        presence_history_store: &Arc<
+            dyn sockudo_core::presence_history::PresenceHistoryStore + Send + Sync,
+        >,
+        presence_history_config: &sockudo_core::options::PresenceHistoryConfig,
         app_config: &sockudo_core::app::App,
         event: &WebhookEvent,
     ) -> sockudo_core::error::Result<()> {
@@ -390,20 +395,20 @@ impl CleanupWorker {
             app_id = %app_config.id,
             channel = %event.channel,
             event = %event.event_type,
-            "sending cleanup webhook"
+            "processing disconnect cleanup event"
         );
 
         match event.event_type.as_str() {
             "member_removed" => {
                 if let Some(user_id) = &event.user_id {
-                    global_presence_manager()
-                        .handle_member_removed(
+                    presence_manager
+                        .handle_member_removed_with_info(
                             connection_manager,
                             Arc::clone(presence_history_store),
                             app_config
                                 .resolved_presence_history(&event.channel, presence_history_config)
                                 .enabled,
-                            Some(webhook_integration),
+                            webhook_integration,
                             None,
                             app_config,
                             &event.channel,
@@ -411,6 +416,7 @@ impl CleanupWorker {
                             event.socket_id.as_ref(),
                             PresenceHistoryEventCause::Disconnect,
                             None,
+                            event.presence_user_info.clone(),
                             event.presence_ungraceful_timeout_seconds,
                             Some(
                                 app_config
@@ -431,15 +437,17 @@ impl CleanupWorker {
                 }
             }
             "channel_vacated" => {
-                webhook_integration
-                    .send_channel_vacated(app_config, &event.channel)
-                    .await?;
-                debug!(
-                    app_id = %app_config.id,
-                    channel = %event.channel,
-                    event = "channel_vacated",
-                    "cleanup webhook sent"
-                );
+                if let Some(webhook_integration) = webhook_integration {
+                    webhook_integration
+                        .send_channel_vacated(app_config, &event.channel)
+                        .await?;
+                    debug!(
+                        app_id = %app_config.id,
+                        channel = %event.channel,
+                        event = "channel_vacated",
+                        "cleanup webhook sent"
+                    );
+                }
             }
             _ => {
                 warn!(event = %event.event_type, "unknown cleanup webhook event type");
@@ -454,6 +462,7 @@ impl CleanupWorker {
 mod tests {
     use super::*;
     use crossfire::mpsc;
+    use futures_util::StreamExt;
     use sockudo_adapter::cleanup::{CleanupSender, DisconnectTask};
     use sockudo_adapter::handler::ConnectionHandler;
     use sockudo_adapter::local_adapter::LocalAdapter;
@@ -467,7 +476,10 @@ mod tests {
     use sockudo_protocol::{ProtocolVersion, WireFormat};
     use sockudo_ws::axum_integration::{WebSocket, WebSocketWriter};
     use sockudo_ws::client::WebSocketClient;
-    use sockudo_ws::{Config as WsConfig, Http1, Stream as WsStream, WebSocketStream};
+    use sockudo_ws::{
+        Config as WsConfig, Http1, Message as WsMessage, Stream as WsStream, WebSocketStream,
+    };
+    use sonic_rs::JsonValueTrait;
     use std::time::{Duration, Instant};
     use tokio::net::{TcpListener, TcpStream};
 
@@ -517,12 +529,22 @@ mod tests {
 
     fn make_worker(adapter: Arc<dyn ConnectionManager + Send + Sync>) -> CleanupWorker {
         let app_manager = Arc::new(MemoryAppManager::new()) as Arc<dyn AppManager + Send + Sync>;
+        make_worker_with_app_manager(adapter, app_manager)
+    }
+
+    fn make_worker_with_app_manager(
+        adapter: Arc<dyn ConnectionManager + Send + Sync>,
+        app_manager: Arc<dyn AppManager + Send + Sync>,
+    ) -> CleanupWorker {
         CleanupWorker::new(
             adapter,
             app_manager,
             None,
-            Arc::new(NoopPresenceHistoryStore),
-            PresenceHistoryConfig::default(),
+            PresenceCleanupContext {
+                history_store: Arc::new(NoopPresenceHistoryStore),
+                history_config: PresenceHistoryConfig::default(),
+                manager: Arc::new(sockudo_adapter::presence::PresenceManager::new()),
+            },
             CleanupConfig {
                 batch_size: 64,
                 batch_timeout_ms: 50,
@@ -530,6 +552,205 @@ mod tests {
             },
             None,
         )
+    }
+
+    #[tokio::test]
+    async fn disconnect_cleanup_retains_then_emits_presence_leave_without_webhooks() {
+        let adapter = Arc::new(LocalAdapter::new());
+        adapter.init().await;
+
+        let app_manager = Arc::new(MemoryAppManager::new());
+        app_manager.create_app(make_app()).await.unwrap();
+
+        let observer_socket = SocketId::new();
+        let (observer_writer, mut observer_client) = make_ws_pair().await;
+        adapter
+            .add_socket(
+                observer_socket,
+                observer_writer,
+                APP_ID,
+                app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
+                WebSocketBufferConfig::default(),
+                ProtocolVersion::V1,
+                WireFormat::Json,
+                true,
+                sockudo_protocol::AppendMode::Delta,
+            )
+            .await
+            .unwrap();
+        adapter
+            .add_to_channel(APP_ID, "presence-room", &observer_socket)
+            .await
+            .unwrap();
+
+        let leaving_socket = SocketId::new();
+        let (leaving_writer, _leaving_client) = make_ws_pair().await;
+        adapter
+            .add_socket(
+                leaving_socket,
+                leaving_writer,
+                APP_ID,
+                app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
+                WebSocketBufferConfig::default(),
+                ProtocolVersion::V1,
+                WireFormat::Json,
+                true,
+                sockudo_protocol::AppendMode::Delta,
+            )
+            .await
+            .unwrap();
+        adapter
+            .add_to_channel(APP_ID, "presence-room", &leaving_socket)
+            .await
+            .unwrap();
+
+        let leaving_connection = adapter
+            .get_connection(&leaving_socket, APP_ID)
+            .await
+            .unwrap();
+        {
+            let mut guard = leaving_connection.inner.lock().await;
+            guard.state.user_id = Some("leaving-user".to_string());
+        }
+        adapter.add_user(leaving_connection).await.unwrap();
+
+        let namespace = adapter.get_namespace(APP_ID).await.unwrap();
+        namespace
+            .presence_data
+            .entry(leaving_socket)
+            .or_default()
+            .insert(
+                "presence-room".to_string(),
+                PresenceMemberInfo {
+                    user_id: "leaving-user".to_string(),
+                    user_info: Some(sonic_rs::json!({"status": "busy"})),
+                },
+            );
+
+        let mut presence_members = std::collections::HashMap::new();
+        presence_members.insert(
+            "presence-room".to_string(),
+            PresenceMemberInfo {
+                user_id: "leaving-user".to_string(),
+                user_info: Some(sonic_rs::json!({"status": "busy"})),
+            },
+        );
+        let task = DisconnectTask {
+            socket_id: leaving_socket,
+            app_id: APP_ID.to_string(),
+            subscribed_channels: vec!["presence-room".to_string()],
+            user_id: Some("leaving-user".to_string()),
+            cause: sockudo_core::websocket::DisconnectCause::TransportError,
+            timestamp: Instant::now(),
+            connection_info: Some(ConnectionCleanupInfo {
+                presence_channels: vec!["presence-room".to_string()],
+                presence_members,
+                auth_info: None,
+            }),
+            presence_ungraceful_timeout_seconds: 1,
+        };
+
+        let worker = make_worker_with_app_manager(
+            adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
+            app_manager as Arc<dyn AppManager + Send + Sync>,
+        );
+        let mut batch = vec![task];
+        worker.process_batch(&mut batch).await;
+
+        let retained = adapter
+            .get_channel_members(APP_ID, "presence-room")
+            .await
+            .unwrap();
+        assert_eq!(
+            retained
+                .get("leaving-user")
+                .and_then(|member| member.user_info.as_ref())
+                .and_then(|info| info.get("status"))
+                .and_then(sonic_rs::Value::as_str),
+            Some("busy")
+        );
+
+        let frame = tokio::time::timeout(Duration::from_secs(2), observer_client.next())
+            .await
+            .expect("observer must receive member_removed")
+            .expect("observer websocket must remain open")
+            .expect("observer frame must be readable");
+        let message: sockudo_protocol::messages::PusherMessage = match frame {
+            WsMessage::Text(bytes) => sonic_rs::from_slice(bytes.as_ref()).unwrap(),
+            WsMessage::Binary(bytes) => sonic_rs::from_slice(&bytes).unwrap(),
+            other => panic!("unexpected websocket frame: {other:?}"),
+        };
+
+        assert_eq!(
+            message.event.as_deref(),
+            Some("pusher_internal:member_removed")
+        );
+        assert_eq!(message.channel.as_deref(), Some("presence-room"));
+        assert!(
+            message
+                .data
+                .as_ref()
+                .is_some_and(|data| sonic_rs::to_string(data).unwrap().contains("leaving-user"))
+        );
+    }
+
+    #[tokio::test]
+    async fn v2_ungraceful_disconnect_uses_recovery_presence_lease() {
+        let adapter = Arc::new(LocalAdapter::new());
+        adapter.init().await;
+
+        let app_manager = Arc::new(MemoryAppManager::new());
+        app_manager.create_app(make_app()).await.unwrap();
+
+        let socket_id = SocketId::new();
+        let (writer, _client) = make_ws_pair().await;
+        adapter
+            .add_socket(
+                socket_id,
+                writer,
+                APP_ID,
+                app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
+                WebSocketBufferConfig::default(),
+                ProtocolVersion::V2,
+                WireFormat::Json,
+                true,
+                sockudo_protocol::AppendMode::Delta,
+            )
+            .await
+            .unwrap();
+
+        let (tx, rx) = mpsc::bounded_async::<DisconnectTask>(8);
+        let cache = Arc::new(MemoryCacheManager::new(
+            "cleanup-worker-v2-presence-test".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+        let handler = ConnectionHandler::builder(
+            app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
+            adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
+            cache,
+            ServerOptions::default(),
+        )
+        .local_adapter(adapter.clone())
+        .cleanup_queue(CleanupSender::Direct(tx))
+        .build();
+
+        handler
+            .handle_ungraceful_disconnect(APP_ID, &socket_id)
+            .await
+            .unwrap();
+        let task = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("disconnect task must be queued")
+            .expect("cleanup queue must remain open");
+
+        assert_eq!(task.presence_ungraceful_timeout_seconds, 15);
+
+        let worker = make_worker_with_app_manager(
+            adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
+            app_manager as Arc<dyn AppManager + Send + Sync>,
+        );
+        let mut batch = vec![task];
+        worker.process_batch(&mut batch).await;
     }
 
     #[tokio::test]
