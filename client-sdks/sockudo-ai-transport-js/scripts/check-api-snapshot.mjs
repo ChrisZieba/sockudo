@@ -1,39 +1,38 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 
-const entries = [
-  ["core", "dist/index.d.ts"],
-  ["react", "dist/react/index.d.ts"],
-  ["vue", "dist/vue/index.d.ts"],
-  ["svelte", "dist/svelte/index.d.ts"],
-  ["vercel", "dist/vercel/index.d.ts"],
-  ["vercel/react", "dist/vercel/react/index.d.ts"],
-  ["vercel/vue", "dist/vercel/vue/index.d.ts"],
-  ["vercel/svelte", "dist/vercel/svelte/index.d.ts"],
-  ["providers", "dist/providers/index.d.ts"],
-];
+import { buildSnapshot, normalize, SNAPSHOT_PATH } from "./api-snapshot.mjs";
 
-const snapshotPath = "etc/api-snapshot.d.ts";
+const write = process.argv.includes("--write");
 
-const normalize = (content) => content.replaceAll("\r\n", "\n").trimEnd();
+const actualSnapshot = normalize(await buildSnapshot());
 
-const actualSnapshot = (
-  await Promise.all(
-    entries.map(async ([name, path]) => {
-      const content = await readFile(path, "utf8");
-      return `// ${name}\n${normalize(content)}`;
-    }),
-  )
-).join("\n\n");
+if (write) {
+  await writeFile(SNAPSHOT_PATH, `${actualSnapshot}\n`);
+  console.log(`Wrote ${SNAPSHOT_PATH}`);
+  process.exit(0);
+}
 
-const expectedSnapshot = await readFile(snapshotPath, "utf8").then(normalize);
+const expectedSnapshot = await readFile(SNAPSHOT_PATH, "utf8").then(normalize);
 
 if (actualSnapshot !== expectedSnapshot) {
   console.error(
-    `Public API snapshot mismatch. Update ${snapshotPath} intentionally if the API changed.`,
+    "Public API snapshot mismatch. Run `node scripts/check-api-snapshot.mjs --write` if the API changed intentionally.",
   );
-  console.error("--- expected");
-  console.error(expectedSnapshot);
-  console.error("--- actual");
-  console.error(actualSnapshot);
+  const expectedLines = expectedSnapshot.split("\n");
+  const actualLines = actualSnapshot.split("\n");
+  // Dumping two ~3000-line declaration blobs buries the change, so print only
+  // the differing lines.
+  const removed = expectedLines.filter((line) => !actualLines.includes(line));
+  const added = actualLines.filter((line) => !expectedLines.includes(line));
+  for (const line of removed.slice(0, 40)) {
+    console.error(`- ${line}`);
+  }
+  for (const line of added.slice(0, 40)) {
+    console.error(`+ ${line}`);
+  }
+  const shown = Math.min(removed.length, 40) + Math.min(added.length, 40);
+  if (removed.length + added.length > shown) {
+    console.error(`… ${removed.length + added.length - shown} more changed lines`);
+  }
   process.exitCode = 1;
 }
