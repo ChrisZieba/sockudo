@@ -11,11 +11,11 @@ Source: `demo/app.vue`
 <!-- snippet:core-branch-views -->
 
 ```vue
-const primaryView = useView({ transport });
-const compareView = useCreateView({ transport });
-const rawMessages = useSockudoMessages({ transport });
-const activeTurns = useActiveTurns({ transport });
-const tree = useTree({ transport });
+const primaryView = useView({ session });
+const compareView = useCreateView({ session });
+const rawMessages = useSockudoMessages({ session });
+const activeRuns = useActiveRuns({ session });
+const tree = useTree({ session });
 const channel = realtime.channels.get(channelName, {
   params: { rewind: { count: 100 } },
 });
@@ -29,7 +29,7 @@ Source: `demo/server/api/chat.post.ts`
 
 ```ts
 async function runTurn(
-  turn: ReturnType<ReturnType<typeof createServerTransport>["newTurn"]>,
+  turn: ReturnType<ReturnType<typeof createAgentSession>["createRun"]>,
   body: Record<string, unknown>,
   model: string,
 ): Promise<void> {
@@ -86,17 +86,17 @@ Source: `demo/server/api/chat.post.ts`
 <!-- snippet:usechat-route -->
 
 ```ts
-  const transport = createServerTransport({
+  const session = createAgentSession({
     client: realtimeClient(),
     channelName,
   });
-  const turn = transport.newTurn({
-    turnId,
+  const turn = session.createRun({
+    runId,
     invocationId,
     inputEventId,
     ...(clientId === undefined ? {} : { clientId }),
     onCancel(request) {
-      return request.filter.all === true || request.turnOwners.get(turnId) === clientId;
+      return request.filter.all === true || request.runOwners.get(runId) === clientId;
     },
     onError(error) {
       console.error("[sockudo-ai-transport-demo] turn failed", error.message);

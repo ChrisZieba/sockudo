@@ -6,7 +6,7 @@ message chunks. Use it when your agent calls provider SDKs or OpenAI-compatible 
 ## OpenAI-Compatible HTTP
 
 ```ts
-import { createOpenAICompatibleProvider, runDirectLlmTurn } from "@sockudo/ai-transport/providers";
+import { createOpenAICompatibleProvider, runDirectLlm } from "@sockudo/ai-transport/providers";
 
 const provider = createOpenAICompatibleProvider({
   provider: "groq",
@@ -14,7 +14,7 @@ const provider = createOpenAICompatibleProvider({
   model: "llama-3.3-70b-versatile",
 });
 
-await runDirectLlmTurn(turn, provider, {
+await runDirectLlm(turn, provider, {
   model: "llama-3.3-70b-versatile",
   prompt: "Answer over Sockudo AI Transport.",
 });

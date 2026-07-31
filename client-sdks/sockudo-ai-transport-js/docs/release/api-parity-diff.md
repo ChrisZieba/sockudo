@@ -7,20 +7,22 @@ Source of truth: `plans/ai-transport/02-sdk-prompts.md` section 1 and
 | ------------------------ | ------------------ | -------------------------------------------------------------- |
 | Entry points             | ✅                 | `.`, `/react`, `/vue`, `/svelte`, `/vercel/*`, `/providers`    |
 | Realtime substrate       | ✅                 | `@sockudo/client` peer dependency only through `src/realtime/` |
-| Client factory           | ✅                 | `createClientTransport`                                        |
-| Server factory           | ✅                 | `createServerTransport`                                        |
-| Server turn API          | ✅                 | `newTurn`, `start`, `addMessages`, `streamResponse`, `end`     |
-| Turn reasons             | ✅                 | `complete`, `cancelled`, `error`, `suspended`                  |
-| Client transport surface | ✅                 | tree/view/cancel/wait/stage/close/error                        |
+| Client factory           | ✅                 | `createClientSession`                                        |
+| Server factory           | ✅                 | `createAgentSession`                                        |
+| Server run API           | ✅                 | `createRun`, `start`, `addMessages`, `streamResponse`, `end`   |
+| Run reasons              | ✅                 | `complete`, `cancelled`, `error`, `suspended`                  |
+| Client session surface   | ✅                 | tree/view/cancel/wait/stage/close/error                        |
 | View surface             | ✅                 | send/edit/regenerate/branch navigation/history                 |
-| ActiveTurn               | ✅                 | stream, ids, optimistic ids, cancel                            |
-| CancelFilter             | ✅                 | `turnId`, `own`, `clientId`, `all`; default own                |
+| ClientRun                | ✅                 | stream, ids, optimistic ids, cancel, steer                     |
+| CancelFilter             | ✅                 | `runId`, `own`, `clientId`, `all`; default own                 |
 | Codec core               | ✅                 | encoder/decoder/accumulator/lifecycle helpers                  |
-| Vercel helpers           | ✅                 | UIMessage codec, chat transport, turn-end reason               |
-| React helpers            | ✅                 | providers, view hooks, active turns, message sync              |
-| Vue helpers              | ✅                 | composables, view refs, active turns, Vercel chat transport    |
-| Svelte helpers           | ✅                 | stores, view stores, active turns, Vercel chat transport       |
+| Vercel helpers           | ✅                 | UIMessage codec, chat transport, run-end reason                |
+| React helpers            | ✅                 | providers, view hooks, active runs, message sync               |
+| Vue helpers              | ✅                 | composables, view refs, active runs, Vercel chat transport     |
+| Svelte helpers           | ✅                 | stores, view stores, active runs, Vercel chat transport        |
 | Direct provider helpers  | ✅                 | OpenAI SDK, OpenAI-compatible HTTP/SSE, Anthropic SDK          |
 | Error surface            | ✅                 | `ErrorInfo`, `ErrorCode`, `errorInfoIs`                        |
+| Steering                 | ✅                 | `ClientRun.steer`, `hasInput`, `onSteer`, stamp outcomes        |
+| Step lifecycle           | ✅                 | `createStep`, attempts, retry supersession                     |
 
 Public API freeze is enforced by `pnpm api:snapshot`.
