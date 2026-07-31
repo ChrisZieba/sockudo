@@ -190,7 +190,7 @@ export interface RunDirectLlmResult {
   /** Pipe result from `turn.streamResponse`. */
   pipeResult: StreamResult;
   /** Published turn end reason. */
-  turnEndReason: RunEndReason;
+  runEndReason: RunEndReason;
 }
 
 /**
@@ -393,12 +393,12 @@ export async function runDirectLlm(
     signal: turn.abortSignal,
   });
   const pipeResult = await turn.streamResponse(stream);
-  const turnEndReason = await vercelRunEndReason(
+  const runEndReason = await vercelRunEndReason(
     pipeResult,
     Promise.resolve(finishReasonFromPipe(pipeResult)),
   );
-  await turn.end(turnEndReason);
-  return { pipeResult, turnEndReason };
+  await turn.end(runEndReason);
+  return { pipeResult, runEndReason };
 }
 
 /**

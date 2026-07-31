@@ -35,9 +35,9 @@ export type RunStatus = "active" | RunEndReason;
  */
 export interface RunNode<TProjection> {
   /** Stable turn id. */
-  turnId: string;
+  runId: string;
   /** Parent turn id, resolved from parent or fork metadata. */
-  parentTurnId?: string;
+  parentRunId?: string;
   /** AgentRun id this node forked from. */
   forkOf?: string;
   /** Anchored codec message id this turn regenerates. */
@@ -81,7 +81,7 @@ export interface RunLifecycleEvent {
  */
 export interface TreeMessageEvent<TEvent, TProjection> {
   /** Owning turn id. */
-  turnId: string;
+  runId: string;
   /** Owning turn node. */
   node: RunNode<TProjection>;
   /** Folded codec event. */
@@ -139,7 +139,7 @@ export interface Tree<TEvent, TProjection> {
     serial: TreeSerial,
   ): RunNode<TProjection> | undefined;
   /** Gets a node by turn id. */
-  getRunNode(turnId: string): RunNode<TProjection> | undefined;
+  getRunNode(runId: string): RunNode<TProjection> | undefined;
   /** Gets a node by codec message id. */
   getNodeByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined;
   /** Docs-compatible message-granularity node lookup. */
@@ -155,7 +155,7 @@ export interface Tree<TEvent, TProjection> {
   /** Gets the regenerate group for an anchored codec message id. */
   getRegenerateGroup(codecMessageId: string): readonly RunNode<TProjection>[];
   /** Gets the latest continuation invocation for a turn. */
-  getLatestContinuationInvocation(turnId: string): string | undefined;
+  getLatestContinuationInvocation(runId: string): string | undefined;
   /** Gets active and suspended turns grouped by verified client id. */
   getActiveRunIds(): Map<string, Set<string>>;
   /** Gets defensive transport headers by codec message id. */
@@ -184,16 +184,16 @@ export function createTree<TEvent, TProjection>(
 
 class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
   private readonly emitter = new EventEmitter<TreeEvents<TEvent, TProjection>>();
-  private readonly turnIndex = new Map<string, RunNode<TProjection>>();
-  private readonly codecMessageIdToTurnId = new Map<string, string>();
-  private readonly turnCodecMessageIds = new Map<string, Set<string>>();
+  private readonly runIndex = new Map<string, RunNode<TProjection>>();
+  private readonly codecMessageIdToRunId = new Map<string, string>();
+  private readonly runCodecMessageIds = new Map<string, Set<string>>();
   private readonly headersByCodecMessageId = new Map<string, HeaderMap>();
-  private readonly sortedTurns: string[] = [];
+  private readonly sortedRuns: string[] = [];
   private readonly parentIndex = new Map<string, Set<string>>();
-  private readonly rootTurns = new Set<string>();
+  private readonly rootRuns = new Set<string>();
   private readonly regenerateByMsgId = new Map<string, Set<string>>();
-  private readonly pendingParentRefByTurn = new Map<string, string>();
-  private readonly pendingForkRefByTurn = new Map<string, string>();
+  private readonly pendingParentRefByRun = new Map<string, string>();
+  private readonly pendingForkRefByRun = new Map<string, string>();
   private readonly siblingCache = new Map<string, CachedNodes<TProjection>>();
   private readonly regenerateCache = new Map<string, CachedNodes<TProjection>>();
   private readonly latestContinuationInvocation = new Map<string, string>();
@@ -217,15 +217,15 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
       return undefined;
     }
     const route = this.resolveMessageRoute(decodedEvents, transportHeaders);
-    if (!route.turnId) {
+    if (!route.runId) {
       return undefined;
     }
     const metadata = this.metadataFromHeaders(
-      route.turnId,
+      route.runId,
       transportHeaders,
       !isContinuationHeaders(transportHeaders),
     );
-    const node = this.ensureTurn(route.turnId, metadata, serial);
+    const node = this.ensureRun(route.runId, metadata, serial);
     if (this.promoteSerial(node, serial)) {
       this.bump();
     }
@@ -233,12 +233,12 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
       const messageId =
         decoded.messageId ?? decoded.meta.messageId ?? transportHeaders[HEADER_CODEC_MESSAGE_ID];
       if (messageId !== undefined) {
-        this.attachCodecMessage(node.turnId, messageId, transportHeaders);
+        this.attachCodecMessage(node.runId, messageId, transportHeaders);
       }
       const meta: ReducerMeta = messageId === undefined ? { serial } : { serial, messageId };
       node.projection = this.reducer.fold(node.projection, decoded.event, meta);
       const event: TreeMessageEvent<TEvent, TProjection> = {
-        turnId: node.turnId,
+        runId: node.runId,
         node,
         event: decoded.event,
         serial,
@@ -252,8 +252,8 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
   }
 
   public applyRunLifecycle(event: RunLifecycleEvent): RunNode<TProjection> | undefined {
-    const turnId = event.headers[HEADER_RUN_ID];
-    if (!turnId) {
+    const runId = event.headers[HEADER_RUN_ID];
+    if (!runId) {
       return undefined;
     }
     if (event.type === "start" || event.type === "resume") {
@@ -261,8 +261,8 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
       // channel history readable, where re-entry was a `start` carrying
       // `turn-continue`/`run-continue` rather than its own event name.
       const isContinuation = event.type === "resume" || isContinuationHeaders(event.headers);
-      const metadata = this.metadataFromHeaders(turnId, event.headers, !isContinuation);
-      const node = this.ensureTurn(turnId, metadata, event.serial);
+      const metadata = this.metadataFromHeaders(runId, event.headers, !isContinuation);
+      const node = this.ensureRun(runId, metadata, event.serial);
       const wasTerminal = isTerminalStatus(node.status);
       let changed = this.promoteSerial(node, event.serial);
       if (
@@ -277,7 +277,7 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
       if (invocationId !== undefined) {
         node.invocationId = invocationId;
         if (isContinuation) {
-          this.latestContinuationInvocation.set(turnId, invocationId);
+          this.latestContinuationInvocation.set(runId, invocationId);
         }
       }
       if (!isContinuation) {
@@ -289,12 +289,12 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
       this.emitter.emit("turn", node);
       return node;
     }
-    const node = this.ensureTurn(
-      turnId,
-      this.metadataFromHeaders(turnId, event.headers, true),
+    const node = this.ensureRun(
+      runId,
+      this.metadataFromHeaders(runId, event.headers, true),
       undefined,
     );
-    const reason = event.reason ?? readTurnReason(event.headers[HEADER_RUN_REASON]);
+    const reason = event.reason ?? readRunReason(event.headers[HEADER_RUN_REASON]);
     let changed = false;
     if (reason !== undefined && node.status !== reason) {
       node.status = reason;
@@ -312,19 +312,19 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
   }
 
   public delete(codecMessageId: string): void {
-    const turnId = this.codecMessageIdToTurnId.get(codecMessageId);
-    if (!turnId) {
+    const runId = this.codecMessageIdToRunId.get(codecMessageId);
+    if (!runId) {
       return;
     }
-    this.codecMessageIdToTurnId.delete(codecMessageId);
+    this.codecMessageIdToRunId.delete(codecMessageId);
     this.headersByCodecMessageId.delete(codecMessageId);
-    const ids = this.turnCodecMessageIds.get(turnId);
+    const ids = this.runCodecMessageIds.get(runId);
     ids?.delete(codecMessageId);
     if (ids && ids.size > 0) {
       this.bump();
       return;
     }
-    this.removeTurnAndDescendants(turnId);
+    this.removeRunAndDescendants(runId);
     this.bump();
   }
 
@@ -336,13 +336,13 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
     return this.applyMessage(decodedEvents, transportHeaders, serial);
   }
 
-  public getRunNode(turnId: string): RunNode<TProjection> | undefined {
-    return this.turnIndex.get(turnId);
+  public getRunNode(runId: string): RunNode<TProjection> | undefined {
+    return this.runIndex.get(runId);
   }
 
   public getNodeByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined {
-    const turnId = this.codecMessageIdToTurnId.get(codecMessageId);
-    return turnId === undefined ? undefined : this.turnIndex.get(turnId);
+    const runId = this.codecMessageIdToRunId.get(codecMessageId);
+    return runId === undefined ? undefined : this.runIndex.get(runId);
   }
 
   public getNode(codecMessageId: string): RunNode<TProjection> | undefined {
@@ -354,12 +354,12 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
     if (!node) {
       return [];
     }
-    const cached = this.siblingCache.get(node.turnId);
+    const cached = this.siblingCache.get(node.runId);
     if (cached?.version === this.version) {
       return cached.nodes;
     }
-    const nodes = this.computeSiblingTurns(node);
-    this.siblingCache.set(node.turnId, {
+    const nodes = this.computeSiblingRuns(node);
+    this.siblingCache.set(node.runId, {
       version: this.version,
       nodes,
     });
@@ -391,16 +391,16 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
     return nodes;
   }
 
-  public getLatestContinuationInvocation(turnId: string): string | undefined {
+  public getLatestContinuationInvocation(runId: string): string | undefined {
     return (
-      this.latestContinuationInvocation.get(turnId) ?? this.turnIndex.get(turnId)?.invocationId
+      this.latestContinuationInvocation.get(runId) ?? this.runIndex.get(runId)?.invocationId
     );
   }
 
   public getActiveRunIds(): Map<string, Set<string>> {
     const active = new Map<string, Set<string>>();
-    for (const turnId of this.sortedTurns) {
-      const node = this.turnIndex.get(turnId);
+    for (const runId of this.sortedRuns) {
+      const node = this.runIndex.get(runId);
       if (!node?.clientId || !isLiveStatus(node.status)) {
         continue;
       }
@@ -409,7 +409,7 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
         turns = new Set();
         active.set(node.clientId, turns);
       }
-      turns.add(turnId);
+      turns.add(runId);
     }
     return active;
   }
@@ -419,8 +419,8 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
   }
 
   public getRunNodes(): readonly RunNode<TProjection>[] {
-    return this.sortedTurns.flatMap((turnId) => {
-      const node = this.turnIndex.get(turnId);
+    return this.sortedRuns.flatMap((runId) => {
+      const node = this.runIndex.get(runId);
       return node === undefined ? [] : [node];
     });
   }
@@ -435,52 +435,52 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
   private resolveMessageRoute(
     decodedEvents: readonly DecodedEvent<TEvent>[],
     headers: HeaderMap,
-  ): { turnId?: string } {
+  ): { runId?: string } {
     const codecMessageId =
       headers[HEADER_CODEC_MESSAGE_ID] ??
       decodedEvents[0]?.messageId ??
       decodedEvents[0]?.meta.messageId;
     if (isContinuationHeaders(headers) && codecMessageId) {
-      const existing = this.codecMessageIdToTurnId.get(codecMessageId);
+      const existing = this.codecMessageIdToRunId.get(codecMessageId);
       if (existing) {
-        return { turnId: existing };
+        return { runId: existing };
       }
     }
-    const turnId = headers[HEADER_RUN_ID];
-    if (turnId) {
-      return { turnId };
+    const runId = headers[HEADER_RUN_ID];
+    if (runId) {
+      return { runId };
     }
     if (codecMessageId) {
-      const existing = this.codecMessageIdToTurnId.get(codecMessageId);
+      const existing = this.codecMessageIdToRunId.get(codecMessageId);
       if (existing) {
-        return { turnId: existing };
+        return { runId: existing };
       }
     }
     return {};
   }
 
   private metadataFromHeaders(
-    turnId: string,
+    runId: string,
     headers: HeaderMap,
     allowGraphMetadata: boolean,
   ): RunMetadata {
     const metadata: RunMetadata = {};
     if (allowGraphMetadata) {
       const forkRef = headers[HEADER_FORK_OF];
-      const forkedTurnId = this.resolveReference(forkRef);
+      const forkedRunId = this.resolveReference(forkRef);
       const parentRef = headers[HEADER_PARENT];
       const parentFromHeader = this.resolveReference(parentRef);
-      const parentTurnId =
-        forkedTurnId !== undefined
-          ? this.turnIndex.get(forkedTurnId)?.parentTurnId
+      const parentRunId =
+        forkedRunId !== undefined
+          ? this.runIndex.get(forkedRunId)?.parentRunId
           : parentFromHeader;
-      if (parentTurnId !== undefined && parentTurnId !== turnId) {
-        metadata.parentTurnId = parentTurnId;
+      if (parentRunId !== undefined && parentRunId !== runId) {
+        metadata.parentRunId = parentRunId;
       } else if (parentRef !== undefined) {
         metadata.parentRef = parentRef;
       }
-      if (forkedTurnId !== undefined && forkedTurnId !== turnId) {
-        metadata.forkOf = forkedTurnId;
+      if (forkedRunId !== undefined && forkedRunId !== runId) {
+        metadata.forkOf = forkedRunId;
       } else if (forkRef !== undefined) {
         metadata.forkRef = forkRef;
       }
@@ -506,12 +506,12 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
     return metadata;
   }
 
-  private ensureTurn(
-    turnId: string,
+  private ensureRun(
+    runId: string,
     metadata: RunMetadata,
     serial: TreeSerial | undefined,
   ): RunNode<TProjection> {
-    const existing = this.turnIndex.get(turnId);
+    const existing = this.runIndex.get(runId);
     if (existing) {
       if (this.backfillMetadata(existing, metadata)) {
         this.bump();
@@ -519,16 +519,16 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
       return existing;
     }
     const node: RunNode<TProjection> = {
-      turnId,
+      runId,
       status: "active",
       projection: this.options.createProjection?.() ?? this.reducer.init(),
     };
     setOptional(node, "startSerial", serial);
-    this.turnIndex.set(turnId, node);
-    this.sortedTurns.push(turnId);
-    this.sortTurns();
+    this.runIndex.set(runId, node);
+    this.sortedRuns.push(runId);
+    this.sortRuns();
     this.backfillMetadata(node, metadata);
-    this.resolvePendingReferences(turnId, turnId);
+    this.resolvePendingReferences(runId, runId);
     this.bump();
     this.emitter.emit("turn", node);
     return node;
@@ -537,26 +537,26 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
   private backfillMetadata(node: RunNode<TProjection>, metadata: RunMetadata): boolean {
     let changed = false;
     if (
-      metadata.parentTurnId !== undefined &&
-      metadata.parentTurnId !== node.turnId &&
-      node.parentTurnId !== metadata.parentTurnId
+      metadata.parentRunId !== undefined &&
+      metadata.parentRunId !== node.runId &&
+      node.parentRunId !== metadata.parentRunId
     ) {
-      this.moveParent(node, metadata.parentTurnId);
+      this.moveParent(node, metadata.parentRunId);
       changed = true;
     } else if (metadata.parentRef !== undefined) {
-      this.pendingParentRefByTurn.set(node.turnId, metadata.parentRef);
-    } else if (node.parentTurnId === undefined) {
-      this.rootTurns.add(node.turnId);
+      this.pendingParentRefByRun.set(node.runId, metadata.parentRef);
+    } else if (node.parentRunId === undefined) {
+      this.rootRuns.add(node.runId);
     }
     if (
       metadata.forkOf !== undefined &&
-      metadata.forkOf !== node.turnId &&
+      metadata.forkOf !== node.runId &&
       node.forkOf !== metadata.forkOf
     ) {
       node.forkOf = metadata.forkOf;
       changed = true;
     } else if (metadata.forkRef !== undefined) {
-      this.pendingForkRefByTurn.set(node.turnId, metadata.forkRef);
+      this.pendingForkRefByRun.set(node.runId, metadata.forkRef);
     }
     if (
       metadata.regeneratesCodecMessageId !== undefined &&
@@ -581,81 +581,81 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
       return false;
     }
     node.startSerial = serial;
-    this.sortTurns();
+    this.sortRuns();
     return true;
   }
 
-  private attachCodecMessage(turnId: string, codecMessageId: string, headers: HeaderMap): void {
-    const previous = this.codecMessageIdToTurnId.get(codecMessageId);
-    if (previous === turnId) {
+  private attachCodecMessage(runId: string, codecMessageId: string, headers: HeaderMap): void {
+    const previous = this.codecMessageIdToRunId.get(codecMessageId);
+    if (previous === runId) {
       this.headersByCodecMessageId.set(codecMessageId, headers);
       return;
     }
     if (previous !== undefined) {
-      this.turnCodecMessageIds.get(previous)?.delete(codecMessageId);
+      this.runCodecMessageIds.get(previous)?.delete(codecMessageId);
     }
-    this.codecMessageIdToTurnId.set(codecMessageId, turnId);
+    this.codecMessageIdToRunId.set(codecMessageId, runId);
     this.headersByCodecMessageId.set(codecMessageId, headers);
-    let ids = this.turnCodecMessageIds.get(turnId);
+    let ids = this.runCodecMessageIds.get(runId);
     if (!ids) {
       ids = new Set();
-      this.turnCodecMessageIds.set(turnId, ids);
+      this.runCodecMessageIds.set(runId, ids);
     }
     ids.add(codecMessageId);
-    this.resolvePendingReferences(codecMessageId, turnId);
+    this.resolvePendingReferences(codecMessageId, runId);
     this.bump();
   }
 
-  private resolvePendingReferences(reference: string, resolvedTurnId: string): void {
-    for (const [turnId, pendingRef] of this.pendingParentRefByTurn) {
-      if (pendingRef !== reference || turnId === resolvedTurnId) {
+  private resolvePendingReferences(reference: string, resolvedRunId: string): void {
+    for (const [runId, pendingRef] of this.pendingParentRefByRun) {
+      if (pendingRef !== reference || runId === resolvedRunId) {
         continue;
       }
-      const node = this.turnIndex.get(turnId);
+      const node = this.runIndex.get(runId);
       if (node) {
-        this.moveParent(node, resolvedTurnId);
+        this.moveParent(node, resolvedRunId);
       }
-      this.pendingParentRefByTurn.delete(turnId);
+      this.pendingParentRefByRun.delete(runId);
     }
-    for (const [turnId, pendingRef] of this.pendingForkRefByTurn) {
-      if (pendingRef !== reference || turnId === resolvedTurnId) {
+    for (const [runId, pendingRef] of this.pendingForkRefByRun) {
+      if (pendingRef !== reference || runId === resolvedRunId) {
         continue;
       }
-      const node = this.turnIndex.get(turnId);
-      const forked = this.turnIndex.get(resolvedTurnId);
+      const node = this.runIndex.get(runId);
+      const forked = this.runIndex.get(resolvedRunId);
       if (node && forked) {
-        node.forkOf = resolvedTurnId;
-        this.moveParent(node, forked.parentTurnId);
+        node.forkOf = resolvedRunId;
+        this.moveParent(node, forked.parentRunId);
       }
-      this.pendingForkRefByTurn.delete(turnId);
+      this.pendingForkRefByRun.delete(runId);
     }
   }
 
   private moveParent(
     node: RunNode<TProjection>,
-    parentTurnId: string | undefined,
+    parentRunId: string | undefined,
     propagateForkChildren = true,
   ): void {
-    if (node.parentTurnId !== undefined) {
-      this.parentIndex.get(node.parentTurnId)?.delete(node.turnId);
+    if (node.parentRunId !== undefined) {
+      this.parentIndex.get(node.parentRunId)?.delete(node.runId);
     } else {
-      this.rootTurns.delete(node.turnId);
+      this.rootRuns.delete(node.runId);
     }
-    if (parentTurnId === undefined) {
-      this.rootTurns.add(node.turnId);
-      delete node.parentTurnId;
+    if (parentRunId === undefined) {
+      this.rootRuns.add(node.runId);
+      delete node.parentRunId;
       if (propagateForkChildren) {
         this.moveForkChildrenToParent(node, new Set());
       }
       return;
     }
-    node.parentTurnId = parentTurnId;
-    let children = this.parentIndex.get(parentTurnId);
+    node.parentRunId = parentRunId;
+    let children = this.parentIndex.get(parentRunId);
     if (!children) {
       children = new Set();
-      this.parentIndex.set(parentTurnId, children);
+      this.parentIndex.set(parentRunId, children);
     }
-    children.add(node.turnId);
+    children.add(node.runId);
     if (propagateForkChildren) {
       this.moveForkChildrenToParent(node, new Set());
     }
@@ -663,7 +663,7 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
 
   private moveRegenerateAnchor(node: RunNode<TProjection>, anchor: string): void {
     if (node.regeneratesCodecMessageId !== undefined) {
-      this.regenerateByMsgId.get(node.regeneratesCodecMessageId)?.delete(node.turnId);
+      this.regenerateByMsgId.get(node.regeneratesCodecMessageId)?.delete(node.runId);
     }
     node.regeneratesCodecMessageId = anchor;
     let turns = this.regenerateByMsgId.get(anchor);
@@ -671,73 +671,73 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
       turns = new Set();
       this.regenerateByMsgId.set(anchor, turns);
     }
-    turns.add(node.turnId);
+    turns.add(node.runId);
   }
 
   private moveForkChildrenToParent(node: RunNode<TProjection>, seen: Set<string>): void {
-    if (seen.has(node.turnId)) {
+    if (seen.has(node.runId)) {
       return;
     }
-    seen.add(node.turnId);
-    for (const candidate of this.turnIndex.values()) {
-      if (candidate.turnId !== node.turnId && candidate.forkOf === node.turnId) {
-        this.moveParent(candidate, node.parentTurnId, false);
+    seen.add(node.runId);
+    for (const candidate of this.runIndex.values()) {
+      if (candidate.runId !== node.runId && candidate.forkOf === node.runId) {
+        this.moveParent(candidate, node.parentRunId, false);
         this.moveForkChildrenToParent(candidate, seen);
       }
     }
   }
 
-  private removeTurnAndDescendants(turnId: string): void {
-    const children = this.parentIndex.get(turnId);
+  private removeRunAndDescendants(runId: string): void {
+    const children = this.parentIndex.get(runId);
     if (children) {
       for (const child of Array.from(children)) {
-        this.removeTurnAndDescendants(child);
+        this.removeRunAndDescendants(child);
       }
     }
-    const node = this.turnIndex.get(turnId);
+    const node = this.runIndex.get(runId);
     if (!node) {
       return;
     }
-    if (node.parentTurnId !== undefined) {
-      this.parentIndex.get(node.parentTurnId)?.delete(turnId);
+    if (node.parentRunId !== undefined) {
+      this.parentIndex.get(node.parentRunId)?.delete(runId);
     } else {
-      this.rootTurns.delete(turnId);
+      this.rootRuns.delete(runId);
     }
     if (node.regeneratesCodecMessageId !== undefined) {
-      this.regenerateByMsgId.get(node.regeneratesCodecMessageId)?.delete(turnId);
+      this.regenerateByMsgId.get(node.regeneratesCodecMessageId)?.delete(runId);
     }
-    for (const codecMessageId of this.turnCodecMessageIds.get(turnId) ?? []) {
-      this.codecMessageIdToTurnId.delete(codecMessageId);
+    for (const codecMessageId of this.runCodecMessageIds.get(runId) ?? []) {
+      this.codecMessageIdToRunId.delete(codecMessageId);
       this.headersByCodecMessageId.delete(codecMessageId);
     }
-    this.turnCodecMessageIds.delete(turnId);
-    this.turnIndex.delete(turnId);
-    this.pendingParentRefByTurn.delete(turnId);
-    this.pendingForkRefByTurn.delete(turnId);
-    this.parentIndex.delete(turnId);
-    const index = this.sortedTurns.indexOf(turnId);
+    this.runCodecMessageIds.delete(runId);
+    this.runIndex.delete(runId);
+    this.pendingParentRefByRun.delete(runId);
+    this.pendingForkRefByRun.delete(runId);
+    this.parentIndex.delete(runId);
+    const index = this.sortedRuns.indexOf(runId);
     if (index !== -1) {
-      this.sortedTurns.splice(index, 1);
+      this.sortedRuns.splice(index, 1);
     }
-    this.latestContinuationInvocation.delete(turnId);
+    this.latestContinuationInvocation.delete(runId);
   }
 
-  private computeSiblingTurns(node: RunNode<TProjection>): RunNode<TProjection>[] {
+  private computeSiblingRuns(node: RunNode<TProjection>): RunNode<TProjection>[] {
     const candidateIds =
-      node.parentTurnId === undefined ? this.rootTurns : this.parentIndex.get(node.parentTurnId);
+      node.parentRunId === undefined ? this.rootRuns : this.parentIndex.get(node.parentRunId);
     if (!candidateIds) {
       return [node];
     }
     const candidateSet = new Set(candidateIds);
-    const group = new Set<string>([node.turnId]);
+    const group = new Set<string>([node.runId]);
     let changed = true;
     while (changed) {
       changed = false;
       for (const candidateId of candidateSet) {
-        if (group.has(candidateId) || this.isDescendant(candidateId, node.turnId)) {
+        if (group.has(candidateId) || this.isDescendant(candidateId, node.runId)) {
           continue;
         }
-        const candidate = this.turnIndex.get(candidateId);
+        const candidate = this.runIndex.get(candidateId);
         if (!candidate) {
           continue;
         }
@@ -763,7 +763,7 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
     const regenerates = this.regenerateByMsgId.get(codecMessageId);
     if (regenerates) {
       for (const node of this.nodesInSortOrder(regenerates)) {
-        if (node.turnId !== owner?.turnId) {
+        if (node.runId !== owner?.runId) {
           nodes.push(node);
         }
       }
@@ -779,29 +779,29 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
         return true;
       }
       seen.add(current);
-      current = this.turnIndex.get(current)?.forkOf;
+      current = this.runIndex.get(current)?.forkOf;
     }
     return false;
   }
 
   private isDescendant(candidateId: string, ancestorId: string): boolean {
     const seen = new Set<string>();
-    let current = this.turnIndex.get(candidateId)?.parentTurnId;
+    let current = this.runIndex.get(candidateId)?.parentRunId;
     while (current !== undefined && !seen.has(current)) {
       if (current === ancestorId) {
         return true;
       }
       seen.add(current);
-      current = this.turnIndex.get(current)?.parentTurnId;
+      current = this.runIndex.get(current)?.parentRunId;
     }
     return false;
   }
 
   private nodesInSortOrder(ids: Set<string>): RunNode<TProjection>[] {
     const nodes: RunNode<TProjection>[] = [];
-    for (const turnId of this.sortedTurns) {
-      if (ids.has(turnId)) {
-        const node = this.turnIndex.get(turnId);
+    for (const runId of this.sortedRuns) {
+      if (ids.has(runId)) {
+        const node = this.runIndex.get(runId);
         if (node) {
           nodes.push(node);
         }
@@ -811,20 +811,20 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
   }
 
   private resolveNode(id: string): RunNode<TProjection> | undefined {
-    return this.turnIndex.get(id) ?? this.getNodeByCodecMessageId(id);
+    return this.runIndex.get(id) ?? this.getNodeByCodecMessageId(id);
   }
 
   private resolveReference(reference: string | undefined): string | undefined {
     if (reference === undefined) {
       return undefined;
     }
-    return this.codecMessageIdToTurnId.get(reference) ?? this.turnIndex.get(reference)?.turnId;
+    return this.codecMessageIdToRunId.get(reference) ?? this.runIndex.get(reference)?.runId;
   }
 
-  private sortTurns(): void {
-    this.sortedTurns.sort((left, right) => {
-      const leftNode = this.turnIndex.get(left);
-      const rightNode = this.turnIndex.get(right);
+  private sortRuns(): void {
+    this.sortedRuns.sort((left, right) => {
+      const leftNode = this.runIndex.get(left);
+      const rightNode = this.runIndex.get(right);
       return compareOptionalSerial(leftNode?.startSerial, rightNode?.startSerial);
     });
   }
@@ -838,7 +838,7 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
 }
 
 interface RunMetadata {
-  parentTurnId?: string;
+  parentRunId?: string;
   parentRef?: string;
   forkOf?: string;
   forkRef?: string;
@@ -852,7 +852,7 @@ interface CachedNodes<TProjection> {
   nodes: readonly RunNode<TProjection>[];
 }
 
-function readTurnReason(value: string | undefined): RunEndReason | undefined {
+function readRunReason(value: string | undefined): RunEndReason | undefined {
   switch (value) {
     case "complete":
     case "cancelled":

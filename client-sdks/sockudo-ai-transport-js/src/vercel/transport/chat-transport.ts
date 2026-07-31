@@ -321,7 +321,7 @@ class SockudoChatTransport implements ChatTransport {
             inputs,
             this.sendOptions(options, {
               messageId: metadata.codecMessageId,
-              turnId: metadata.turnId,
+              runId: metadata.runId,
               parent: last.id,
               forkOf: last.id,
               trigger: "submit-message",
@@ -365,9 +365,9 @@ class SockudoChatTransport implements ChatTransport {
 
   private sendOptions(
     options: ChatTransportSendMessagesOptions,
-    context: SendMessagesRequestContext & { turnId?: string },
+    context: SendMessagesRequestContext & { runId?: string },
   ): SendOptions {
-    const preparedContext = stripTurnId({
+    const preparedContext = stripRunId({
       ...context,
       ...(options.chatId !== undefined ? { chatId: options.chatId } : {}),
     });
@@ -391,7 +391,7 @@ class SockudoChatTransport implements ChatTransport {
       body,
       headers,
       waitForRunStart: false,
-      ...(context.turnId !== undefined ? { turnId: context.turnId } : {}),
+      ...(context.runId !== undefined ? { runId: context.runId } : {}),
       ...(context.parent !== undefined ? { parent: context.parent } : {}),
       ...(context.forkOf !== undefined ? { forkOf: context.forkOf } : {}),
       trigger: context.trigger,
@@ -449,8 +449,8 @@ class SockudoChatTransport implements ChatTransport {
   }
 }
 
-function stripTurnId(
-  context: SendMessagesRequestContext & { turnId?: string },
+function stripRunId(
+  context: SendMessagesRequestContext & { runId?: string },
 ): SendMessagesRequestContext {
   const result: SendMessagesRequestContext = {
     trigger: context.trigger,

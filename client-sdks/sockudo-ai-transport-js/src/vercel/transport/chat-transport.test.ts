@@ -42,7 +42,7 @@ describe("Vercel ChatTransport", () => {
       messages: [user("u1", "hello")],
       history: [],
       trigger: "submit-message",
-      turnId: "turn-1",
+      runId: "turn-1",
       invocationId: "inv-1",
       inputEventId: "evt-1",
       sessionName: "chat",
@@ -69,7 +69,7 @@ describe("Vercel ChatTransport", () => {
       history: ["custom"],
       custom: true,
       fromUseChat: true,
-      turnId: "turn-1",
+      runId: "turn-1",
     });
     const request = fetch.mock.calls[0]?.[1] as RequestInit | undefined;
     expect(request?.headers).toMatchObject({
@@ -276,7 +276,7 @@ describe("Vercel ChatTransport", () => {
       done: false,
       value: { type: "start", messageId: "a1" },
     });
-    channel.inject(turnEnd("turn-1", "inv-1", 11, "complete"));
+    channel.inject(runEnd("turn-1", "inv-1", 11, "complete"));
     await expect(reader.read()).resolves.toEqual({
       done: true,
       value: undefined,
@@ -357,7 +357,7 @@ function fixedIds(): InvocationIdProvider {
   let event = 0;
   let message = 0;
   return {
-    turnId: () => `turn-${String(++turn)}`,
+    runId: () => `turn-${String(++turn)}`,
     invocationId: () => `inv-${String(++invocation)}`,
     inputEventId: () => `evt-${String(++event)}`,
     messageId: () => `msg-${String(++message)}`,
@@ -394,7 +394,7 @@ function assistantWithTool(
 }
 
 function output(
-  turnId: string,
+  runId: string,
   invocationId: string,
   messageId: string,
   _delta: string,
@@ -411,7 +411,7 @@ function output(
     extras: {
       ai: {
         transport: {
-          [HEADER_RUN_ID]: turnId,
+          [HEADER_RUN_ID]: runId,
           [HEADER_INVOCATION_ID]: invocationId,
           [HEADER_CODEC_MESSAGE_ID]: messageId,
         },
@@ -424,8 +424,8 @@ function output(
   };
 }
 
-function turnEnd(
-  turnId: string,
+function runEnd(
+  runId: string,
   invocationId: string,
   serial: number,
   reason: "complete" | "cancelled" | "error" | "suspended",
@@ -441,7 +441,7 @@ function turnEnd(
     extras: {
       ai: {
         transport: {
-          [HEADER_RUN_ID]: turnId,
+          [HEADER_RUN_ID]: runId,
           [HEADER_INVOCATION_ID]: invocationId,
           [HEADER_RUN_REASON]: reason,
         },

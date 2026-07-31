@@ -33,7 +33,7 @@ describe("client transport", () => {
       idProvider: ids,
       runStartDeadlineMs: 0,
       fetch,
-      body: () => ({ turnId: "bad", custom: "ok" }),
+      body: () => ({ runId: "bad", custom: "ok" }),
       headers: () => ({ Authorization: "secret" }),
     });
 
@@ -43,7 +43,7 @@ describe("client transport", () => {
     })) as ClientRun<Message>;
 
     expect(active).toMatchObject({
-      turnId: "turn-1",
+      runId: "turn-1",
       invocationId: "inv-1",
       inputEventId: "evt-1",
       optimisticMsgIds: ["user-1"],
@@ -52,7 +52,7 @@ describe("client transport", () => {
     const request = fetch.mock.calls[0]?.[1] as RequestInit;
     expect(requestBodyJson(request)).toMatchObject({
       custom: "ok",
-      turnId: "turn-1",
+      runId: "turn-1",
       invocationId: "inv-1",
       inputEventId: "evt-1",
       sessionName: "chat",
@@ -301,7 +301,7 @@ describe("client transport", () => {
     expect(published).toContainEqual(
       expect.objectContaining({
         name: EVENT_AI_CANCEL,
-        data: { turnId: "turn-1" },
+        data: { runId: "turn-1" },
       }),
     );
   });
@@ -375,7 +375,7 @@ function fixedIds(): InvocationIdProvider {
   let event = 0;
   let message = 0;
   return {
-    turnId: () => `turn-${String(++turn)}`,
+    runId: () => `turn-${String(++turn)}`,
     invocationId: () => `inv-${String(++invocation)}`,
     inputEventId: () => `evt-${String(++event)}`,
     messageId: () => `msg-${String(++message)}`,
@@ -384,7 +384,7 @@ function fixedIds(): InvocationIdProvider {
 
 function lifecycle(
   name: typeof EVENT_AI_RUN_START | typeof EVENT_AI_RUN_END,
-  turnId: string,
+  runId: string,
   invocationId: string,
   serial: number,
   reason?: "complete" | "cancelled" | "error" | "suspended",
@@ -400,7 +400,7 @@ function lifecycle(
     extras: {
       ai: {
         transport: {
-          [HEADER_RUN_ID]: turnId,
+          [HEADER_RUN_ID]: runId,
           [HEADER_INVOCATION_ID]: invocationId,
           ...(reason !== undefined ? { [HEADER_RUN_REASON]: reason } : {}),
         },
@@ -410,7 +410,7 @@ function lifecycle(
 }
 
 function output(
-  turnId: string,
+  runId: string,
   invocationId: string,
   messageId: string,
   text: string,
@@ -427,7 +427,7 @@ function output(
     extras: {
       ai: {
         transport: {
-          [HEADER_RUN_ID]: turnId,
+          [HEADER_RUN_ID]: runId,
           [HEADER_INVOCATION_ID]: invocationId,
           [HEADER_CODEC_MESSAGE_ID]: messageId,
           [HEADER_STREAM]: "true",

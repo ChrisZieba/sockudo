@@ -96,8 +96,6 @@ export interface LoadConversationOptions {
 export interface CreateRunOptions<TOutput> {
   /** Run identity. */
   runId?: string;
-  /** Legacy alias for run identity. */
-  turnId?: string;
   /** Owner client id. */
   clientId?: string;
   /** Parent codec message id. */
@@ -123,7 +121,7 @@ export interface CreateRunOptions<TOutput> {
 /** Server-side run. The legacy type name is kept for source compatibility. */
 export interface AgentRun<TOutput, TProjection, TMessage> {
   /** Run identity. */
-  readonly turnId: string;
+  readonly runId: string;
   /** Abort signal scoped to this turn. */
   readonly abortSignal: AbortSignal;
   /** Lightweight view over loaded messages. */
@@ -266,7 +264,7 @@ class DefaultAgentSession<TInput, TOutput, TProjection, TMessage> implements Age
       idProvider: this.idProvider,
       logger: this.logger,
     });
-    this.manager.register(turn.managedTurn);
+    this.manager.register(turn.managedRun);
     return turn;
   }
 
@@ -324,14 +322,14 @@ class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRu
   private loadedMessages: TMessage[] = [];
   private capturedInput: BufferedInputEvent | undefined;
 
-  public readonly turnId: string;
-  public readonly managedTurn: ManagedRun;
+  public readonly runId: string;
+  public readonly managedRun: ManagedRun;
 
   public constructor(private readonly deps: RunDeps<TInput, TOutput, TProjection, TMessage>) {
-    this.turnId = requireRunId(deps.options);
+    this.runId = requireRunId(deps.options);
     this.signal = composeAbortSignal(this.internalAbort.signal, deps.options.signal);
-    this.managedTurn = {
-      turnId: this.turnId,
+    this.managedRun = {
+      runId: this.runId,
       abort: () => {
         this.internalAbort.abort();
       },
@@ -379,7 +377,7 @@ class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRu
     const headers = mergeHeaders(
       inputHeaders,
       buildTransportHeaders({
-        runId: this.turnId,
+        runId: this.runId,
         ...(this.deps.options.invocationId !== undefined
           ? { invocationId: this.deps.options.invocationId }
           : {}),
@@ -524,7 +522,7 @@ class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRu
       });
     }
     if (reason !== "suspended") {
-      this.deps.manager.deregister(this.turnId);
+      this.deps.manager.deregister(this.runId);
     }
   }
 
@@ -603,13 +601,13 @@ class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRu
     const regenerateOf = this.capturedInput?.headers[HEADER_MSG_REGENERATE];
     return buildTransportHeaders({
       role,
-      turnId: this.turnId,
+      runId: this.runId,
       ...(this.deps.options.invocationId !== undefined
         ? { invocationId: this.deps.options.invocationId }
         : {}),
       ...(this.deps.options.clientId !== undefined
         ? {
-            turnClientId: this.deps.options.clientId,
+            runClientId: this.deps.options.clientId,
             inputClientId: this.deps.options.clientId,
           }
         : {}),
@@ -698,8 +696,8 @@ function requireChannelName(
   return options.channelName;
 }
 
-function requireRunId(options: { runId?: string; turnId?: string }): string {
-  const runId = options.runId ?? options.turnId;
+function requireRunId(options: { runId?: string }): string {
+  const runId = options.runId;
   if (!runId) {
     throw new ErrorInfo({
       code: ErrorCode.InvalidArgument,

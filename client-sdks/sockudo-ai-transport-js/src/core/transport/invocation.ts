@@ -3,7 +3,7 @@
  */
 export interface InvocationIdProvider {
   /** Returns the next turn id. */
-  turnId(): string;
+  runId(): string;
   /** Returns the next invocation id. */
   invocationId(): string;
   /** Returns the next input event id. */
@@ -29,7 +29,7 @@ export function createDefaultInvocationIdProvider(): InvocationIdProvider {
     }
   };
   return {
-    turnId: () => next("turn"),
+    runId: () => next("turn"),
     invocationId: () => next("inv"),
     inputEventId: () => next("evt"),
     messageId: () => next("msg"),

@@ -182,9 +182,9 @@ describe("header utilities", () => {
   it("builds canonical transport headers", () => {
     const headers = buildTransportHeaders({
       role: "assistant",
-      turnId: "turn-1",
+      runId: "turn-1",
       codecMessageId: "msg-1",
-      turnClientId: "client-1",
+      runClientId: "client-1",
       parent: "parent-1",
       forkOf: "fork-1",
       regenerates: true,

@@ -36,14 +36,10 @@ export interface BuildTransportHeadersOptions {
   role?: string;
   /** Run identity. */
   runId?: string;
-  /** Legacy alias for run identity. */
-  turnId?: string;
   /** Codec message identity. */
   codecMessageId?: string;
   /** Verified run client identity. */
   runClientId?: string;
-  /** Legacy alias for verified run client identity. */
-  turnClientId?: string;
   /** Parent codec message identity. */
   parent?: string;
   /** Fork source codec message identity. */
@@ -176,9 +172,9 @@ export function stripUndefined<T extends Record<string, unknown>>(value: T): Par
 export function buildTransportHeaders(options: BuildTransportHeadersOptions): HeaderMap {
   const writer = headerWriter();
   writer.set(HEADER_ROLE, options.role);
-  writer.set(HEADER_RUN_ID, options.runId ?? options.turnId);
+  writer.set(HEADER_RUN_ID, options.runId ?? options.runId);
   writer.set(HEADER_CODEC_MESSAGE_ID, options.codecMessageId);
-  writer.set(HEADER_RUN_CLIENT_ID, options.runClientId ?? options.turnClientId);
+  writer.set(HEADER_RUN_CLIENT_ID, options.runClientId ?? options.runClientId);
   writer.set(HEADER_PARENT, options.parent);
   writer.set(HEADER_FORK_OF, options.forkOf);
   writer.set(HEADER_MSG_REGENERATE, regenerateHeaderValue(options));

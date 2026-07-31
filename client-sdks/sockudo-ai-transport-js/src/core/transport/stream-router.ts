@@ -5,21 +5,21 @@ import { ErrorCode, ErrorInfo } from "../../errors.js";
  */
 export interface StreamRouter<TOutput> {
   /** Registers or replaces a stream for a turn invocation. */
-  createStream(turnId: string, invocationId: string): ReadableStream<TOutput>;
+  createStream(runId: string, invocationId: string): ReadableStream<TOutput>;
   /** Rebinds a suspended turn stream to a continuation invocation. */
-  rebindStream(turnId: string, invocationId: string): boolean;
+  rebindStream(runId: string, invocationId: string): boolean;
   /** Routes one decoded output to an active own-turn stream. */
-  route(turnId: string, invocationId: string | undefined, output: TOutput): boolean;
+  route(runId: string, invocationId: string | undefined, output: TOutput): boolean;
   /** Closes an active stream. */
-  closeStream(turnId: string): boolean;
+  closeStream(runId: string): boolean;
   /** Errors an active stream. */
-  errorStream(turnId: string, error: ErrorInfo): boolean;
+  errorStream(runId: string, error: ErrorInfo): boolean;
   /** Returns true when a turn has an active stream. */
-  has(turnId: string): boolean;
+  has(runId: string): boolean;
   /** Returns the currently bound invocation id for a turn. */
-  activeInvocation(turnId: string): string | undefined;
+  activeInvocation(runId: string): string | undefined;
   /** Returns the currently bound stream for a turn. */
-  getStream(turnId: string): ReadableStream<TOutput> | undefined;
+  getStream(runId: string): ReadableStream<TOutput> | undefined;
   /** Closes all streams. */
   closeAll(): void;
 }
@@ -60,7 +60,7 @@ class DefaultStreamRouter<TOutput> implements StreamRouter<TOutput> {
     this.maxQueuedChunks = options.maxQueuedChunks ?? 1024;
   }
 
-  public createStream(turnId: string, invocationId: string): ReadableStream<TOutput> {
+  public createStream(runId: string, invocationId: string): ReadableStream<TOutput> {
     let controller: ReadableStreamDefaultController<TOutput> | undefined;
     const stream = new ReadableStream<TOutput>(
       {
@@ -79,12 +79,12 @@ class DefaultStreamRouter<TOutput> implements StreamRouter<TOutput> {
         message: "unable to create stream; ReadableStream did not provide a controller",
       });
     }
-    this.entries.set(turnId, { controller, stream, invocationId });
+    this.entries.set(runId, { controller, stream, invocationId });
     return stream;
   }
 
-  public rebindStream(turnId: string, invocationId: string): boolean {
-    const entry = this.entries.get(turnId);
+  public rebindStream(runId: string, invocationId: string): boolean {
+    const entry = this.entries.get(runId);
     if (!entry) {
       return false;
     }
@@ -92,8 +92,8 @@ class DefaultStreamRouter<TOutput> implements StreamRouter<TOutput> {
     return true;
   }
 
-  public route(turnId: string, invocationId: string | undefined, output: TOutput): boolean {
-    const entry = this.entries.get(turnId);
+  public route(runId: string, invocationId: string | undefined, output: TOutput): boolean {
+    const entry = this.entries.get(runId);
     if (!entry) {
       return false;
     }
@@ -103,7 +103,7 @@ class DefaultStreamRouter<TOutput> implements StreamRouter<TOutput> {
     const desiredSize = entry.controller.desiredSize;
     if (desiredSize !== null && desiredSize <= 0) {
       this.errorStream(
-        turnId,
+        runId,
         new ErrorInfo({
           code: ErrorCode.StreamError,
           statusCode: 507,
@@ -115,17 +115,17 @@ class DefaultStreamRouter<TOutput> implements StreamRouter<TOutput> {
     try {
       entry.controller.enqueue(output);
     } catch {
-      this.entries.delete(turnId);
+      this.entries.delete(runId);
       return false;
     }
     if (this.options.isTerminal(output)) {
-      this.closeStream(turnId);
+      this.closeStream(runId);
     }
     return true;
   }
 
-  public closeStream(turnId: string): boolean {
-    const entry = this.entries.get(turnId);
+  public closeStream(runId: string): boolean {
+    const entry = this.entries.get(runId);
     if (!entry) {
       return false;
     }
@@ -134,12 +134,12 @@ class DefaultStreamRouter<TOutput> implements StreamRouter<TOutput> {
     } catch {
       // The consumer may have cancelled the stream.
     }
-    this.entries.delete(turnId);
+    this.entries.delete(runId);
     return true;
   }
 
-  public errorStream(turnId: string, error: ErrorInfo): boolean {
-    const entry = this.entries.get(turnId);
+  public errorStream(runId: string, error: ErrorInfo): boolean {
+    const entry = this.entries.get(runId);
     if (!entry) {
       return false;
     }
@@ -148,25 +148,25 @@ class DefaultStreamRouter<TOutput> implements StreamRouter<TOutput> {
     } catch {
       // The consumer may have cancelled the stream.
     }
-    this.entries.delete(turnId);
+    this.entries.delete(runId);
     return true;
   }
 
-  public has(turnId: string): boolean {
-    return this.entries.has(turnId);
+  public has(runId: string): boolean {
+    return this.entries.has(runId);
   }
 
-  public activeInvocation(turnId: string): string | undefined {
-    return this.entries.get(turnId)?.invocationId;
+  public activeInvocation(runId: string): string | undefined {
+    return this.entries.get(runId)?.invocationId;
   }
 
-  public getStream(turnId: string): ReadableStream<TOutput> | undefined {
-    return this.entries.get(turnId)?.stream;
+  public getStream(runId: string): ReadableStream<TOutput> | undefined {
+    return this.entries.get(runId)?.stream;
   }
 
   public closeAll(): void {
-    for (const turnId of Array.from(this.entries.keys())) {
-      this.closeStream(turnId);
+    for (const runId of Array.from(this.entries.keys())) {
+      this.closeStream(runId);
     }
   }
 }

@@ -33,34 +33,34 @@ describe("transport view", () => {
   it("flattens reachable selected branches with latest sibling by default", () => {
     const { tree, view } = setup();
 
-    createTurn(tree, "parent", [{ id: "p", text: "parent" }], 1);
-    createTurn(tree, "a", [{ id: "a", text: "older" }], 2, {
+    createRunNode(tree, "parent", [{ id: "p", text: "parent" }], 1);
+    createRunNode(tree, "a", [{ id: "a", text: "older" }], 2, {
       parent: "p",
     });
-    createTurn(tree, "b", [{ id: "b", text: "latest" }], 3, {
+    createRunNode(tree, "b", [{ id: "b", text: "latest" }], 3, {
       forkOf: "a",
     });
-    createTurn(tree, "child-a", [{ id: "child-a", text: "hidden" }], 4, {
+    createRunNode(tree, "child-a", [{ id: "child-a", text: "hidden" }], 4, {
       parent: "a",
     });
-    createTurn(tree, "child-b", [{ id: "child-b", text: "visible" }], 5, {
+    createRunNode(tree, "child-b", [{ id: "child-b", text: "visible" }], 5, {
       parent: "b",
     });
 
-    expect(view.flattenNodes().map((node) => node.turnId)).toEqual(["parent", "b", "child-b"]);
+    expect(view.flattenNodes().map((node) => node.runId)).toEqual(["parent", "b", "child-b"]);
     expect(view.getMessages().map((message) => message.id)).toEqual(["p", "b", "child-b"]);
     expect(view.getSelectedIndex("a")).toBe(1);
 
     view.select("a", 0);
 
-    expect(view.flattenNodes().map((node) => node.turnId)).toEqual(["parent", "a", "child-a"]);
+    expect(view.flattenNodes().map((node) => node.runId)).toEqual(["parent", "a", "child-a"]);
     expect(view.getSelectedIndex("b")).toBe(0);
   });
 
   it("substitutes regenerate messages in place, including nested regens", () => {
     const { tree, view } = setup();
 
-    createTurn(
+    createRunNode(
       tree,
       "owner",
       [
@@ -71,11 +71,11 @@ describe("transport view", () => {
       ],
       1,
     );
-    createTurn(tree, "regen-1", [{ id: "a1r", text: "a1 regen" }], 2, {
+    createRunNode(tree, "regen-1", [{ id: "a1r", text: "a1 regen" }], 2, {
       parent: "u1",
       regenerates: "a1",
     });
-    createTurn(tree, "regen-2", [{ id: "a1rr", text: "a1 nested" }], 3, {
+    createRunNode(tree, "regen-2", [{ id: "a1rr", text: "a1 nested" }], 3, {
       parent: "u1",
       regenerates: "a1r",
     });
@@ -98,32 +98,32 @@ describe("transport view", () => {
     view.on("message", messages);
     view.on("turn", turns);
 
-    createTurn(tree, "a", [{ id: "a", text: "a" }], 1);
-    createTurn(tree, "b", [{ id: "b", text: "b" }], 2, { forkOf: "a" });
+    createRunNode(tree, "a", [{ id: "a", text: "a" }], 1);
+    createRunNode(tree, "b", [{ id: "b", text: "b" }], 2, { forkOf: "a" });
     updates.mockClear();
     messages.mockClear();
     turns.mockClear();
     tree.applyMessage(
       [decoded({ id: "a", text: "hidden update" }, "a", 3)],
-      headers({ turnId: "a", codecMessageId: "a" }),
+      headers({ runId: "a", codecMessageId: "a" }),
       3,
     );
     tree.applyMessage(
       [decoded({ id: "b", text: "visible update" }, "b", 4)],
-      headers({ turnId: "b", codecMessageId: "b" }),
+      headers({ runId: "b", codecMessageId: "b" }),
       4,
     );
     tree.applyRunLifecycle({
       type: "end",
-      headers: headers({ turnId: "b", turnReason: "complete" }),
+      headers: headers({ runId: "b", runReason: "complete" }),
       serial: 5,
     });
 
     expect(messages).toHaveBeenCalledTimes(1);
-    expect(turns).toHaveBeenCalledWith(expect.objectContaining({ turnId: "b" }));
+    expect(turns).toHaveBeenCalledWith(expect.objectContaining({ runId: "b" }));
     expect(view.getMessageMetadata("b")).toEqual({
       codecMessageId: "b",
-      turnId: "b",
+      runId: "b",
       status: "complete",
     });
     expect(updates).toHaveBeenCalled();
@@ -131,15 +131,15 @@ describe("transport view", () => {
 
   it("drains withheld turns before loading history and guards concurrent loads", async () => {
     const { tree, codec, decoder } = setup();
-    createTurn(tree, "old", [{ id: "old", text: "old" }], 1);
-    createTurn(tree, "live", [{ id: "live", text: "live" }], 2);
+    createRunNode(tree, "old", [{ id: "old", text: "old" }], 1);
+    createRunNode(tree, "live", [{ id: "live", text: "live" }], 2);
     const history = createHistory();
     const view = createView({
       tree,
       codec,
       decoder,
       history,
-      withheldTurnIds: ["old"],
+      withheldRunIds: ["old"],
     });
 
     expect(view.getMessages().map((message) => message.id)).toEqual(["live"]);
@@ -197,7 +197,7 @@ describe("transport view", () => {
     const codec = createCodec();
     const tree = createTree(codec as Reducer<Message, Projection>);
     for (let index = 0; index < 10_000; index += 1) {
-      createTurn(
+      createRunNode(
         tree,
         `turn-${String(index)}`,
         [{ id: `msg-${String(index)}`, text: `message ${String(index)}` }],
@@ -212,7 +212,7 @@ describe("transport view", () => {
     for (let token = 0; token < 100; token += 1) {
       tree.applyMessage(
         [decoded({ id: "msg-9999", text: `token ${String(token)}` }, "msg-9999", 10_001 + token)],
-        headers({ turnId: "turn-9999", codecMessageId: "msg-9999" }),
+        headers({ runId: "turn-9999", codecMessageId: "msg-9999" }),
         10_001 + token,
       );
     }
@@ -287,12 +287,12 @@ interface Projection {
 }
 
 interface HeaderOptions {
-  turnId?: string;
+  runId?: string;
   codecMessageId?: string;
   parent?: string;
   forkOf?: string;
   regenerates?: string | boolean;
-  turnReason?: string;
+  runReason?: string;
 }
 
 function setup(): {
@@ -359,14 +359,14 @@ function createCodec(): Codec<Message, Message, Projection, Message> {
   };
 }
 
-function createTurn(
+function createRunNode(
   tree: Tree<Message, Projection>,
-  turnId: string,
+  runId: string,
   messages: readonly Message[],
   serial: number,
   metadata: HeaderOptions = {},
 ): void {
-  const headerOptions: HeaderOptions = { ...metadata, turnId };
+  const headerOptions: HeaderOptions = { ...metadata, runId };
   const firstId = messages[0]?.id;
   if (firstId !== undefined) {
     headerOptions.codecMessageId = firstId;
@@ -391,12 +391,12 @@ function decoded(event: Message, messageId: string, serial: Serial): DecodedEven
 
 function headers(options: HeaderOptions): HeaderMap {
   const map = Object.create(null) as Record<string, string>;
-  set(map, HEADER_RUN_ID, options.turnId);
+  set(map, HEADER_RUN_ID, options.runId);
   set(map, HEADER_CODEC_MESSAGE_ID, options.codecMessageId);
   set(map, HEADER_PARENT, options.parent);
   set(map, HEADER_FORK_OF, options.forkOf);
   set(map, HEADER_MSG_REGENERATE, headerValue(options.regenerates));
-  set(map, HEADER_RUN_REASON, options.turnReason);
+  set(map, HEADER_RUN_REASON, options.runReason);
   return map;
 }
 

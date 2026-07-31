@@ -154,7 +154,7 @@ const sessionContextKey = Symbol("sockudo-ai-transport-svelte");
 const stableEmptyMessages: readonly unknown[] = [];
 const stableEmptyNodes: readonly RunNode<unknown>[] = [];
 const stableEmptyRawMessages: readonly InboundMessage[] = [];
-const stableEmptyActiveTurns = new Map<string, Set<string>>();
+const stableEmptyActiveRuns = new Map<string, Set<string>>();
 const autoLoadedViews = new WeakSet<View<unknown, unknown>>();
 
 /**
@@ -317,14 +317,14 @@ export function createActiveRunsStore<TInput = unknown, TMessage = unknown>(
   options: ActiveRunsStoreOptions<TInput, TMessage> = {},
 ): Readable<Map<string, Set<string>>> {
   const transport = resolveSession(options.transport);
-  return readable(cloneActiveTurns(transport), (set) => {
+  return readable(cloneActiveRuns(transport), (set) => {
     if (!transport) {
-      set(stableEmptyActiveTurns);
+      set(stableEmptyActiveRuns);
       return undefined;
     }
-    set(cloneActiveTurns(transport));
+    set(cloneActiveRuns(transport));
     return transport.tree.on("turn", () => {
-      set(cloneActiveTurns(transport));
+      set(cloneActiveRuns(transport));
     });
   });
 }
@@ -454,11 +454,11 @@ function viewSnapshot<TInput, TMessage>(
   };
 }
 
-function cloneActiveTurns(
+function cloneActiveRuns(
   transport: ClientSession<unknown, unknown, unknown, unknown> | undefined,
 ): Map<string, Set<string>> {
   if (!transport) {
-    return stableEmptyActiveTurns;
+    return stableEmptyActiveRuns;
   }
   const clone = new Map<string, Set<string>>();
   for (const [clientId, turns] of transport.tree.getActiveRunIds()) {

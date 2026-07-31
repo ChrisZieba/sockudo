@@ -407,7 +407,7 @@ function partRecord(part: AI.UIMessagePart | undefined): Record<string, unknown>
 }
 
 function outputStart(
-  turnId: string,
+  runId: string,
   invocationId: string,
   messageId: string,
   serial: number,
@@ -423,7 +423,7 @@ function outputStart(
     extras: {
       ai: {
         transport: {
-          [HEADER_RUN_ID]: turnId,
+          [HEADER_RUN_ID]: runId,
           [HEADER_INVOCATION_ID]: invocationId,
           [HEADER_CODEC_MESSAGE_ID]: messageId,
         },

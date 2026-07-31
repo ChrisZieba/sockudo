@@ -33,10 +33,10 @@ import { createStreamRouter, type StreamRouter } from "./stream-router.js";
  * @defaultValue `cancel()` and `waitForRun()` default to `{ own: true }`.
  */
 export type CancelFilter =
-  | { turnId: string; own?: never; clientId?: never; all?: never }
-  | { own: boolean; turnId?: never; clientId?: never; all?: never }
-  | { clientId: string; turnId?: never; own?: never; all?: never }
-  | { all: boolean; turnId?: never; own?: never; clientId?: never };
+  | { runId: string; own?: never; clientId?: never; all?: never }
+  | { own: boolean; runId?: never; clientId?: never; all?: never }
+  | { clientId: string; runId?: never; own?: never; all?: never }
+  | { all: boolean; runId?: never; own?: never; clientId?: never };
 
 /**
  * Per-send options for HTTP body/header merging and branch metadata.
@@ -52,7 +52,7 @@ export interface SendOptions {
    */
   waitForRunStart?: boolean;
   /** Existing run id for suspended-run continuation. */
-  turnId?: string;
+  runId?: string;
   /** Message id this send replaces. */
   forkOf?: string;
   /** Parent message id. Defaults to the selected branch tail. */
@@ -73,7 +73,7 @@ export interface ClientRun<TOutput> {
   /** Decoded output stream for this turn. */
   stream: ReadableStream<TOutput>;
   /** AgentRun identity. */
-  turnId: string;
+  runId: string;
   /** Invocation identity for this send or continuation. */
   invocationId: string;
   /** Primary input event id. */
@@ -228,8 +228,8 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
   private readonly router: StreamRouter<TOutput>;
   private readonly emitter = new EventEmitter<ClientSessionEvents>();
   private readonly views = new Set<View<TInput, TMessage>>();
-  private readonly ownTurns = new Map<string, OwnRun>();
-  private readonly pendingTurnStarts = new Map<string, PendingRunStart<TOutput>>();
+  private readonly ownRuns = new Map<string, OwnRun>();
+  private readonly pendingRunStarts = new Map<string, PendingRunStart<TOutput>>();
   private readonly closeResolvers = new Set<() => void>();
   private readonly unsubscribes: EventUnsubscribe[] = [];
   private readonly runStartDeadlineMs: number;
@@ -319,7 +319,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
           },
         },
       });
-      this.closeMatchingTurnStreams(filter);
+      this.closeMatchingRunStreams(filter);
     } catch (error) {
       throw toErrorInfo(error, {
         code: ErrorCode.SessionSendFailed,
@@ -332,7 +332,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
     if (this.closed) {
       return Promise.resolve();
     }
-    const remaining = this.getMatchingTurnIds(filter);
+    const remaining = this.getMatchingRunIds(filter);
     if (remaining.size === 0) {
       return Promise.resolve();
     }
@@ -346,7 +346,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
         if (node.status === "active" || node.status === "suspended") {
           return;
         }
-        remaining.delete(node.turnId);
+        remaining.delete(node.runId);
         if (remaining.size === 0) {
           done();
         }
@@ -418,7 +418,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
       }
     }
     this.closed = true;
-    for (const pending of this.pendingTurnStarts.values()) {
+    for (const pending of this.pendingRunStarts.values()) {
       if (pending.timer) {
         clearTimeout(pending.timer);
       }
@@ -430,7 +430,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
         }),
       );
     }
-    this.pendingTurnStarts.clear();
+    this.pendingRunStarts.clear();
     this.router.closeAll();
     for (const view of this.views) {
       view.close();
@@ -505,12 +505,12 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
     this.assertOpen("send");
     this.connect();
 
-    const turnId = sendOptions.turnId ?? this.idProvider.turnId();
+    const runId = sendOptions.runId ?? this.idProvider.runId();
     const invocationId = this.idProvider.invocationId();
     const eventIds = inputs.map(() => this.idProvider.inputEventId());
     const inputEventId = eventIds[eventIds.length - 1] ?? this.idProvider.inputEventId();
     const parent = sendOptions.parent ?? this.currentParent();
-    const isContinuation = sendOptions.turnId !== undefined;
+    const isContinuation = sendOptions.runId !== undefined;
     const regenerateOf =
       sendOptions.trigger === "regenerate"
         ? (sendOptions.messageId ?? sendOptions.forkOf)
@@ -528,7 +528,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
       const messageId = messageIdOf(message) ?? this.idProvider.messageId();
       optimisticMsgIds.push(messageId);
       const headers = this.inputHeaders({
-        turnId,
+        runId,
         invocationId,
         inputEventId: eventIds[index] ?? inputEventId,
         codecMessageId: messageId,
@@ -575,7 +575,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
           extras: {
             ai: {
               transport: this.inputHeaders({
-                turnId,
+                runId,
                 invocationId,
                 inputEventId: eventIds[index] ?? inputEventId,
                 ...(inputCodecMessageId !== undefined
@@ -606,27 +606,27 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
       });
     }
 
-    const stream = this.router.has(turnId)
-      ? this.rebindContinuation(turnId, invocationId)
-      : this.router.createStream(turnId, invocationId);
-    this.ownTurns.set(turnId, {
+    const stream = this.router.has(runId)
+      ? this.rebindContinuation(runId, invocationId)
+      : this.router.createStream(runId, invocationId);
+    this.ownRuns.set(runId, {
       invocationId,
       clientId: this.clientId ?? "",
     });
-    const activeTurn: ClientRun<TOutput> = {
+    const activeRun: ClientRun<TOutput> = {
       stream,
-      turnId,
+      runId,
       invocationId,
       inputEventId,
-      cancel: () => this.cancel({ turnId }),
+      cancel: () => this.cancel({ runId }),
       optimisticMsgIds,
     };
 
     const waiter =
-      sendOptions.waitForRunStart === false ? undefined : this.waitForRunStart(activeTurn);
+      sendOptions.waitForRunStart === false ? undefined : this.waitForRunStart(activeRun);
     this.poke(
       {
-        turnId,
+        runId,
         invocationId,
         inputEventId,
         parent,
@@ -639,7 +639,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
       },
       sendOptions,
     );
-    return waiter ?? activeTurn;
+    return waiter ?? activeRun;
   }
 
   private connect(): void {
@@ -665,15 +665,15 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
       this.emitter.emit("message", message);
       const transportHeaders = message.getTransportHeaders();
       if (isRunStartMessage(message.name)) {
-        this.handleTurnStart(message, transportHeaders, "start");
+        this.handleRunStart(message, transportHeaders, "start");
         return;
       }
       if (message.name === EVENT_AI_RUN_RESUME) {
-        this.handleTurnStart(message, transportHeaders, "resume");
+        this.handleRunStart(message, transportHeaders, "resume");
         return;
       }
       if (message.name === EVENT_AI_RUN_SUSPEND) {
-        this.handleTurnEnd(
+        this.handleRunEnd(
           message,
           mergeHeaders(transportHeaders, { [HEADER_RUN_REASON]: "suspended" }),
           "suspend",
@@ -681,7 +681,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
         return;
       }
       if (isRunEndMessage(message.name)) {
-        this.handleTurnEnd(message, transportHeaders, "end");
+        this.handleRunEnd(message, transportHeaders, "end");
         return;
       }
       if (message.action === "summary") {
@@ -696,13 +696,13 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
           message.deliverySerial ?? message.historySerial,
         );
       }
-      const turnId = transportHeaders[HEADER_RUN_ID];
-      if (!turnId) {
+      const runId = transportHeaders[HEADER_RUN_ID];
+      if (!runId) {
         return;
       }
       const invocationId = transportHeaders[HEADER_INVOCATION_ID];
       for (const output of batch.outputs) {
-        this.router.route(turnId, invocationId, output.event);
+        this.router.route(runId, invocationId, output.event);
       }
     } catch (error) {
       this.emitError(
@@ -714,7 +714,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
     }
   }
 
-  private handleTurnStart(
+  private handleRunStart(
     message: InboundMessage,
     headers: HeaderMap,
     type: "start" | "resume",
@@ -724,36 +724,36 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
       headers,
       serial: message.deliverySerial ?? message.historySerial,
     });
-    const turnId = headers[HEADER_RUN_ID];
+    const runId = headers[HEADER_RUN_ID];
     const invocationId = headers[HEADER_INVOCATION_ID];
-    if (turnId && invocationId) {
-      const own = this.ownTurns.get(turnId);
+    if (runId && invocationId) {
+      const own = this.ownRuns.get(runId);
       if (own && own.invocationId !== invocationId) {
         own.invocationId = invocationId;
-        this.router.rebindStream(turnId, invocationId);
+        this.router.rebindStream(runId, invocationId);
       }
-      const pending = this.pendingTurnStarts.get(invocationId);
+      const pending = this.pendingRunStarts.get(invocationId);
       if (pending) {
-        this.resolvePendingTurnStart(invocationId);
+        this.resolvePendingRunStart(invocationId);
       }
     }
-    if (node?.status === "suspended" && turnId && invocationId) {
-      this.router.rebindStream(turnId, invocationId);
+    if (node?.status === "suspended" && runId && invocationId) {
+      this.router.rebindStream(runId, invocationId);
     }
   }
 
-  private handleTurnEnd(
+  private handleRunEnd(
     message: InboundMessage,
     headers: HeaderMap,
     type: "suspend" | "end",
   ): void {
-    const turnId = headers[HEADER_RUN_ID];
+    const runId = headers[HEADER_RUN_ID];
     const invocationId = headers[HEADER_INVOCATION_ID];
     if (
-      turnId &&
+      runId &&
       invocationId &&
-      this.router.activeInvocation(turnId) !== undefined &&
-      this.router.activeInvocation(turnId) !== invocationId
+      this.router.activeInvocation(runId) !== undefined &&
+      this.router.activeInvocation(runId) !== invocationId
     ) {
       return;
     }
@@ -762,27 +762,27 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
       headers,
       serial: message.deliverySerial ?? message.historySerial,
     });
-    if (!turnId) {
+    if (!runId) {
       return;
     }
     const reason = headers[HEADER_RUN_REASON];
     if (reason !== "suspended") {
-      this.router.closeStream(turnId);
-      this.ownTurns.delete(turnId);
-      for (const pending of Array.from(this.pendingTurnStarts.values())) {
-        if (pending.turn.turnId === turnId) {
-          this.resolvePendingTurnStart(pending.invocationId);
+      this.router.closeStream(runId);
+      this.ownRuns.delete(runId);
+      for (const pending of Array.from(this.pendingRunStarts.values())) {
+        if (pending.turn.runId === runId) {
+          this.resolvePendingRunStart(pending.invocationId);
         }
       }
     }
     if (node && reason === "suspended" && invocationId) {
-      this.router.rebindStream(turnId, invocationId);
+      this.router.rebindStream(runId, invocationId);
     }
   }
 
   private handleContinuityLost(error: ErrorInfo): void {
-    for (const turnId of this.ownTurns.keys()) {
-      this.router.errorStream(turnId, error);
+    for (const runId of this.ownRuns.keys()) {
+      this.router.errorStream(runId, error);
     }
     this.emitError(error);
   }
@@ -798,7 +798,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
         reject,
         turn,
         timer: setTimeout(() => {
-          this.pendingTurnStarts.delete(turn.invocationId);
+          this.pendingRunStarts.delete(turn.invocationId);
           reject(
             new ErrorInfo({
               code: ErrorCode.RunStartDeadlineExceeded,
@@ -808,16 +808,16 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
           );
         }, this.runStartDeadlineMs),
       };
-      this.pendingTurnStarts.set(turn.invocationId, pending);
+      this.pendingRunStarts.set(turn.invocationId, pending);
     });
   }
 
-  private resolvePendingTurnStart(invocationId: string): void {
-    const pending = this.pendingTurnStarts.get(invocationId);
+  private resolvePendingRunStart(invocationId: string): void {
+    const pending = this.pendingRunStarts.get(invocationId);
     if (!pending) {
       return;
     }
-    this.pendingTurnStarts.delete(invocationId);
+    this.pendingRunStarts.delete(invocationId);
     if (pending.timer) {
       clearTimeout(pending.timer);
     }
@@ -839,7 +839,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
       ...this.bodyProvider(),
       ...sendOptions.body,
       sessionName: this.channel.name,
-      turnId: context.turnId,
+      runId: context.runId,
       invocationId: context.invocationId,
       inputEventId: context.inputEventId,
     };
@@ -861,8 +861,8 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
             statusCode: response.status,
             message: `unable to send; HTTP POST returned ${String(response.status)}`,
           });
-          this.rejectTurnStart(context.invocationId, error);
-          this.router.errorStream(context.turnId, error);
+          this.rejectRunStart(context.invocationId, error);
+          this.router.errorStream(context.runId, error);
           this.emitError(error);
         }
       })
@@ -871,18 +871,18 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
           code: ErrorCode.SessionSendFailed,
           message: "unable to send; HTTP POST failed",
         });
-        this.rejectTurnStart(context.invocationId, info);
-        this.router.errorStream(context.turnId, info);
+        this.rejectRunStart(context.invocationId, info);
+        this.router.errorStream(context.runId, info);
         this.emitError(info);
       });
   }
 
-  private rejectTurnStart(invocationId: string, error: ErrorInfo): void {
-    const pending = this.pendingTurnStarts.get(invocationId);
+  private rejectRunStart(invocationId: string, error: ErrorInfo): void {
+    const pending = this.pendingRunStarts.get(invocationId);
     if (!pending) {
       return;
     }
-    this.pendingTurnStarts.delete(invocationId);
+    this.pendingRunStarts.delete(invocationId);
     if (pending.timer) {
       clearTimeout(pending.timer);
     }
@@ -890,7 +890,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
   }
 
   private inputHeaders(options: {
-    turnId: string;
+    runId: string;
     invocationId: string;
     inputEventId: string;
     codecMessageId?: string;
@@ -901,12 +901,12 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
   }): HeaderMap {
     const headers = buildTransportHeaders({
       role: "user",
-      turnId: options.turnId,
+      runId: options.runId,
       invocationId: options.invocationId,
       inputEventId: options.inputEventId,
       ...(options.codecMessageId !== undefined ? { codecMessageId: options.codecMessageId } : {}),
       ...(this.clientId !== undefined
-        ? { turnClientId: this.clientId, inputClientId: this.clientId }
+        ? { runClientId: this.clientId, inputClientId: this.clientId }
         : {}),
       ...(options.parent !== undefined ? { parent: options.parent } : {}),
       ...(options.forkOf !== undefined ? { forkOf: options.forkOf } : {}),
@@ -931,13 +931,13 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
     let parent: string | undefined;
     for (const message of messages) {
       const msgId = messageIdOf(message) ?? this.idProvider.messageId();
-      const turnId = this.idProvider.turnId();
+      const runId = this.idProvider.runId();
       const headers = buildTransportHeaders({
         role: "user",
-        turnId,
+        runId,
         codecMessageId: msgId,
         ...(parent !== undefined ? { parent } : {}),
-        ...(this.clientId !== undefined ? { turnClientId: this.clientId } : {}),
+        ...(this.clientId !== undefined ? { runClientId: this.clientId } : {}),
       });
       this.tree.applyMessage(
         [decodedEvent<TInput | TOutput>(message as unknown as TInput | TOutput, msgId, "seed")],
@@ -948,38 +948,38 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
     }
   }
 
-  private closeMatchingTurnStreams(filter: CancelFilter): void {
-    for (const turnId of this.getMatchingTurnIds(filter)) {
-      this.router.closeStream(turnId);
+  private closeMatchingRunStreams(filter: CancelFilter): void {
+    for (const runId of this.getMatchingRunIds(filter)) {
+      this.router.closeStream(runId);
     }
   }
 
-  private getMatchingTurnIds(filter: CancelFilter): Set<string> {
+  private getMatchingRunIds(filter: CancelFilter): Set<string> {
     const matched = new Set<string>();
     const active = this.tree.getActiveRunIds();
     if ("all" in filter && filter.all) {
       for (const turns of active.values()) {
-        for (const turnId of turns) {
-          matched.add(turnId);
+        for (const runId of turns) {
+          matched.add(runId);
         }
       }
-    } else if ("turnId" in filter && filter.turnId) {
-      matched.add(filter.turnId);
+    } else if ("runId" in filter && filter.runId) {
+      matched.add(filter.runId);
     } else if ("clientId" in filter && filter.clientId) {
-      for (const turnId of active.get(filter.clientId) ?? []) {
-        matched.add(turnId);
+      for (const runId of active.get(filter.clientId) ?? []) {
+        matched.add(runId);
       }
     } else if ("own" in filter && filter.own) {
-      for (const turnId of active.get(this.clientId ?? "") ?? []) {
-        matched.add(turnId);
+      for (const runId of active.get(this.clientId ?? "") ?? []) {
+        matched.add(runId);
       }
     }
     return matched;
   }
 
-  private rebindContinuation(turnId: string, invocationId: string): ReadableStream<TOutput> {
-    this.router.rebindStream(turnId, invocationId);
-    return this.router.getStream(turnId) ?? this.router.createStream(turnId, invocationId);
+  private rebindContinuation(runId: string, invocationId: string): ReadableStream<TOutput> {
+    this.router.rebindStream(runId, invocationId);
+    return this.router.getStream(runId) ?? this.router.createStream(runId, invocationId);
   }
 
   private emitError(error: ErrorInfo): void {
@@ -998,7 +998,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
 }
 
 interface PokeContext<TInput, TMessage, TOutput> {
-  turnId: string;
+  runId: string;
   invocationId: string;
   inputEventId: string;
   parent: string | undefined;
@@ -1084,8 +1084,8 @@ function normalizeInputs<TInput>(input: TInput | readonly TInput[]): readonly TI
 }
 
 function cancelHeaders(filter: CancelFilter, clientId: string | undefined): HeaderMap {
-  if ("turnId" in filter && filter.turnId) {
-    return buildTransportHeaders({ runId: filter.turnId });
+  if ("runId" in filter && filter.runId) {
+    return buildTransportHeaders({ runId: filter.runId });
   }
   if ("clientId" in filter && filter.clientId) {
     return buildTransportHeaders({ runClientId: filter.clientId });

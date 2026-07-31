@@ -667,7 +667,7 @@ function output(
 function lifecycle(
   event: string,
   serial: number,
-  turnId: string,
+  runId: string,
   invocationId: string,
 ): SockudoRawMessage {
   return {
@@ -675,14 +675,14 @@ function lifecycle(
     name: event,
     channel: "chat",
     data: {},
-    message_serial: `${turnId}:lifecycle`,
+    message_serial: `${runId}:lifecycle`,
     history_serial: serial,
     delivery_serial: serial,
     serial,
     extras: {
       ai: {
         transport: {
-          [HEADER_RUN_ID]: turnId,
+          [HEADER_RUN_ID]: runId,
           [HEADER_INVOCATION_ID]: invocationId,
         },
       },
@@ -752,7 +752,7 @@ function testCodec(): Codec<Message, Message, Projection, Message> {
 function fixedIds(): InvocationIdProvider {
   let index = 0;
   return {
-    turnId() {
+    runId() {
       index += 1;
       return `turn-${String(index)}`;
     },

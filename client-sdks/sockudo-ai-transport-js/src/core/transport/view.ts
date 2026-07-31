@@ -13,7 +13,7 @@ export interface MessageMetadata {
   /** Codec message id. */
   codecMessageId: string;
   /** Owning turn id. */
-  turnId: string;
+  runId: string;
   /** Verified client id when known. */
   clientId?: string;
   /** Streaming state or terminal turn status. */
@@ -70,7 +70,7 @@ export interface ViewOptions<TInput, TOutput, TProjection, TMessage> {
   /** Returns a stable message id. */
   getMessageId?(message: TMessage): string | undefined;
   /** Initially withheld turn ids for pagination tests and restored views. */
-  withheldTurnIds?: readonly string[];
+  withheldRunIds?: readonly string[];
 }
 
 /**
@@ -144,7 +144,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
   private readonly siblingSelectionIntents = new Map<string, BranchSelectionIntent>();
   private readonly messageSelections = new Map<string, string>();
   private readonly messageSelectionIntents = new Map<string, BranchSelectionIntent>();
-  private readonly withheldTurnIds: string[];
+  private readonly withheldRunIds: string[];
   private readonly unsubscribes: EventUnsubscribe[];
   private cachedVersion = -1;
   private cachedNodes: RunNode<TProjection>[] = [];
@@ -163,7 +163,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
     private readonly options: ViewOptions<TInput, TOutput, TProjection, TMessage>,
   ) {
     this.getMessageId = (message) => options.getMessageId?.(message) ?? defaultMessageId(message);
-    this.withheldTurnIds = [...(options.withheldTurnIds ?? [])];
+    this.withheldRunIds = [...(options.withheldRunIds ?? [])];
     this.unsubscribes = [
       options.tree.on("update", () => {
         this.handleStructuralUpdate();
@@ -172,7 +172,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
         this.handleProjectionUpdate(event);
       }),
       options.tree.on("turn", (node) => {
-        this.handleTurn(node);
+        this.handleRun(node);
       }),
     ];
     this.rebuild();
@@ -198,7 +198,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
 
   public hasOlder(): boolean {
     return (
-      this.withheldTurnIds.length > 0 ||
+      this.withheldRunIds.length > 0 ||
       (!this.historyExhausted && (this.historyPage === undefined || this.historyPage.hasNext()))
     );
   }
@@ -265,7 +265,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
       return;
     }
     const key = siblingGroupKey(siblings);
-    this.siblingSelections.set(key, selected.turnId);
+    this.siblingSelections.set(key, selected.runId);
     this.siblingSelectionIntents.set(key, intent);
     this.rebuild();
     this.emitUpdate();
@@ -277,10 +277,10 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
       return 0;
     }
     const key = siblingGroupKey(siblings);
-    const selected = this.selectedTurnId(key, siblings);
+    const selected = this.selectedRunId(key, siblings);
     return Math.max(
       0,
-      siblings.findIndex((node) => node.turnId === selected),
+      siblings.findIndex((node) => node.runId === selected),
     );
   }
 
@@ -318,7 +318,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
       return [];
     }
     return this.options.tree
-      .getSiblingNodes(node.turnId)
+      .getSiblingNodes(node.runId)
       .flatMap((sibling) => this.firstMessage(sibling));
   }
 
@@ -421,26 +421,26 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
   private flatten(): RunNode<TProjection>[] {
     const visible: RunNode<TProjection>[] = [];
     const reachable = new Set<string>();
-    const withheld = new Set(this.withheldTurnIds);
+    const withheld = new Set(this.withheldRunIds);
     for (const node of this.options.tree.getRunNodes()) {
-      if (withheld.has(node.turnId) || node.regeneratesCodecMessageId) {
+      if (withheld.has(node.runId) || node.regeneratesCodecMessageId) {
         continue;
       }
-      if (node.parentTurnId !== undefined && !reachable.has(node.parentTurnId)) {
+      if (node.parentRunId !== undefined && !reachable.has(node.parentRunId)) {
         continue;
       }
       const siblings = this.options.tree
-        .getSiblingNodes(node.turnId)
+        .getSiblingNodes(node.runId)
         .filter((sibling) => !sibling.regeneratesCodecMessageId);
       if (siblings.length > 1) {
         const key = siblingGroupKey(siblings);
-        const selected = this.selectedTurnId(key, siblings);
-        if (node.turnId !== selected) {
+        const selected = this.selectedRunId(key, siblings);
+        if (node.runId !== selected) {
           continue;
         }
       }
       visible.push(node);
-      reachable.add(node.turnId);
+      reachable.add(node.runId);
     }
     return visible;
   }
@@ -457,7 +457,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
     const ranges = new Map<string, MessageRange>();
     for (const node of nodes) {
       const start = messages.length;
-      const extracted = this.extractTurnMessages(node, new Set());
+      const extracted = this.extractRunMessages(node, new Set());
       for (const message of extracted) {
         const id = this.getMessageId(message);
         if (id !== undefined) {
@@ -466,12 +466,12 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
         }
         messages.push(message);
       }
-      ranges.set(node.turnId, { start, end: messages.length });
+      ranges.set(node.runId, { start, end: messages.length });
     }
     return { messages, metadata, objects, ranges };
   }
 
-  private extractTurnMessages(node: RunNode<TProjection>, seenAnchors: Set<string>): TMessage[] {
+  private extractRunMessages(node: RunNode<TProjection>, seenAnchors: Set<string>): TMessage[] {
     const source = this.options.codec.getMessages(node.projection);
     const output: TMessage[] = [];
     for (const message of source) {
@@ -486,7 +486,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
         continue;
       }
       seenAnchors.add(id);
-      output.push(...this.extractTurnMessages(selectedRegenerator, seenAnchors));
+      output.push(...this.extractRunMessages(selectedRegenerator, seenAnchors));
       return output;
     }
     return output;
@@ -504,7 +504,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
           .getMessages(node.projection)
           .some((message) => this.getMessageId(message) === selectedMessageId),
       );
-      return selected?.turnId === group[0]?.turnId ? undefined : selected;
+      return selected?.runId === group[0]?.runId ? undefined : selected;
     }
     return group[group.length - 1];
   }
@@ -516,7 +516,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
     const owner = this.options.tree.getNodeByCodecMessageId(codecMessageId) ?? fallbackNode;
     const metadata: MessageMetadata = {
       codecMessageId,
-      turnId: owner.turnId,
+      runId: owner.runId,
       status: owner.status === "active" ? "streaming" : owner.status,
     };
     if (owner.clientId !== undefined) {
@@ -538,31 +538,31 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
       .slice(0, 1);
   }
 
-  private selectedTurnId(key: string, siblings: readonly RunNode<unknown>[]): string | undefined {
+  private selectedRunId(key: string, siblings: readonly RunNode<unknown>[]): string | undefined {
     const selected = this.siblingSelections.get(key);
-    if (selected !== undefined && siblings.some((node) => node.turnId === selected)) {
+    if (selected !== undefined && siblings.some((node) => node.runId === selected)) {
       return selected;
     }
-    return siblings[siblings.length - 1]?.turnId;
+    return siblings[siblings.length - 1]?.runId;
   }
 
   private repinSelections(nodes: readonly RunNode<TProjection>[]): void {
     for (const node of nodes) {
-      const siblings = this.options.tree.getSiblingNodes(node.turnId);
+      const siblings = this.options.tree.getSiblingNodes(node.runId);
       if (siblings.length <= 1) {
         continue;
       }
       const key = siblingGroupKey(siblings);
       if (!this.siblingSelections.has(key)) {
-        this.siblingSelections.set(key, node.turnId);
+        this.siblingSelections.set(key, node.runId);
         this.siblingSelectionIntents.set(key, "pinned");
       }
     }
   }
 
   private drainWithheld(limit: number): number {
-    const count = Math.min(limit, this.withheldTurnIds.length);
-    this.withheldTurnIds.splice(0, count);
+    const count = Math.min(limit, this.withheldRunIds.length);
+    this.withheldRunIds.splice(0, count);
     return count;
   }
 
@@ -575,13 +575,13 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
   }
 
   private handleProjectionUpdate(event: TreeMessageEvent<TInput | TOutput, TProjection>): void {
-    const visibleNode = this.cachedNodes.find((node) => node.turnId === event.turnId);
+    const visibleNode = this.cachedNodes.find((node) => node.runId === event.runId);
     if (
       visibleNode &&
       !visibleNode.regeneratesCodecMessageId &&
-      !this.turnHasVisibleRegeneration(visibleNode)
+      !this.runHasVisibleRegeneration(visibleNode)
     ) {
-      this.patchTurnMessages(visibleNode);
+      this.patchRunMessages(visibleNode);
       const message =
         event.messageId === undefined ? undefined : this.cachedMessageObjects.get(event.messageId);
       if (message !== undefined) {
@@ -601,8 +601,8 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
     }
   }
 
-  private handleTurn(node: RunNode<TProjection>): void {
-    if (this.cachedNodes.some((visible) => visible.turnId === node.turnId)) {
+  private handleRun(node: RunNode<TProjection>): void {
+    if (this.cachedNodes.some((visible) => visible.runId === node.runId)) {
       this.emitter.emit("turn", node);
     }
   }
@@ -611,14 +611,14 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
     this.emitter.emit("update", this.cachedMessages);
   }
 
-  private patchTurnMessages(node: RunNode<TProjection>): void {
-    const range = this.cachedRanges.get(node.turnId);
+  private patchRunMessages(node: RunNode<TProjection>): void {
+    const range = this.cachedRanges.get(node.runId);
     if (!range) {
       this.rebuild();
       this.emitUpdate();
       return;
     }
-    const nextMessages = this.extractTurnMessages(node, new Set());
+    const nextMessages = this.extractRunMessages(node, new Set());
     const previous = this.cachedMessages.slice(range.start, range.end);
     if (sameMessageRefs(previous, nextMessages)) {
       return;
@@ -633,8 +633,8 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
     this.cachedMessages.splice(range.start, range.end - range.start, ...nextMessages);
     const delta = nextMessages.length - (range.end - range.start);
     range.end = range.start + nextMessages.length;
-    for (const [turnId, otherRange] of this.cachedRanges) {
-      if (turnId !== node.turnId && otherRange.start > range.start) {
+    for (const [runId, otherRange] of this.cachedRanges) {
+      if (runId !== node.runId && otherRange.start > range.start) {
         otherRange.start += delta;
         otherRange.end += delta;
       }
@@ -649,7 +649,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, T
     this.emitUpdate();
   }
 
-  private turnHasVisibleRegeneration(node: RunNode<TProjection>): boolean {
+  private runHasVisibleRegeneration(node: RunNode<TProjection>): boolean {
     return this.options.codec.getMessages(node.projection).some((message) => {
       const id = this.getMessageId(message);
       return id !== undefined && this.options.tree.getRegenerateGroup(id).length > 1;
@@ -688,7 +688,7 @@ function defaultMessageId(message: unknown): string | undefined {
 
 function siblingGroupKey(nodes: readonly RunNode<unknown>[]): string {
   return nodes
-    .map((node) => node.turnId)
+    .map((node) => node.runId)
     .sort()
     .join("\u0000");
 }

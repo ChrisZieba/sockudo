@@ -37,7 +37,7 @@ describe("server transport", () => {
     });
     channel.inject(input("turn-1", "inv-1", "input-1", "client-1", 1));
     const turn = transport.createRun({
-      turnId: "turn-1",
+      runId: "turn-1",
       clientId: "client-1",
       invocationId: "inv-1",
       inputEventId: "input-1",
@@ -58,7 +58,7 @@ describe("server transport", () => {
       inputEventLookupTimeoutMs: 1,
     });
     const turn = transport.createRun({
-      turnId: "turn-1",
+      runId: "turn-1",
       invocationId: "missing",
       inputEventId: "input-1",
     });
@@ -74,7 +74,7 @@ describe("server transport", () => {
     const { channel } = setupChannel();
     const onCancel = vi.fn(() => true);
     const turn = createAgentSession({ channel, codec: testCodec() }).createRun({
-      turnId: "turn-1",
+      runId: "turn-1",
       clientId: "client-1",
       onCancel,
     });
@@ -84,7 +84,7 @@ describe("server transport", () => {
 
     expect(onCancel).toHaveBeenCalledWith(
       expect.objectContaining({
-        matchedTurnIds: ["turn-1"],
+        matchedRunIds: ["turn-1"],
       }),
     );
     expect(turn.abortSignal.aborted).toBe(true);
@@ -93,7 +93,7 @@ describe("server transport", () => {
   it("publishes discrete messages with override ids in order", async () => {
     const { channel, published } = setupChannel();
     const turn = createAgentSession({ channel, codec: testCodec() }).createRun({
-      turnId: "turn-1",
+      runId: "turn-1",
       clientId: "client-1",
     });
 
@@ -110,7 +110,7 @@ describe("server transport", () => {
   it("pipes response chunks and returns complete without ending the turn", async () => {
     const { channel, published } = setupChannel();
     const turn = createAgentSession({ channel, codec: testCodec() }).createRun({
-      turnId: "turn-1",
+      runId: "turn-1",
       clientId: "client-1",
     });
 
@@ -135,13 +135,13 @@ describe("server transport", () => {
       channel,
       codec: testCodec(),
       idProvider: {
-        turnId: () => "turn-generated",
+        runId: () => "turn-generated",
         invocationId: () => "inv-generated",
         inputEventId: () => "evt-generated",
         messageId: () => "assistant-generated",
       },
     }).createRun({
-      turnId: "turn-1",
+      runId: "turn-1",
       clientId: "client-1",
     });
 
@@ -163,7 +163,7 @@ describe("server transport", () => {
   it("publishes turn-end before deregistering", async () => {
     const { channel, published } = setupChannel();
     const turn = createAgentSession({ channel, codec: testCodec() }).createRun({
-      turnId: "turn-1",
+      runId: "turn-1",
       clientId: "client-1",
     });
 
@@ -192,7 +192,7 @@ function setupChannel(): {
 }
 
 function input(
-  turnId: string,
+  runId: string,
   invocationId: string,
   messageId: string,
   clientId: string,
@@ -209,7 +209,7 @@ function input(
     extras: {
       ai: {
         transport: {
-          [HEADER_RUN_ID]: turnId,
+          [HEADER_RUN_ID]: runId,
           [HEADER_INVOCATION_ID]: invocationId,
           [HEADER_CODEC_MESSAGE_ID]: messageId,
           [HEADER_INPUT_CLIENT_ID]: clientId,

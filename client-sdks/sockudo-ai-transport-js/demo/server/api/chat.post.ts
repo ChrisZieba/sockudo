@@ -7,7 +7,7 @@ import { isAllowedDemoChannel, realtimeClient } from "../utils/sockudo";
 export default defineEventHandler(async (event) => {
   const body = (await readBody(event)) as Record<string, unknown>;
   const config = demoConfig();
-  const turnId = requireString(body.turnId, "turnId");
+  const runId = requireString(body.runId, "runId");
   const invocationId = requireString(body.invocationId, "invocationId");
   const inputEventId = requireString(body.inputEventId, "inputEventId");
   const channelName = optionalString(body.channelName) ?? config.channelName;
@@ -21,12 +21,12 @@ export default defineEventHandler(async (event) => {
     channelName,
   });
   const turn = transport.createRun({
-    turnId,
+    runId,
     invocationId,
     inputEventId,
     ...(clientId === undefined ? {} : { clientId }),
     onCancel(request) {
-      return request.filter.all === true || request.turnOwners.get(turnId) === clientId;
+      return request.filter.all === true || request.runOwners.get(runId) === clientId;
     },
     onError(error) {
       console.error("[sockudo-ai-transport-demo] turn failed", error.message);

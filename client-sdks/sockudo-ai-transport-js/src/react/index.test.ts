@@ -227,7 +227,7 @@ describe("React transport hooks", () => {
     const firstHandle = result.current;
 
     act(() => {
-      applyTurnStart(transport.tree, "turn-1", "client-1");
+      applyRunStart(transport.tree, "turn-1", "client-1");
     });
 
     expect(renders).toBe(1);
@@ -274,7 +274,7 @@ describe("React transport hooks", () => {
     const first = result.current;
 
     act(() => {
-      applyTurnStart(transport.tree, "turn-1", "client-1");
+      applyRunStart(transport.tree, "turn-1", "client-1");
     });
 
     expect(result.current).not.toBe(first);
@@ -473,15 +473,15 @@ function asSockudo(client: unknown): Parameters<typeof SockudoProvider>[0]["clie
   return client as Parameters<typeof SockudoProvider>[0]["client"];
 }
 
-function applyTurnStart(
+function applyRunStart(
   tree: Tree<Message, Projection>,
-  turnId: string,
+  runId: string,
   clientId: string,
 ): void {
   tree.applyRunLifecycle({
     type: "start",
     headers: {
-      [HEADER_RUN_ID]: turnId,
+      [HEADER_RUN_ID]: runId,
       [HEADER_RUN_CLIENT_ID]: clientId,
       [HEADER_INVOCATION_ID]: "inv-1",
     },
@@ -490,7 +490,7 @@ function applyTurnStart(
 }
 
 function output(
-  turnId: string,
+  runId: string,
   invocationId: string,
   messageId: string,
   serial: number,
@@ -506,7 +506,7 @@ function output(
     extras: {
       ai: {
         transport: {
-          [HEADER_RUN_ID]: turnId,
+          [HEADER_RUN_ID]: runId,
           [HEADER_INVOCATION_ID]: invocationId,
           [HEADER_CODEC_MESSAGE_ID]: messageId,
         },

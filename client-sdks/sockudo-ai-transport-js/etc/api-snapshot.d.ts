@@ -321,7 +321,7 @@ export declare function useTree(options?: UseTreeOptions<unknown, unknown>): Tre
  *
  * @defaultValue Uses the context transport.
  *
- * Returns a new `Map<clientId, Set<turnId>>` reference for each turn event and a
+ * Returns a new `Map<clientId, Set<runId>>` reference for each turn event and a
  * stable empty map without a resolved transport.
  */
 export declare function useActiveRuns(options?: UseActiveRunsOptions<unknown, unknown>): Map<string, Set<string>>;
@@ -1235,7 +1235,7 @@ export interface RunDirectLlmResult {
     /** Pipe result from `turn.streamResponse`. */
     pipeResult: StreamResult;
     /** Published turn end reason. */
-    turnEndReason: RunEndReason;
+    runEndReason: RunEndReason;
 }
 /**
  * Streams text through a Chat Completions-compatible HTTP endpoint.

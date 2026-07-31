@@ -11,15 +11,15 @@ export interface CancelRequest {
   /** Parsed cancel filter. */
   filter: CancelFilter;
   /** Matched turn ids. */
-  matchedTurnIds: string[];
+  matchedRunIds: string[];
   /** Matched turn owners by turn id. */
-  turnOwners: Map<string, string>;
+  runOwners: Map<string, string>;
 }
 
 /** Registered server-side turn state. */
 export interface ManagedRun {
   /** AgentRun identity. */
-  turnId: string;
+  runId: string;
   /** Owning client id. */
   clientId?: string;
   /** Aborts this turn. */
@@ -67,20 +67,20 @@ export class RunManager {
 
   /** Registers a turn for input lookup and cancellation. */
   public register(turn: ManagedRun): void {
-    this.turns.set(turn.turnId, turn);
+    this.turns.set(turn.runId, turn);
   }
 
   /** Deregisters a turn. */
-  public deregister(turnId: string): void {
-    this.turns.delete(turnId);
+  public deregister(runId: string): void {
+    this.turns.delete(runId);
   }
 
   /** Returns current turn owners. */
-  public turnOwners(): Map<string, string> {
+  public runOwners(): Map<string, string> {
     const owners = new Map<string, string>();
-    for (const [turnId, turn] of this.turns) {
+    for (const [runId, turn] of this.turns) {
       if (turn.clientId !== undefined) {
-        owners.set(turnId, turn.clientId);
+        owners.set(runId, turn.clientId);
       }
     }
     return owners;
@@ -153,16 +153,16 @@ export class RunManager {
   public routeCancel(message: InboundMessage, fallbackFilter?: CancelFilter): void {
     const headers = message.getTransportHeaders();
     const filter = fallbackFilter ?? parseCancelFilter(headers, message.data);
-    const matched = this.matchTurns(filter, headers);
-    const owners = this.turnOwners();
+    const matched = this.matchRuns(filter, headers);
+    const owners = this.runOwners();
     const request: CancelRequest = {
       message,
       filter,
-      matchedTurnIds: [...matched],
-      turnOwners: owners,
+      matchedRunIds: [...matched],
+      runOwners: owners,
     };
-    for (const turnId of matched) {
-      const turn = this.turns.get(turnId);
+    for (const runId of matched) {
+      const turn = this.turns.get(runId);
       if (!turn || turn.cancelled) {
         continue;
       }
@@ -198,17 +198,17 @@ export class RunManager {
     }
   }
 
-  private matchTurns(filter: CancelFilter, headers: HeaderMap): Set<string> {
+  private matchRuns(filter: CancelFilter, headers: HeaderMap): Set<string> {
     const matched = new Set<string>();
     if ("all" in filter && filter.all) {
-      for (const turnId of this.turns.keys()) {
-        matched.add(turnId);
+      for (const runId of this.turns.keys()) {
+        matched.add(runId);
       }
       return matched;
     }
-    if ("turnId" in filter && filter.turnId) {
-      if (this.turns.has(filter.turnId)) {
-        matched.add(filter.turnId);
+    if ("runId" in filter && filter.runId) {
+      if (this.turns.has(filter.runId)) {
+        matched.add(filter.runId);
       }
       return matched;
     }
@@ -221,9 +221,9 @@ export class RunManager {
     if (!targetClientId) {
       return matched;
     }
-    for (const [turnId, turn] of this.turns) {
+    for (const [runId, turn] of this.turns) {
       if (turn.clientId === targetClientId) {
-        matched.add(turnId);
+        matched.add(runId);
       }
     }
     return matched;
@@ -246,12 +246,12 @@ export class RunManager {
 
 function parseCancelFilter(headers: HeaderMap, data: unknown): CancelFilter {
   if (headers[HEADER_RUN_ID]) {
-    return { turnId: headers[HEADER_RUN_ID] };
+    return { runId: headers[HEADER_RUN_ID] };
   }
   const record =
     data !== null && typeof data === "object" ? (data as Record<string, unknown>) : undefined;
-  if (typeof record?.turnId === "string") {
-    return { turnId: record.turnId };
+  if (typeof record?.runId === "string") {
+    return { runId: record.runId };
   }
   if (typeof record?.clientId === "string") {
     return { clientId: record.clientId };

@@ -71,14 +71,14 @@ describe("golden transcript replay", () => {
           continue;
         }
         if (message.name === EVENT_AI_RUN_END) {
-          const turnEnd = {
+          const runEnd = {
             type: "end",
             headers,
             serial: message.historySerial,
           } as const;
-          const turnReason = reason(headers[HEADER_RUN_REASON]);
+          const runReason = reason(headers[HEADER_RUN_REASON]);
           tree.applyRunLifecycle(
-            turnReason === undefined ? turnEnd : { ...turnEnd, reason: turnReason },
+            runReason === undefined ? runEnd : { ...runEnd, reason: runReason },
           );
           lifecycleEvents += 1;
           continue;
@@ -96,7 +96,7 @@ describe("golden transcript replay", () => {
         lifecycleEvents,
         messages: normalizeMaterialized(view.getMessages()),
         nodes: nodes.map((node) => ({
-          turnId: node.turnId,
+          runId: node.runId,
           status: node.status,
           messageCount: UIMessageCodec.getMessages(node.projection).length,
         })),

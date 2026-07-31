@@ -306,7 +306,7 @@ const pendingSessionCloses = new WeakMap<
 const stableEmptyMessages: readonly unknown[] = [];
 const stableEmptyNodes: readonly RunNode<unknown>[] = [];
 const stableEmptyRawMessages: readonly InboundMessage[] = [];
-const stableEmptyActiveTurns = new Map<string, Set<string>>();
+const stableEmptyActiveRuns = new Map<string, Set<string>>();
 
 /**
  * Creates generic React hooks for a specific codec/message type family.
@@ -452,15 +452,15 @@ export function createSessionHooks<
     });
     const contextTransport = context.transportError === undefined ? context.transport : undefined;
     const transport = options.transport ?? contextTransport;
-    const [active, setActive] = useState(() => cloneActiveTurns(transport));
+    const [active, setActive] = useState(() => cloneActiveRuns(transport));
     useEffect(() => {
       if (!transport) {
-        setActive(stableEmptyActiveTurns);
+        setActive(stableEmptyActiveRuns);
         return;
       }
-      setActive(cloneActiveTurns(transport));
+      setActive(cloneActiveRuns(transport));
       return transport.tree.on("turn", () => {
-        setActive(cloneActiveTurns(transport));
+        setActive(cloneActiveRuns(transport));
       });
     }, [transport]);
     return active;
@@ -576,7 +576,7 @@ export function useTree(options?: UseTreeOptions<unknown, unknown>): TreeHandle 
  *
  * @defaultValue Uses the context transport.
  *
- * Returns a new `Map<clientId, Set<turnId>>` reference for each turn event and a
+ * Returns a new `Map<clientId, Set<runId>>` reference for each turn event and a
  * stable empty map without a resolved transport.
  */
 export function useActiveRuns(
@@ -757,11 +757,11 @@ function resolveSlot(
   return key === undefined ? undefined : registry?.slots.get(key);
 }
 
-function cloneActiveTurns(
+function cloneActiveRuns(
   transport: ClientSession<unknown, unknown, unknown, unknown> | undefined,
 ): Map<string, Set<string>> {
   if (!transport) {
-    return stableEmptyActiveTurns;
+    return stableEmptyActiveRuns;
   }
   const clone = new Map<string, Set<string>>();
   for (const [clientId, turns] of transport.tree.getActiveRunIds()) {

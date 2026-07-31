@@ -148,15 +148,15 @@ function transportHeaders(
   scenario: string,
   messageSerial: string,
 ): Record<string, string> {
-  const turnId = `turn-${scenario}`;
+  const runId = `turn-${scenario}`;
   const transport: Record<string, string> = {
-    [HEADER_RUN_ID]: turnId,
+    [HEADER_RUN_ID]: runId,
   };
   if (frame.event === EVENT_AI_RUN_START) {
     transport[HEADER_INVOCATION_ID] = `invoke-${scenario}`;
   }
   if (frame.event === EVENT_AI_RUN_END) {
-    transport[HEADER_RUN_REASON] = turnReason(scenario);
+    transport[HEADER_RUN_REASON] = runReason(scenario);
   }
   if (
     frame.event === EVENT_AI_OUTPUT ||
@@ -243,7 +243,7 @@ function historyPayload(frame: GoldenFrame):
   return data !== null && typeof data === "object" ? data : undefined;
 }
 
-function turnReason(scenario: string): string {
+function runReason(scenario: string): string {
   switch (scenario) {
     case "cancel":
       return "cancelled";

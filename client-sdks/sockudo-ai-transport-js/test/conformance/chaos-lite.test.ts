@@ -123,7 +123,7 @@ describe("chaos-lite deterministic matrix", () => {
       value: { id: "assistant-1", text: "partial" },
     });
 
-    const waiting = transport.waitForRun({ turnId: active.turnId });
+    const waiting = transport.waitForRun({ runId: active.runId });
     channel.inject(lifecycle(EVENT_AI_RUN_END, active, 4, "complete"), {
       deliver: false,
     });
@@ -132,11 +132,11 @@ describe("chaos-lite deterministic matrix", () => {
     await expect(reader.read()).rejects.toMatchObject({
       code: ErrorCode.ChannelContinuityLost,
     });
-    expect(transport.tree.getRunNode(active.turnId)?.status).toBe("active");
+    expect(transport.tree.getRunNode(active.runId)?.status).toBe("active");
 
     await transport.view.loadOlder(10);
     await expect(waiting).resolves.toBeUndefined();
-    expect(transport.tree.getRunNode(active.turnId)?.status).toBe("complete");
+    expect(transport.tree.getRunNode(active.runId)?.status).toBe("complete");
   });
 
   it("orders turns by server serial, not skewed local timestamps", async () => {
@@ -401,7 +401,7 @@ function noopUnsubscribe(): void {
 function fixedIds(): InvocationIdProvider {
   let message = 0;
   return {
-    turnId: () => "turn-1",
+    runId: () => "turn-1",
     invocationId: () => "inv-1",
     inputEventId: () => "evt-1",
     messageId: () => `msg-${String(++message)}`,
@@ -414,11 +414,11 @@ function lifecycle(
   serial: number,
   reason?: "complete" | "cancelled" | "error" | "suspended",
 ): SockudoRawMessage {
-  return lifecycleFromIds(turn.turnId, turn.invocationId, serial, 0, name, reason);
+  return lifecycleFromIds(turn.runId, turn.invocationId, serial, 0, name, reason);
 }
 
 function lifecycleFromIds(
-  turnId: string,
+  runId: string,
   invocationId: string,
   serial: number,
   timestampMs: number,
@@ -441,7 +441,7 @@ function lifecycleFromIds(
     extras: {
       ai: {
         transport: {
-          [HEADER_RUN_ID]: turnId,
+          [HEADER_RUN_ID]: runId,
           [HEADER_INVOCATION_ID]: invocationId,
           [HEADER_RUN_CLIENT_ID]: "client-1",
           ...(reason !== undefined ? { [HEADER_RUN_REASON]: reason } : {}),
@@ -457,11 +457,11 @@ function output(
   text: string,
   serial: number,
 ): SockudoRawMessage {
-  return outputFromIds(turn.turnId, turn.invocationId, messageId, serial, 0, text);
+  return outputFromIds(turn.runId, turn.invocationId, messageId, serial, 0, text);
 }
 
 function outputFromIds(
-  turnId: string,
+  runId: string,
   invocationId: string,
   messageId: string,
   serial: number,
@@ -484,7 +484,7 @@ function outputFromIds(
     extras: {
       ai: {
         transport: {
-          [HEADER_RUN_ID]: turnId,
+          [HEADER_RUN_ID]: runId,
           [HEADER_INVOCATION_ID]: invocationId,
           [HEADER_RUN_CLIENT_ID]: "client-1",
           [HEADER_CODEC_MESSAGE_ID]: messageId,
