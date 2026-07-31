@@ -113,6 +113,8 @@ impl Default for ServerOptions {
 impl ServerOptions {
     pub async fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let content = tokio::fs::read_to_string(path).await?;
+        let content =
+            crate::utils::substitute_env_vars(&content).map_err(crate::error::Error::ConfigFile)?;
         let options: Self = if path.ends_with(".toml") {
             toml::from_str(&content)?
         } else {
