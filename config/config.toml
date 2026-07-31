@@ -500,6 +500,12 @@ enabled = true
 max_accumulated_message_bytes = 1048576
 max_appends_per_message = 4096
 max_open_streaming_messages_per_channel = 1024
+# Ceilings for extras.ai.transport values. Both may only be raised: lowering
+# either starts rejecting traffic that previously passed validation.
+max_transport_value_bytes = 256
+# steer-codec-message-ids is a JSON array, so it gets its own budget. Raising it
+# only helps if the publishing SDK's per-stamp id cap is raised with it.
+max_steer_codec_message_ids_bytes = 2048
 
 [[ai_transport.channels]]
 prefix = "private-ai-"

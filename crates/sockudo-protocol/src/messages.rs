@@ -73,6 +73,45 @@ pub const AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES: usize = 2 * 1024;
 pub const AI_CODEC_PROVIDER_METADATA_MAX_BYTES: usize = 8 * 1024;
 pub const AI_MESSAGE_ID_MAX_BYTES: usize = 64;
 
+/// Operator-tunable ceilings for AI header validation.
+///
+/// Lives in this crate rather than `sockudo-core` so the protocol layer keeps no
+/// dependency on configuration; `sockudo-core` converts its `[ai_transport]`
+/// config into this struct and callers pass it down. `Copy` and allocation-free
+/// because validation is on the per-message hot path.
+///
+/// Defaults intentionally reproduce the compiled-in ceilings exactly: a config
+/// that *lowers* a limit starts rejecting traffic that previously passed, so the
+/// default must never be more restrictive than the previous release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AiHeaderLimits {
+    /// Ceiling for a single transport value.
+    pub transport_value_max_bytes: usize,
+    /// Ceiling for `steer-codec-message-ids`, a JSON array rather than a scalar.
+    pub steer_codec_message_ids_max_bytes: usize,
+}
+
+impl Default for AiHeaderLimits {
+    fn default() -> Self {
+        Self {
+            transport_value_max_bytes: AI_TRANSPORT_VALUE_MAX_BYTES,
+            steer_codec_message_ids_max_bytes: AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES,
+        }
+    }
+}
+
+impl AiHeaderLimits {
+    /// Ceiling that applies to one transport key.
+    #[inline]
+    pub fn value_limit_for(&self, key: &str) -> usize {
+        if key == AI_HEADER_STEER_CODEC_MESSAGE_IDS {
+            self.steer_codec_message_ids_max_bytes
+        } else {
+            self.transport_value_max_bytes
+        }
+    }
+}
+
 #[inline]
 pub fn is_ai_event(event: &str) -> bool {
     matches!(
@@ -484,12 +523,20 @@ impl MessageExtras {
     }
 
     pub fn validate_ai_headers(&self) -> Result<(), AiHeaderValidationError> {
+        self.validate_ai_headers_with(AiHeaderLimits::default())
+    }
+
+    /// Validates AI headers against operator-configured ceilings.
+    pub fn validate_ai_headers_with(
+        &self,
+        limits: AiHeaderLimits,
+    ) -> Result<(), AiHeaderValidationError> {
         let Some(ai) = self.ai.as_ref() else {
             return Ok(());
         };
 
         if let Some(transport) = ai.transport.as_ref() {
-            validate_ai_tier("transport", transport)?;
+            validate_ai_tier("transport", transport, limits)?;
             for (key, value) in transport {
                 validate_transport_key_domain(key, value)?;
             }
@@ -521,16 +568,13 @@ impl MessageExtras {
 /// codec tier's existing per-key allowance for `provider-metadata`.
 #[inline]
 pub fn ai_transport_value_limit(key: &str) -> usize {
-    if key == AI_HEADER_STEER_CODEC_MESSAGE_IDS {
-        AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES
-    } else {
-        AI_TRANSPORT_VALUE_MAX_BYTES
-    }
+    AiHeaderLimits::default().value_limit_for(key)
 }
 
 fn validate_ai_tier(
     tier_name: &str,
     tier: &HashMap<String, String>,
+    limits: AiHeaderLimits,
 ) -> Result<(), AiHeaderValidationError> {
     if tier.len() > AI_TRANSPORT_TIER_LIMIT {
         return Err(AiHeaderValidationError::too_large(format!(
@@ -549,7 +593,7 @@ fn validate_ai_tier(
                 "extras.ai.{tier_name} key '{key}' must match [a-z0-9-]+"
             )));
         }
-        let value_limit = ai_transport_value_limit(key);
+        let value_limit = limits.value_limit_for(key);
         if value.len() > value_limit {
             return Err(AiHeaderValidationError::too_large(format!(
                 "extras.ai.{tier_name}.{key} exceeds {value_limit} bytes"
@@ -1465,8 +1509,16 @@ impl PusherMessage {
     }
 
     pub fn validate_ai_headers(&self) -> Result<(), AiHeaderValidationError> {
+        self.validate_ai_headers_with(AiHeaderLimits::default())
+    }
+
+    /// Validates AI headers against operator-configured ceilings.
+    pub fn validate_ai_headers_with(
+        &self,
+        limits: AiHeaderLimits,
+    ) -> Result<(), AiHeaderValidationError> {
         if let Some(extras) = self.extras.as_ref() {
-            extras.validate_ai_headers()
+            extras.validate_ai_headers_with(limits)
         } else {
             Ok(())
         }

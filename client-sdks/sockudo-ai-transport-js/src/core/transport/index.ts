@@ -67,3 +67,9 @@ export {
 
 export { readSteerStamp, SteerCoordinator, type SteerOutcome, type SteerResult } from "./steer.js";
 export { MAX_STEER_IDS_PER_STAMP, RunSteerTracker } from "./run-steer-tracker.js";
+export {
+  reorderUnrespondedSteers,
+  unrespondedSteerIds,
+  type OrderableMessage,
+  type SteerOrderingOptions,
+} from "./steer-ordering.js";

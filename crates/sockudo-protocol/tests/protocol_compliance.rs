@@ -6,7 +6,7 @@ use sockudo_protocol::messages::{
     AI_HEADER_RUN_CLIENT_ID, AI_HEADER_RUN_CONTINUE, AI_HEADER_RUN_ID,
     AI_HEADER_STEER_CODEC_MESSAGE_IDS, AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES,
     AI_HEADER_STEP_CLIENT_ID, AI_HEADER_STEP_START_SERIAL, AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras,
-    ExtrasValue, MessageData, MessageExtras, PusherMessage, is_ai_event,
+    AiHeaderLimits, ExtrasValue, MessageData, MessageExtras, PusherMessage, is_ai_event,
 };
 use sonic_rs::prelude::*;
 use sonic_rs::{Value, json};
@@ -375,6 +375,74 @@ fn test_ai_transport_identity_keys_reject_empty_except_native_unknown_owners() {
 
         assert_eq!(extras.validate_ai_headers().is_ok(), allowed, "key={key}");
     }
+}
+
+/// A raised configured ceiling admits a stamp the compiled default rejects.
+#[test]
+fn test_configured_steer_ceiling_admits_a_larger_stamp() {
+    let oversized = steer_ids_json(64);
+    let default_limits = AiHeaderLimits::default();
+    assert!(oversized.len() > default_limits.steer_codec_message_ids_max_bytes);
+
+    let extras = steer_extras(oversized.clone());
+    // Rejected on defaults...
+    assert_eq!(
+        extras.validate_ai_headers().unwrap_err().code,
+        AI_ERROR_HEADER_TOO_LARGE
+    );
+    // ...accepted once an operator raises the ceiling.
+    let raised = AiHeaderLimits {
+        steer_codec_message_ids_max_bytes: oversized.len(),
+        ..default_limits
+    };
+    assert!(extras.validate_ai_headers_with(raised).is_ok());
+}
+
+/// Raising the steer ceiling must not widen the scalar budget.
+#[test]
+fn test_configured_steer_ceiling_does_not_widen_scalar_values() {
+    let raised = AiHeaderLimits {
+        steer_codec_message_ids_max_bytes: 64 * 1024,
+        ..AiHeaderLimits::default()
+    };
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([(
+                AI_HEADER_RUN_ID.to_string(),
+                "x".repeat(AI_TRANSPORT_VALUE_MAX_BYTES + 1),
+            )])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        extras.validate_ai_headers_with(raised).unwrap_err().code,
+        AI_ERROR_HEADER_TOO_LARGE
+    );
+}
+
+/// The default limits must reproduce the compiled ceilings exactly, so a release
+/// that starts consulting config cannot begin rejecting traffic that passed.
+#[test]
+fn test_default_limits_match_the_compiled_ceilings() {
+    let limits = AiHeaderLimits::default();
+    assert_eq!(
+        limits.transport_value_max_bytes,
+        AI_TRANSPORT_VALUE_MAX_BYTES
+    );
+    assert_eq!(
+        limits.steer_codec_message_ids_max_bytes,
+        AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES
+    );
+    assert_eq!(
+        limits.value_limit_for(AI_HEADER_RUN_ID),
+        AI_TRANSPORT_VALUE_MAX_BYTES
+    );
+    assert_eq!(
+        limits.value_limit_for(AI_HEADER_STEER_CODEC_MESSAGE_IDS),
+        AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES
+    );
 }
 
 #[test]

@@ -6,6 +6,7 @@ use sockudo_cache::{MemoryCacheManager, RedisCacheManager};
 use sockudo_core::{
     app::AppPolicy, options::MemoryCacheOptions, versioned_messages::MessageAction,
 };
+use sockudo_protocol::messages::AiHeaderLimits;
 use sockudo_protocol::messages::{AiExtras, MessageExtras};
 use sockudo_protocol::versioned_messages::apply_runtime_metadata;
 use sockudo_ws::{
@@ -72,7 +73,7 @@ async fn fatal_socket_error_is_delivered_before_orderly_close() {
 
 #[test]
 fn publish_validation_accepts_nameless_and_dataless_messages() {
-    validate_ably_publish_message(&AblyMessage::default(), false)
+    validate_ably_publish_message(&AblyMessage::default(), false, AiHeaderLimits::default())
         .expect("Ably permits a message without name or data");
 }
 
@@ -92,7 +93,7 @@ fn publish_validation_accepts_empty_ai_step_owner() {
         ..AblyMessage::default()
     };
 
-    validate_ably_publish_message(&message, false)
+    validate_ably_publish_message(&message, false, AiHeaderLimits::default())
         .expect("Ably AI Transport uses an empty step owner as an unknown-owner sentinel");
 }
 
@@ -112,7 +113,7 @@ fn publish_validation_accepts_step_start_serial() {
         ..AblyMessage::default()
     };
 
-    validate_ably_publish_message(&message, false)
+    validate_ably_publish_message(&message, false, AiHeaderLimits::default())
         .expect("step-start-serial is the current Ably AI Transport header");
 }
 
@@ -132,7 +133,8 @@ fn publish_validation_rejects_obsolete_start_serial() {
         ..AblyMessage::default()
     };
 
-    let error = validate_ably_publish_message(&message, false).unwrap_err();
+    let error =
+        validate_ably_publish_message(&message, false, AiHeaderLimits::default()).unwrap_err();
     assert!(
         error
             .to_string()
@@ -147,13 +149,13 @@ fn publish_validation_rejects_reserved_and_unknown_fields() {
         connection_id: Some("client-supplied".to_string()),
         ..AblyMessage::default()
     };
-    assert!(validate_ably_publish_message(&reserved, true).is_err());
+    assert!(validate_ably_publish_message(&reserved, true, AiHeaderLimits::default()).is_err());
 
     let unknown = AblyMessage {
         extras: Some(json!({ "ephemeral": true })),
         ..AblyMessage::default()
     };
-    assert!(validate_ably_publish_message(&unknown, false).is_err());
+    assert!(validate_ably_publish_message(&unknown, false, AiHeaderLimits::default()).is_err());
 }
 
 #[test]
