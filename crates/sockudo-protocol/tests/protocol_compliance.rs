@@ -3,9 +3,10 @@ use sockudo_protocol::messages::{
     AI_ERROR_INVALID_TRANSPORT_HEADER, AI_EVENT_CANCEL, AI_EVENT_INPUT, AI_EVENT_LEGACY_TURN_END,
     AI_EVENT_LEGACY_TURN_START, AI_EVENT_OUTPUT, AI_EVENT_RUN_END, AI_EVENT_RUN_RESUME,
     AI_EVENT_RUN_START, AI_EVENT_RUN_SUSPEND, AI_HEADER_LEGACY_TURN_ID, AI_HEADER_MSG_REGENERATE,
-    AI_HEADER_RUN_CLIENT_ID, AI_HEADER_RUN_ID, AI_HEADER_STEP_CLIENT_ID,
-    AI_HEADER_STEP_START_SERIAL, AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras, ExtrasValue, MessageData,
-    MessageExtras, PusherMessage, is_ai_event,
+    AI_HEADER_RUN_CLIENT_ID, AI_HEADER_RUN_CONTINUE, AI_HEADER_RUN_ID,
+    AI_HEADER_STEER_CODEC_MESSAGE_IDS, AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES,
+    AI_HEADER_STEP_CLIENT_ID, AI_HEADER_STEP_START_SERIAL, AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras,
+    ExtrasValue, MessageData, MessageExtras, PusherMessage, is_ai_event,
 };
 use sonic_rs::prelude::*;
 use sonic_rs::{Value, json};
@@ -374,6 +375,141 @@ fn test_ai_transport_identity_keys_reject_empty_except_native_unknown_owners() {
 
         assert_eq!(extras.validate_ai_headers().is_ok(), allowed, "key={key}");
     }
+}
+
+#[test]
+fn test_ai_transport_accepts_steer_codec_message_ids_header() {
+    let ids = r#"["msg_1","msg_2"]"#;
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([(
+                AI_HEADER_STEER_CODEC_MESSAGE_IDS.to_string(),
+                ids.to_string(),
+            )])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+
+    assert!(extras.validate_ai_headers().is_ok());
+}
+
+fn steer_ids_json(count: usize) -> String {
+    let ids: Vec<String> = (0..count)
+        .map(|n| format!("\"msg_00000000-0000-4000-8000-{n:012}\""))
+        .collect();
+    format!("[{}]", ids.join(","))
+}
+
+fn steer_extras(value: String) -> MessageExtras {
+    MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([(
+                AI_HEADER_STEER_CODEC_MESSAGE_IDS.to_string(),
+                value,
+            )])),
+            codec: None,
+        }),
+        ..Default::default()
+    }
+}
+
+/// `steer-codec-message-ids` is a JSON array, not a scalar, so it gets a
+/// per-key ceiling. On the generic 256-byte budget it would cap at ~5 ids and
+/// then fail the whole assistant output publish rather than just dropping the
+/// stamp.
+#[test]
+fn test_steer_codec_message_ids_exceeds_the_generic_scalar_budget() {
+    let many = steer_ids_json(20);
+    assert!(
+        many.len() > AI_TRANSPORT_VALUE_MAX_BYTES,
+        "20 ids should exceed the generic scalar budget; got {} bytes",
+        many.len()
+    );
+    assert!(
+        many.len() <= AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES,
+        "20 ids should fit the per-key ceiling; got {} bytes",
+        many.len()
+    );
+
+    // Accepted only because of the per-key allowance.
+    assert!(steer_extras(many).validate_ai_headers().is_ok());
+}
+
+/// Other transport keys must NOT inherit the larger allowance.
+#[test]
+fn test_per_key_steer_allowance_does_not_widen_other_transport_keys() {
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([(
+                AI_HEADER_RUN_ID.to_string(),
+                "x".repeat(AI_TRANSPORT_VALUE_MAX_BYTES + 1),
+            )])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        extras.validate_ai_headers().unwrap_err().code,
+        AI_ERROR_HEADER_TOO_LARGE
+    );
+}
+
+/// The ceiling still exists — publishers must bound the list they emit, since
+/// overflow fails the whole output message.
+#[test]
+fn test_steer_codec_message_ids_still_has_a_ceiling() {
+    let far_too_many = steer_ids_json(64);
+    assert!(
+        far_too_many.len() > AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES,
+        "64 ids should exceed the per-key ceiling; got {} bytes",
+        far_too_many.len()
+    );
+
+    let error = steer_extras(far_too_many)
+        .validate_ai_headers()
+        .unwrap_err();
+    assert_eq!(error.code, AI_ERROR_HEADER_TOO_LARGE);
+}
+
+#[test]
+fn test_ai_transport_accepts_run_continue_header() {
+    for (value, allowed) in [("true", true), ("false", true), ("yes", false), ("", false)] {
+        let extras = MessageExtras {
+            ai: Some(AiExtras {
+                transport: Some(HashMap::from([(
+                    AI_HEADER_RUN_CONTINUE.to_string(),
+                    value.to_string(),
+                )])),
+                codec: None,
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            extras.validate_ai_headers().is_ok(),
+            allowed,
+            "run-continue={value:?}"
+        );
+    }
+}
+
+#[test]
+fn test_ai_transport_still_accepts_legacy_turn_continue_header() {
+    // Pre-3.0 producers wrote `turn-continue`; history must stay readable.
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([(
+                "turn-continue".to_string(),
+                "true".to_string(),
+            )])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+
+    assert!(extras.validate_ai_headers().is_ok());
 }
 
 #[test]

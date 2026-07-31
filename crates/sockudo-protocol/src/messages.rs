@@ -34,6 +34,14 @@ pub const AI_HEADER_INVOCATION_ID: &str = "invocation-id";
 pub const AI_HEADER_EVENT_ID: &str = "event-id";
 pub const AI_HEADER_STEP_ID: &str = "step-id";
 pub const AI_HEADER_STEP_START_SERIAL: &str = "step-start-serial";
+/// JSON-stringified array of steer codec-message-ids the agent's loop had
+/// drained when the stamping step attempt opened. Carried on a step attempt's
+/// assistant outputs; omitted when empty. Clients accumulate the union per run
+/// and resolve steer outcomes by membership at the run's terminal event.
+///
+/// NOTE: subject to `AI_TRANSPORT_VALUE_MAX_BYTES` like every transport value,
+/// which bounds how many ids one stamp can carry. See the wire-protocol spec.
+pub const AI_HEADER_STEER_CODEC_MESSAGE_IDS: &str = "steer-codec-message-ids";
 pub const AI_HEADER_STEP_REASON: &str = "step-reason";
 pub const AI_HEADER_STEP_CLIENT_ID: &str = "step-client-id";
 pub const AI_HEADER_MSG_REGENERATE: &str = "msg-regenerate";
@@ -41,6 +49,11 @@ pub const AI_HEADER_LEGACY_TURN_ID: &str = "turn-id";
 pub const AI_HEADER_LEGACY_TURN_CLIENT_ID: &str = "turn-client-id";
 pub const AI_HEADER_LEGACY_TURN_REASON: &str = "turn-reason";
 pub const AI_HEADER_LEGACY_TURN_CONTINUE: &str = "turn-continue";
+/// Marks a client input as re-entering an existing run rather than opening a
+/// new one. Distinct from the `ai-run-resume` event name, which covers the
+/// lifecycle path: because the Sockudo client mints the run id for every send,
+/// `run-id` is always present and cannot itself discriminate a continuation.
+pub const AI_HEADER_RUN_CONTINUE: &str = "run-continue";
 
 pub const AI_ERROR_INVALID_TRANSPORT_HEADER: u32 = 104000;
 pub const AI_ERROR_HEADER_TOO_LARGE: u32 = 104001;
@@ -52,6 +65,11 @@ pub const AI_ERROR_MUTABLE_NOT_PERMITTED: u32 = 93002;
 pub const AI_TRANSPORT_TIER_LIMIT: usize = 32;
 pub const AI_TRANSPORT_KEY_MAX_BYTES: usize = 64;
 pub const AI_TRANSPORT_VALUE_MAX_BYTES: usize = 256;
+/// Ceiling for `steer-codec-message-ids`, which is a JSON array rather than a
+/// scalar. 2 KiB holds roughly 48 UUID-shaped codec-message-ids — far beyond a
+/// realistic number of steers drained in one step attempt, while staying an
+/// order of magnitude below the codec tier's 8 KiB `provider-metadata` budget.
+pub const AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES: usize = 2 * 1024;
 pub const AI_CODEC_PROVIDER_METADATA_MAX_BYTES: usize = 8 * 1024;
 pub const AI_MESSAGE_ID_MAX_BYTES: usize = 64;
 
@@ -493,6 +511,23 @@ impl MessageExtras {
     }
 }
 
+/// Per-key transport value ceiling.
+///
+/// Most transport values are single opaque scalars and stay on the generic
+/// [`AI_TRANSPORT_VALUE_MAX_BYTES`] budget. `steer-codec-message-ids` is a JSON
+/// array whose length grows with the number of steers an agent drained in one
+/// step attempt, so 256 bytes would cap it at roughly five ids and then fail
+/// the whole assistant output publish. It gets its own ceiling, mirroring the
+/// codec tier's existing per-key allowance for `provider-metadata`.
+#[inline]
+pub fn ai_transport_value_limit(key: &str) -> usize {
+    if key == AI_HEADER_STEER_CODEC_MESSAGE_IDS {
+        AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES
+    } else {
+        AI_TRANSPORT_VALUE_MAX_BYTES
+    }
+}
+
 fn validate_ai_tier(
     tier_name: &str,
     tier: &HashMap<String, String>,
@@ -514,9 +549,10 @@ fn validate_ai_tier(
                 "extras.ai.{tier_name} key '{key}' must match [a-z0-9-]+"
             )));
         }
-        if value.len() > AI_TRANSPORT_VALUE_MAX_BYTES {
+        let value_limit = ai_transport_value_limit(key);
+        if value.len() > value_limit {
             return Err(AiHeaderValidationError::too_large(format!(
-                "extras.ai.{tier_name}.{key} exceeds {AI_TRANSPORT_VALUE_MAX_BYTES} bytes"
+                "extras.ai.{tier_name}.{key} exceeds {value_limit} bytes"
             )));
         }
     }
@@ -593,6 +629,7 @@ fn validate_transport_key_domain(key: &str, value: &str) -> Result<(), AiHeaderV
         | AI_HEADER_EVENT_ID
         | AI_HEADER_STEP_ID
         | AI_HEADER_STEP_START_SERIAL
+        | AI_HEADER_STEER_CODEC_MESSAGE_IDS
         | AI_HEADER_MSG_REGENERATE
         | "error-code"
         | "model" => {
@@ -624,7 +661,7 @@ fn validate_transport_key_domain(key: &str, value: &str) -> Result<(), AiHeaderV
                 ));
             }
         }
-        "stream" | "discrete" | AI_HEADER_LEGACY_TURN_CONTINUE => {
+        "stream" | "discrete" | AI_HEADER_LEGACY_TURN_CONTINUE | AI_HEADER_RUN_CONTINUE => {
             if !matches!(value, "true" | "false") {
                 return Err(AiHeaderValidationError::invalid_transport(format!(
                     "extras.ai.transport.{key} must be true or false"

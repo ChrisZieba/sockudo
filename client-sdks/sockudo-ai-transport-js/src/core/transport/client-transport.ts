@@ -1,8 +1,8 @@
 import {
   EVENT_AI_CANCEL,
   EVENT_AI_INPUT,
-  EVENT_AI_LEGACY_TURN_END,
-  EVENT_AI_LEGACY_TURN_START,
+  INBOUND_LEGACY_EVENT_TURN_END,
+  INBOUND_LEGACY_EVENT_TURN_START,
   EVENT_AI_RUN_END,
   EVENT_AI_RUN_RESUME,
   EVENT_AI_RUN_START,
@@ -10,7 +10,6 @@ import {
   HEADER_INVOCATION_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
-  HEADER_TURN_CONTINUE,
 } from "../../constants.js";
 import { ErrorCode, ErrorInfo, toErrorInfo } from "../../errors.js";
 import { EventEmitter, type EventUnsubscribe } from "../../event-emitter.js";
@@ -23,7 +22,7 @@ import {
   type HeaderMap,
 } from "../../utils.js";
 import type { Codec, DecodedBatch, DecodedEvent } from "../codec/index.js";
-import { createConversationTree, type ConversationTree } from "./tree.js";
+import { createTree, type Tree } from "./tree.js";
 import { createView, type View, type ViewSendExecutor } from "./view.js";
 import { createDefaultInvocationIdProvider, type InvocationIdProvider } from "./invocation.js";
 import { createStreamRouter, type StreamRouter } from "./stream-router.js";
@@ -31,7 +30,7 @@ import { createStreamRouter, type StreamRouter } from "./stream-router.js";
 /**
  * Cancellation scope for client-side turn cancellation.
  *
- * @defaultValue `cancel()` and `waitForTurn()` default to `{ own: true }`.
+ * @defaultValue `cancel()` and `waitForRun()` default to `{ own: true }`.
  */
 export type CancelFilter =
   | { turnId: string; own?: never; clientId?: never; all?: never }
@@ -51,7 +50,7 @@ export interface SendOptions {
    *
    * @defaultValue `false`.
    */
-  waitForTurnStart?: boolean;
+  waitForRunStart?: boolean;
   /** Existing run id for suspended-run continuation. */
   turnId?: string;
   /** Message id this send replaces. */
@@ -70,10 +69,10 @@ export interface SendOptions {
 /**
  * A handle to an active client-side turn.
  */
-export interface ActiveTurn<TOutput> {
+export interface ClientRun<TOutput> {
   /** Decoded output stream for this turn. */
   stream: ReadableStream<TOutput>;
-  /** Turn identity. */
+  /** AgentRun identity. */
   turnId: string;
   /** Invocation identity for this send or continuation. */
   invocationId: string;
@@ -96,7 +95,7 @@ export interface CloseOptions {
 /**
  * Client transport event map.
  */
-export interface ClientTransportEvents {
+export interface ClientSessionEvents {
   /** Non-fatal transport error. */
   error: ErrorInfo;
   /** Raw normalized inbound channel message before codec folding. */
@@ -106,7 +105,7 @@ export interface ClientTransportEvents {
 /**
  * Options for creating a client transport.
  */
-export interface ClientTransportOptions<TInput, TOutput, TProjection, TMessage> {
+export interface ClientSessionOptions<TInput, TOutput, TProjection, TMessage> {
   /** Realtime client used with `channelName`. */
   client?: ClientLike;
   /** Realtime channel. */
@@ -143,11 +142,11 @@ export interface ClientTransportOptions<TInput, TOutput, TProjection, TMessage> 
    * @defaultValue Silent SDK logger.
    */
   logger?: Logger;
-  /** Turn-start wait deadline in milliseconds.
+  /** AgentRun-start wait deadline in milliseconds.
    *
    * @defaultValue `30000`.
    */
-  turnStartDeadlineMs?: number;
+  runStartDeadlineMs?: number;
   /** Deterministic id provider for tests. */
   idProvider?: InvocationIdProvider;
   /** Maximum queued stream chunks before local stream error.
@@ -160,9 +159,9 @@ export interface ClientTransportOptions<TInput, TOutput, TProjection, TMessage> 
 /**
  * Client-side transport that owns tree, views, sends, streams, and cancellation.
  */
-export interface ClientTransport<TInput, TOutput, TProjection, TMessage> {
+export interface ClientSession<TInput, TOutput, TProjection, TMessage> {
   /** Complete conversation tree. */
-  readonly tree: ConversationTree<TInput | TOutput, TProjection>;
+  readonly tree: Tree<TInput | TOutput, TProjection>;
   /** Default branch-aware view. */
   readonly view: View<TInput, TMessage>;
   /** Creates an additional branch-aware view. */
@@ -170,15 +169,15 @@ export interface ClientTransport<TInput, TOutput, TProjection, TMessage> {
   /** Cancels turns matching a filter. Rejects with {@link ErrorInfo} on publish failure. */
   cancel(filter?: CancelFilter): Promise<void>;
   /** Resolves when matching active turns complete. */
-  waitForTurn(filter?: CancelFilter): Promise<void>;
+  waitForRun(filter?: CancelFilter): Promise<void>;
   /** Locally applies events and queues them for the next send POST body. */
   stageEvents(msgId: string, events: readonly TOutput[]): void;
   /** Locally replaces a message projection while preserving known headers/serial. */
   stageMessage(msgId: string, message: TMessage): void;
   /** Subscribes to transport events. */
-  on<K extends keyof ClientTransportEvents>(
+  on<K extends keyof ClientSessionEvents>(
     event: K,
-    handler: (payload: ClientTransportEvents[K]) => void,
+    handler: (payload: ClientSessionEvents[K]) => void,
   ): EventUnsubscribe;
   /** Closes local resources, optionally publishing cancel first. */
   close(options?: CloseOptions): Promise<void>;
@@ -189,23 +188,23 @@ export interface ClientTransport<TInput, TOutput, TProjection, TMessage> {
  *
  * Async public methods reject with {@link ErrorInfo}. Synchronous misuse throws
  * {@link ErrorInfo} with {@link ErrorCode.InvalidArgument} or
- * {@link ErrorCode.TransportClosed}.
+ * {@link ErrorCode.SessionClosed}.
  */
-export function createClientTransport<TInput, TOutput, TProjection, TMessage>(
-  options: ClientTransportOptions<TInput, TOutput, TProjection, TMessage>,
-): ClientTransport<TInput, TOutput, TProjection, TMessage> {
-  return new DefaultClientTransport(options);
+export function createClientSession<TInput, TOutput, TProjection, TMessage>(
+  options: ClientSessionOptions<TInput, TOutput, TProjection, TMessage>,
+): ClientSession<TInput, TOutput, TProjection, TMessage> {
+  return new DefaultClientSession(options);
 }
 
-interface PendingTurnStart<TOutput> {
+interface PendingRunStart<TOutput> {
   invocationId: string;
-  resolve(turn: ActiveTurn<TOutput>): void;
+  resolve(turn: ClientRun<TOutput>): void;
   reject(error: ErrorInfo): void;
   timer: ReturnType<typeof setTimeout> | undefined;
-  turn: ActiveTurn<TOutput>;
+  turn: ClientRun<TOutput>;
 }
 
-interface OwnTurn {
+interface OwnRun {
   clientId: string;
   invocationId: string;
 }
@@ -215,7 +214,7 @@ interface StagedEvents<TOutput> {
   events: readonly TOutput[];
 }
 
-class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements ClientTransport<
+class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements ClientSession<
   TInput,
   TOutput,
   TProjection,
@@ -227,13 +226,13 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
   private readonly idProvider: InvocationIdProvider;
   private readonly decoder;
   private readonly router: StreamRouter<TOutput>;
-  private readonly emitter = new EventEmitter<ClientTransportEvents>();
+  private readonly emitter = new EventEmitter<ClientSessionEvents>();
   private readonly views = new Set<View<TInput, TMessage>>();
-  private readonly ownTurns = new Map<string, OwnTurn>();
-  private readonly pendingTurnStarts = new Map<string, PendingTurnStart<TOutput>>();
+  private readonly ownTurns = new Map<string, OwnRun>();
+  private readonly pendingTurnStarts = new Map<string, PendingRunStart<TOutput>>();
   private readonly closeResolvers = new Set<() => void>();
   private readonly unsubscribes: EventUnsubscribe[] = [];
-  private readonly turnStartDeadlineMs: number;
+  private readonly runStartDeadlineMs: number;
   private readonly fetchFn: typeof globalThis.fetch;
   private readonly headerProvider: () => Record<string, string>;
   private readonly bodyProvider: () => Record<string, unknown>;
@@ -241,11 +240,11 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
   private closed = false;
   private connected = false;
 
-  public readonly tree: ConversationTree<TInput | TOutput, TProjection>;
+  public readonly tree: Tree<TInput | TOutput, TProjection>;
   public readonly view: View<TInput, TMessage>;
 
   public constructor(
-    private readonly options: ClientTransportOptions<TInput, TOutput, TProjection, TMessage>,
+    private readonly options: ClientSessionOptions<TInput, TOutput, TProjection, TMessage>,
   ) {
     if (!options.channel && !options.client) {
       throw new ErrorInfo({
@@ -265,16 +264,16 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
       missingChannel();
     this.clientId = options.clientId ?? options.client?.connection.clientId;
     this.logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
-      component: "ClientTransport",
+      component: "ClientSession",
     });
     assertAiTransportFeature(readConnectionFeatures(options.client), this.logger);
     this.idProvider = options.idProvider ?? createDefaultInvocationIdProvider();
     this.decoder = options.codec.createDecoder();
     this.fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
-    this.turnStartDeadlineMs = options.turnStartDeadlineMs ?? 30_000;
+    this.runStartDeadlineMs = options.runStartDeadlineMs ?? 30_000;
     this.headerProvider = normalizeProvider(options.headers);
     this.bodyProvider = normalizeProvider(options.body);
-    this.tree = createConversationTree<TInput | TOutput, TProjection>(options.codec);
+    this.tree = createTree<TInput | TOutput, TProjection>(options.codec);
     this.router = createStreamRouter<TOutput>({
       isTerminal: (output) => options.codec.isTerminal(output),
       ...(options.streamQueueLimit !== undefined
@@ -323,13 +322,13 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
       this.closeMatchingTurnStreams(filter);
     } catch (error) {
       throw toErrorInfo(error, {
-        code: ErrorCode.TransportSendFailed,
+        code: ErrorCode.SessionSendFailed,
         message: "unable to cancel turns; cancel publish failed",
       });
     }
   }
 
-  public waitForTurn(filter: CancelFilter = { own: true }): Promise<void> {
+  public waitForRun(filter: CancelFilter = { own: true }): Promise<void> {
     if (this.closed) {
       return Promise.resolve();
     }
@@ -361,7 +360,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
       return;
     }
     const headers = this.tree.getHeaders(msgId);
-    const node = this.tree.getTurnByCodecMessageId(msgId);
+    const node = this.tree.getNodeByCodecMessageId(msgId);
     if (!headers || !node) {
       this.logger.warn("stageEvents ignored unknown message id", { msgId });
       return;
@@ -382,7 +381,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
       return;
     }
     const headers = this.tree.getHeaders(msgId);
-    const node = this.tree.getTurnByCodecMessageId(msgId);
+    const node = this.tree.getNodeByCodecMessageId(msgId);
     if (!headers || !node) {
       this.logger.warn("stageMessage ignored unknown message id", { msgId });
       return;
@@ -394,9 +393,9 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
     );
   }
 
-  public on<K extends keyof ClientTransportEvents>(
+  public on<K extends keyof ClientSessionEvents>(
     event: K,
-    handler: (payload: ClientTransportEvents[K]) => void,
+    handler: (payload: ClientSessionEvents[K]) => void,
   ): EventUnsubscribe {
     if (this.closed) {
       return () => undefined;
@@ -425,7 +424,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
       }
       pending.reject(
         new ErrorInfo({
-          code: ErrorCode.TransportClosed,
+          code: ErrorCode.SessionClosed,
           statusCode: 400,
           message: "unable to wait for turn start; transport is closed",
         }),
@@ -482,7 +481,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
   private async internalSend(
     messages: readonly TMessage[],
     sendOptions: SendOptions,
-  ): Promise<ActiveTurn<TOutput>> {
+  ): Promise<ClientRun<TOutput>> {
     const inputs = messages.map((message) => this.options.codec.createUserMessage(message).message);
     return this.sendPipeline(
       inputs.map((message) => message as unknown as TInput),
@@ -494,7 +493,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
   private internalSendInput(
     inputs: readonly TInput[],
     sendOptions: SendOptions,
-  ): Promise<ActiveTurn<TOutput>> {
+  ): Promise<ClientRun<TOutput>> {
     return this.sendPipeline(inputs, [], sendOptions);
   }
 
@@ -502,7 +501,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
     inputs: readonly TInput[],
     messages: readonly TMessage[],
     sendOptions: SendOptions,
-  ): Promise<ActiveTurn<TOutput>> {
+  ): Promise<ClientRun<TOutput>> {
     this.assertOpen("send");
     this.connect();
 
@@ -541,7 +540,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
             ? { parent: optimisticMsgIds[index - 1] }
             : {}),
         ...(wireForkOf !== undefined ? { forkOf: wireForkOf } : {}),
-        turnContinue: isContinuation,
+        runContinue: isContinuation,
         ...(regenerateOf !== undefined ? { regenerates: regenerateOf } : {}),
       });
       this.tree.applyMessage(
@@ -590,7 +589,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
                     ? { parent: optimisticMsgIds[index - 1] }
                     : {}),
                 ...(wireForkOf !== undefined ? { forkOf: wireForkOf } : {}),
-                turnContinue: isContinuation,
+                runContinue: isContinuation,
                 ...(regenerateOf !== undefined ? { regenerates: regenerateOf } : {}),
               }),
             },
@@ -602,7 +601,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
         this.tree.delete(msgId);
       }
       throw mapPublishFailure(error, {
-        code: ErrorCode.TransportSendFailed,
+        code: ErrorCode.SessionSendFailed,
         message: "unable to send; channel publish failed",
       });
     }
@@ -614,7 +613,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
       invocationId,
       clientId: this.clientId ?? "",
     });
-    const activeTurn: ActiveTurn<TOutput> = {
+    const activeTurn: ClientRun<TOutput> = {
       stream,
       turnId,
       invocationId,
@@ -624,7 +623,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
     };
 
     const waiter =
-      sendOptions.waitForTurnStart === false ? undefined : this.waitForTurnStart(activeTurn);
+      sendOptions.waitForRunStart === false ? undefined : this.waitForRunStart(activeTurn);
     this.poke(
       {
         turnId,
@@ -666,25 +665,23 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
       this.emitter.emit("message", message);
       const transportHeaders = message.getTransportHeaders();
       if (isRunStartMessage(message.name)) {
-        this.handleTurnStart(message, transportHeaders);
+        this.handleTurnStart(message, transportHeaders, "start");
         return;
       }
       if (message.name === EVENT_AI_RUN_RESUME) {
-        this.handleTurnStart(
-          message,
-          mergeHeaders(transportHeaders, { [HEADER_TURN_CONTINUE]: "true" }),
-        );
+        this.handleTurnStart(message, transportHeaders, "resume");
         return;
       }
       if (message.name === EVENT_AI_RUN_SUSPEND) {
         this.handleTurnEnd(
           message,
           mergeHeaders(transportHeaders, { [HEADER_RUN_REASON]: "suspended" }),
+          "suspend",
         );
         return;
       }
       if (isRunEndMessage(message.name)) {
-        this.handleTurnEnd(message, transportHeaders);
+        this.handleTurnEnd(message, transportHeaders, "end");
         return;
       }
       if (message.action === "summary") {
@@ -710,16 +707,20 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
     } catch (error) {
       this.emitError(
         toErrorInfo(error, {
-          code: ErrorCode.TransportSubscriptionError,
+          code: ErrorCode.SessionSubscriptionError,
           message: "unable to process channel message; subscription failed",
         }),
       );
     }
   }
 
-  private handleTurnStart(message: InboundMessage, headers: HeaderMap): void {
-    const node = this.tree.applyTurnLifecycle({
-      type: "turn-start",
+  private handleTurnStart(
+    message: InboundMessage,
+    headers: HeaderMap,
+    type: "start" | "resume",
+  ): void {
+    const node = this.tree.applyRunLifecycle({
+      type,
       headers,
       serial: message.deliverySerial ?? message.historySerial,
     });
@@ -741,7 +742,11 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
     }
   }
 
-  private handleTurnEnd(message: InboundMessage, headers: HeaderMap): void {
+  private handleTurnEnd(
+    message: InboundMessage,
+    headers: HeaderMap,
+    type: "suspend" | "end",
+  ): void {
     const turnId = headers[HEADER_RUN_ID];
     const invocationId = headers[HEADER_INVOCATION_ID];
     if (
@@ -752,8 +757,8 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
     ) {
       return;
     }
-    const node = this.tree.applyTurnLifecycle({
-      type: "turn-end",
+    const node = this.tree.applyRunLifecycle({
+      type,
       headers,
       serial: message.deliverySerial ?? message.historySerial,
     });
@@ -782,12 +787,12 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
     this.emitError(error);
   }
 
-  private waitForTurnStart(turn: ActiveTurn<TOutput>): Promise<ActiveTurn<TOutput>> {
-    if (this.turnStartDeadlineMs === 0) {
+  private waitForRunStart(turn: ClientRun<TOutput>): Promise<ClientRun<TOutput>> {
+    if (this.runStartDeadlineMs === 0) {
       return Promise.resolve(turn);
     }
     return new Promise((resolve, reject) => {
-      const pending: PendingTurnStart<TOutput> = {
+      const pending: PendingRunStart<TOutput> = {
         invocationId: turn.invocationId,
         resolve,
         reject,
@@ -796,12 +801,12 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
           this.pendingTurnStarts.delete(turn.invocationId);
           reject(
             new ErrorInfo({
-              code: ErrorCode.TurnStartDeadlineExceeded,
+              code: ErrorCode.RunStartDeadlineExceeded,
               statusCode: 504,
               message: "unable to send; turn start deadline exceeded",
             }),
           );
-        }, this.turnStartDeadlineMs),
+        }, this.runStartDeadlineMs),
       };
       this.pendingTurnStarts.set(turn.invocationId, pending);
     });
@@ -852,7 +857,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
       .then((response) => {
         if (!response.ok) {
           const error = new ErrorInfo({
-            code: ErrorCode.TransportSendFailed,
+            code: ErrorCode.SessionSendFailed,
             statusCode: response.status,
             message: `unable to send; HTTP POST returned ${String(response.status)}`,
           });
@@ -863,7 +868,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
       })
       .catch((error: unknown) => {
         const info = toErrorInfo(error, {
-          code: ErrorCode.TransportSendFailed,
+          code: ErrorCode.SessionSendFailed,
           message: "unable to send; HTTP POST failed",
         });
         this.rejectTurnStart(context.invocationId, info);
@@ -891,7 +896,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
     codecMessageId?: string;
     parent?: string;
     forkOf?: string;
-    turnContinue?: boolean;
+    runContinue?: boolean;
     regenerates?: string | boolean;
   }): HeaderMap {
     const headers = buildTransportHeaders({
@@ -905,7 +910,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
         : {}),
       ...(options.parent !== undefined ? { parent: options.parent } : {}),
       ...(options.forkOf !== undefined ? { forkOf: options.forkOf } : {}),
-      ...(options.turnContinue !== undefined ? { turnContinue: options.turnContinue } : {}),
+      ...(options.runContinue !== undefined ? { runContinue: options.runContinue } : {}),
       ...(options.regenerates !== undefined ? { regenerates: options.regenerates } : {}),
     });
     return headers;
@@ -951,7 +956,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
 
   private getMatchingTurnIds(filter: CancelFilter): Set<string> {
     const matched = new Set<string>();
-    const active = this.tree.getActiveTurnIds();
+    const active = this.tree.getActiveRunIds();
     if ("all" in filter && filter.all) {
       for (const turns of active.values()) {
         for (const turnId of turns) {
@@ -984,7 +989,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
   private assertOpen(operation: string): void {
     if (this.closed) {
       throw new ErrorInfo({
-        code: ErrorCode.TransportClosed,
+        code: ErrorCode.SessionClosed,
         statusCode: 400,
         message: `unable to ${operation}; transport is closed`,
       });
@@ -1092,11 +1097,11 @@ function cancelHeaders(filter: CancelFilter, clientId: string | undefined): Head
 }
 
 function isRunStartMessage(name: string): boolean {
-  return name === EVENT_AI_RUN_START || name === EVENT_AI_LEGACY_TURN_START;
+  return name === EVENT_AI_RUN_START || name === INBOUND_LEGACY_EVENT_TURN_START;
 }
 
 function isRunEndMessage(name: string): boolean {
-  return name === EVENT_AI_RUN_END || name === EVENT_AI_LEGACY_TURN_END;
+  return name === EVENT_AI_RUN_END || name === INBOUND_LEGACY_EVENT_TURN_END;
 }
 
 function missingChannel(): ChannelLike {

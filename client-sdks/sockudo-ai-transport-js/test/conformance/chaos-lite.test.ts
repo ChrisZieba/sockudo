@@ -3,15 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 import {
   EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
-  EVENT_AI_TURN_END,
-  EVENT_AI_TURN_START,
+  EVENT_AI_RUN_END,
+  EVENT_AI_RUN_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_STATUS,
   HEADER_STREAM,
-  HEADER_TURN_CLIENT_ID,
-  HEADER_TURN_ID,
-  HEADER_TURN_REASON,
+  HEADER_RUN_CLIENT_ID,
+  HEADER_RUN_ID,
+  HEADER_RUN_REASON,
 } from "../../src/constants.js";
 import { ErrorCode, ErrorInfo } from "../../src/errors.js";
 import { normalizeInboundMessage } from "../../src/realtime/adapter.js";
@@ -37,8 +37,8 @@ import type {
   ReducerMeta,
   UserMessage,
 } from "../../src/core/codec/index.js";
-import { createClientTransport } from "../../src/core/transport/client-transport.js";
-import type { ActiveTurn, ClientTransport } from "../../src/core/transport/client-transport.js";
+import { createClientSession } from "../../src/core/transport/client-transport.js";
+import type { ClientRun, ClientSession } from "../../src/core/transport/client-transport.js";
 import type { InvocationIdProvider } from "../../src/core/transport/invocation.js";
 
 const stages = ["pre-publish", "post-publish-pre-post", "mid-stream", "pre-turn-end"] as const;
@@ -53,7 +53,7 @@ describe("chaos-lite deterministic matrix", () => {
     channel.failNextPublish(new Error("socket closed before publish"));
 
     await expect(transport.view.send({ id: "user-1", text: "hello" })).rejects.toMatchObject({
-      code: ErrorCode.TransportSendFailed,
+      code: ErrorCode.SessionSendFailed,
     });
     expect(transport.view.getMessages()).toEqual([]);
     expect(channel.historySize()).toBe(0);
@@ -69,16 +69,16 @@ describe("chaos-lite deterministic matrix", () => {
 
     const active = (await transport.view.send(
       { id: "user-1", text: "hello" },
-      { waitForTurnStart: false },
-    )) as ActiveTurn<Message>;
+      { waitForRunStart: false },
+    )) as ClientRun<Message>;
     await Promise.resolve();
 
     expect(channel.historySize()).toBe(1);
     expect(transport.view.getMessages()).toEqual([{ id: "user-1", text: "hello" }]);
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatchObject({ code: ErrorCode.TransportSendFailed });
+    expect(errors[0]).toMatchObject({ code: ErrorCode.SessionSendFailed });
     await expect(active.stream.getReader().read()).rejects.toMatchObject({
-      code: ErrorCode.TransportSendFailed,
+      code: ErrorCode.SessionSendFailed,
     });
   });
 
@@ -86,11 +86,11 @@ describe("chaos-lite deterministic matrix", () => {
     const { channel, transport } = setup();
     const active = (await transport.view.send(
       { id: "user-1", text: "hello" },
-      { waitForTurnStart: false },
-    )) as ActiveTurn<Message>;
+      { waitForRunStart: false },
+    )) as ClientRun<Message>;
     const reader = active.stream.getReader();
 
-    channel.inject(lifecycle(EVENT_AI_TURN_START, active, 2));
+    channel.inject(lifecycle(EVENT_AI_RUN_START, active, 2));
     channel.inject(output(active, "assistant-1", "one", 3));
 
     await expect(reader.read()).resolves.toEqual({
@@ -112,19 +112,19 @@ describe("chaos-lite deterministic matrix", () => {
     const { channel, transport } = setup();
     const active = (await transport.view.send(
       { id: "user-1", text: "hello" },
-      { waitForTurnStart: false },
-    )) as ActiveTurn<Message>;
+      { waitForRunStart: false },
+    )) as ClientRun<Message>;
     const reader = active.stream.getReader();
 
-    channel.inject(lifecycle(EVENT_AI_TURN_START, active, 2));
+    channel.inject(lifecycle(EVENT_AI_RUN_START, active, 2));
     channel.inject(output(active, "assistant-1", "partial", 3));
     await expect(reader.read()).resolves.toMatchObject({
       done: false,
       value: { id: "assistant-1", text: "partial" },
     });
 
-    const waiting = transport.waitForTurn({ turnId: active.turnId });
-    channel.inject(lifecycle(EVENT_AI_TURN_END, active, 4, "complete"), {
+    const waiting = transport.waitForRun({ turnId: active.turnId });
+    channel.inject(lifecycle(EVENT_AI_RUN_END, active, 4, "complete"), {
       deliver: false,
     });
     channel.injectContinuityLost("pre-turn-end");
@@ -132,16 +132,16 @@ describe("chaos-lite deterministic matrix", () => {
     await expect(reader.read()).rejects.toMatchObject({
       code: ErrorCode.ChannelContinuityLost,
     });
-    expect(transport.tree.getTurnNode(active.turnId)?.status).toBe("active");
+    expect(transport.tree.getRunNode(active.turnId)?.status).toBe("active");
 
     await transport.view.loadOlder(10);
     await expect(waiting).resolves.toBeUndefined();
-    expect(transport.tree.getTurnNode(active.turnId)?.status).toBe("complete");
+    expect(transport.tree.getRunNode(active.turnId)?.status).toBe("complete");
   });
 
   it("orders turns by server serial, not skewed local timestamps", async () => {
     const { channel, transport } = setup();
-    await transport.view.send({ id: "user-1", text: "hello" }, { waitForTurnStart: false });
+    await transport.view.send({ id: "user-1", text: "hello" }, { waitForRunStart: false });
 
     channel.inject(lifecycleFromIds("turn-late", "inv-late", 20, 100));
     channel.inject(outputFromIds("turn-late", "inv-late", "assistant-late", 21, 50));
@@ -161,10 +161,10 @@ describe("chaos-lite deterministic matrix", () => {
     const { channel, transport } = setup({ streamQueueLimit: 1 });
     const active = (await transport.view.send(
       { id: "user-1", text: "hello" },
-      { waitForTurnStart: false },
-    )) as ActiveTurn<Message>;
+      { waitForRunStart: false },
+    )) as ClientRun<Message>;
 
-    channel.inject(lifecycle(EVENT_AI_TURN_START, active, 2));
+    channel.inject(lifecycle(EVENT_AI_RUN_START, active, 2));
     channel.inject(output(active, "assistant-1", "one", 3));
     channel.inject(output(active, "assistant-2", "two", 4));
 
@@ -182,17 +182,17 @@ function setup(
   } = {},
 ): {
   channel: ChaosChannel;
-  transport: ClientTransport<Message, Message, Projection, Message>;
+  transport: ClientSession<Message, Message, Projection, Message>;
 } {
   const channel = new ChaosChannel("chat");
-  const transport = createClientTransport({
+  const transport = createClientSession({
     channel,
     codec: testCodec(),
     api: "https://agent.test/run",
     clientId: "client-1",
     idProvider: fixedIds(),
     fetch: options.fetch ?? okFetch(),
-    turnStartDeadlineMs: 0,
+    runStartDeadlineMs: 0,
     ...(options.streamQueueLimit !== undefined
       ? { streamQueueLimit: options.streamQueueLimit }
       : {}),
@@ -409,8 +409,8 @@ function fixedIds(): InvocationIdProvider {
 }
 
 function lifecycle(
-  name: typeof EVENT_AI_TURN_START | typeof EVENT_AI_TURN_END,
-  turn: ActiveTurn<Message>,
+  name: typeof EVENT_AI_RUN_START | typeof EVENT_AI_RUN_END,
+  turn: ClientRun<Message>,
   serial: number,
   reason?: "complete" | "cancelled" | "error" | "suspended",
 ): SockudoRawMessage {
@@ -422,7 +422,7 @@ function lifecycleFromIds(
   invocationId: string,
   serial: number,
   timestampMs: number,
-  name: typeof EVENT_AI_TURN_START | typeof EVENT_AI_TURN_END = EVENT_AI_TURN_START,
+  name: typeof EVENT_AI_RUN_START | typeof EVENT_AI_RUN_END = EVENT_AI_RUN_START,
   reason?: "complete" | "cancelled" | "error" | "suspended",
 ): SockudoRawMessage {
   return {
@@ -441,10 +441,10 @@ function lifecycleFromIds(
     extras: {
       ai: {
         transport: {
-          [HEADER_TURN_ID]: turnId,
+          [HEADER_RUN_ID]: turnId,
           [HEADER_INVOCATION_ID]: invocationId,
-          [HEADER_TURN_CLIENT_ID]: "client-1",
-          ...(reason !== undefined ? { [HEADER_TURN_REASON]: reason } : {}),
+          [HEADER_RUN_CLIENT_ID]: "client-1",
+          ...(reason !== undefined ? { [HEADER_RUN_REASON]: reason } : {}),
         },
       },
     },
@@ -452,7 +452,7 @@ function lifecycleFromIds(
 }
 
 function output(
-  turn: ActiveTurn<Message>,
+  turn: ClientRun<Message>,
   messageId: string,
   text: string,
   serial: number,
@@ -484,9 +484,9 @@ function outputFromIds(
     extras: {
       ai: {
         transport: {
-          [HEADER_TURN_ID]: turnId,
+          [HEADER_RUN_ID]: turnId,
           [HEADER_INVOCATION_ID]: invocationId,
-          [HEADER_TURN_CLIENT_ID]: "client-1",
+          [HEADER_RUN_CLIENT_ID]: "client-1",
           [HEADER_CODEC_MESSAGE_ID]: messageId,
           [HEADER_STREAM]: "true",
           [HEADER_STATUS]: "streaming",

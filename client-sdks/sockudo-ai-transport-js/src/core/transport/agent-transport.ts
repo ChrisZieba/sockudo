@@ -19,14 +19,14 @@ import {
   type HeaderMap,
 } from "../../utils.js";
 import type { Codec, DecodedEvent, Encoder, EncoderOptions, WriteOptions } from "../codec/index.js";
-import type { TurnEndReason } from "./tree.js";
+import type { RunEndReason } from "./tree.js";
 import { createDefaultInvocationIdProvider, type InvocationIdProvider } from "./invocation.js";
 import { pipeStream, type ResolveWriteOptions, type StreamResult } from "./pipe-stream.js";
 import {
-  TurnManager,
+  RunManager,
   type BufferedInputEvent,
   type CancelRequest,
-  type ManagedTurn,
+  type ManagedRun,
 } from "./turn-manager.js";
 import type { CancelFilter } from "./client-transport.js";
 
@@ -93,7 +93,7 @@ export interface LoadConversationOptions {
 }
 
 /** Server-side run construction options. */
-export interface NewTurnOptions<TOutput> {
+export interface CreateRunOptions<TOutput> {
   /** Run identity. */
   runId?: string;
   /** Legacy alias for run identity. */
@@ -110,7 +110,7 @@ export interface NewTurnOptions<TOutput> {
   onAbort?(write: (event: TOutput) => Promise<void>): void | Promise<void>;
   /** Cancel authorization hook. */
   onCancel?(request: CancelRequest): Promise<boolean> | boolean;
-  /** Turn-scoped non-fatal error hook. */
+  /** AgentRun-scoped non-fatal error hook. */
   onError?(error: ErrorInfo): void;
   /** External abort signal. */
   signal?: AbortSignal;
@@ -121,7 +121,7 @@ export interface NewTurnOptions<TOutput> {
 }
 
 /** Server-side run. The legacy type name is kept for source compatibility. */
-export interface Turn<TOutput, TProjection, TMessage> {
+export interface AgentRun<TOutput, TProjection, TMessage> {
   /** Run identity. */
   readonly turnId: string;
   /** Abort signal scoped to this turn. */
@@ -149,11 +149,11 @@ export interface Turn<TOutput, TProjection, TMessage> {
   /** Loads conversation messages. */
   loadConversation(options?: LoadConversationOptions): Promise<TMessage[]>;
   /** Publishes run end or run suspend. */
-  end(reason: TurnEndReason): Promise<void>;
+  end(reason: RunEndReason): Promise<void>;
 }
 
 /** Server transport options. */
-export interface ServerTransportOptions<TInput, TOutput, TProjection, TMessage> {
+export interface AgentSessionOptions<TInput, TOutput, TProjection, TMessage> {
   /** Realtime client used with `channelName`. */
   client?: ClientLike;
   /** Realtime channel. */
@@ -192,27 +192,27 @@ export interface ServerTransportOptions<TInput, TOutput, TProjection, TMessage> 
 }
 
 /** Server-side transport. */
-export interface ServerTransport<TOutput, TProjection, TMessage> {
+export interface AgentSession<TOutput, TProjection, TMessage> {
   /** Creates and registers a turn synchronously. */
-  newTurn(options: NewTurnOptions<TOutput>): Turn<TOutput, TProjection, TMessage>;
+  createRun(options: CreateRunOptions<TOutput>): AgentRun<TOutput, TProjection, TMessage>;
   /** Unsubscribes, aborts turns, and clears state. */
   close(): void;
 }
 
 /** Creates a server/agent transport. */
-export function createServerTransport<TInput, TOutput, TProjection, TMessage>(
-  options: ServerTransportOptions<TInput, TOutput, TProjection, TMessage>,
-): ServerTransport<TOutput, TProjection, TMessage> {
-  return new DefaultServerTransport(options);
+export function createAgentSession<TInput, TOutput, TProjection, TMessage>(
+  options: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>,
+): AgentSession<TOutput, TProjection, TMessage> {
+  return new DefaultAgentSession(options);
 }
 
-class DefaultServerTransport<TInput, TOutput, TProjection, TMessage> implements ServerTransport<
+class DefaultAgentSession<TInput, TOutput, TProjection, TMessage> implements AgentSession<
   TOutput,
   TProjection,
   TMessage
 > {
   private readonly channel: ChannelLike;
-  private readonly manager: TurnManager;
+  private readonly manager: RunManager;
   private readonly logger: Logger;
   private readonly inputLookupTimeoutMs: number;
   private readonly idProvider: InvocationIdProvider;
@@ -221,7 +221,7 @@ class DefaultServerTransport<TInput, TOutput, TProjection, TMessage> implements 
   private closed = false;
 
   public constructor(
-    private readonly options: ServerTransportOptions<TInput, TOutput, TProjection, TMessage>,
+    private readonly options: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>,
   ) {
     this.channel =
       options.channel ??
@@ -230,13 +230,13 @@ class DefaultServerTransport<TInput, TOutput, TProjection, TMessage> implements 
         channelOptions(options.rewindWindow ?? "2m"),
       ) ??
       missingChannel();
-    this.manager = new TurnManager(
+    this.manager = new RunManager(
       options.inputEventBufferLimit === undefined
         ? {}
         : { inputEventBufferLimit: options.inputEventBufferLimit },
     );
     this.logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
-      component: "ServerTransport",
+      component: "AgentSession",
     });
     this.inputLookupTimeoutMs = options.inputEventLookupTimeoutMs ?? 30_000;
     this.idProvider = options.idProvider ?? createDefaultInvocationIdProvider();
@@ -249,15 +249,15 @@ class DefaultServerTransport<TInput, TOutput, TProjection, TMessage> implements 
     ];
   }
 
-  public newTurn(options: NewTurnOptions<TOutput>): Turn<TOutput, TProjection, TMessage> {
+  public createRun(options: CreateRunOptions<TOutput>): AgentRun<TOutput, TProjection, TMessage> {
     if (this.closed) {
       throw new ErrorInfo({
-        code: ErrorCode.TransportClosed,
+        code: ErrorCode.SessionClosed,
         statusCode: 400,
         message: "unable to create turn; transport is closed",
       });
     }
-    const turn = new DefaultTurn<TInput, TOutput, TProjection, TMessage>({
+    const turn = new DefaultAgentRun<TInput, TOutput, TProjection, TMessage>({
       channel: this.channel,
       codec: this.options.codec,
       manager: this.manager,
@@ -291,7 +291,7 @@ class DefaultServerTransport<TInput, TOutput, TProjection, TMessage> implements 
       }
     } catch (error) {
       const info = toErrorInfo(error, {
-        code: ErrorCode.TransportSubscriptionError,
+        code: ErrorCode.SessionSubscriptionError,
         message: "unable to process server transport message",
       });
       this.options.onError?.(info);
@@ -302,17 +302,17 @@ class DefaultServerTransport<TInput, TOutput, TProjection, TMessage> implements 
   }
 }
 
-interface TurnDeps<TInput, TOutput, TProjection, TMessage> {
+interface RunDeps<TInput, TOutput, TProjection, TMessage> {
   channel: ChannelLike;
   codec: Codec<TInput, TOutput, TProjection, TMessage>;
-  manager: TurnManager;
-  options: NewTurnOptions<TOutput>;
+  manager: RunManager;
+  options: CreateRunOptions<TOutput>;
   inputLookupTimeoutMs: number;
   idProvider: InvocationIdProvider;
   logger: Logger;
 }
 
-class DefaultTurn<TInput, TOutput, TProjection, TMessage> implements Turn<
+class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRun<
   TOutput,
   TProjection,
   TMessage
@@ -325,9 +325,9 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage> implements Turn<
   private capturedInput: BufferedInputEvent | undefined;
 
   public readonly turnId: string;
-  public readonly managedTurn: ManagedTurn;
+  public readonly managedTurn: ManagedRun;
 
-  public constructor(private readonly deps: TurnDeps<TInput, TOutput, TProjection, TMessage>) {
+  public constructor(private readonly deps: RunDeps<TInput, TOutput, TProjection, TMessage>) {
     this.turnId = requireRunId(deps.options);
     this.signal = composeAbortSignal(this.internalAbort.signal, deps.options.signal);
     this.managedTurn = {
@@ -507,7 +507,7 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage> implements Turn<
     return this.loadedMessages.slice(-maxMessages);
   }
 
-  public async end(reason: TurnEndReason): Promise<void> {
+  public async end(reason: RunEndReason): Promise<void> {
     const headers =
       reason === "suspended"
         ? this.baseHeaders("assistant")
@@ -519,7 +519,7 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage> implements Turn<
       await this.publishLifecycle(eventName, headers);
     } catch (error) {
       throw toErrorInfo(error, {
-        code: ErrorCode.TurnLifecycleError,
+        code: ErrorCode.RunLifecycleError,
         message: `unable to end turn; ${eventName} publish failed`,
       });
     }
@@ -564,7 +564,7 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage> implements Turn<
       });
     } catch (error) {
       throw toErrorInfo(error, {
-        code: ErrorCode.TurnLifecycleError,
+        code: ErrorCode.RunLifecycleError,
         message: `unable to publish ${name}; channel publish failed`,
       });
     }
@@ -687,7 +687,7 @@ function composeAbortSignal(internal: AbortSignal, external: AbortSignal | undef
 }
 
 function requireChannelName(
-  options: ServerTransportOptions<unknown, unknown, unknown, unknown>,
+  options: AgentSessionOptions<unknown, unknown, unknown, unknown>,
 ): string {
   if (!options.channelName) {
     throw new ErrorInfo({

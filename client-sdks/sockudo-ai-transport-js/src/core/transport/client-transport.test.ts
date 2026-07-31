@@ -3,35 +3,35 @@ import { describe, expect, it, vi } from "vitest";
 import {
   EVENT_AI_CANCEL,
   EVENT_AI_OUTPUT,
-  EVENT_AI_TURN_END,
-  EVENT_AI_TURN_START,
+  EVENT_AI_RUN_END,
+  EVENT_AI_RUN_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_STATUS,
   HEADER_STREAM,
-  HEADER_TURN_ID,
-  HEADER_TURN_REASON,
+  HEADER_RUN_ID,
+  HEADER_RUN_REASON,
 } from "../../constants.js";
 import { ErrorCode } from "../../errors.js";
 import type { ErrorInfo } from "../../errors.js";
 import { createMockClient, type MockChannel } from "../../realtime/mocks.js";
 import type { SockudoRawMessage } from "../../realtime/adapter.js";
 import type { Codec, DecodedBatch, Decoder, ReducerMeta, UserMessage } from "../codec/index.js";
-import { createClientTransport } from "./client-transport.js";
-import type { ActiveTurn } from "./client-transport.js";
+import { createClientSession } from "./client-transport.js";
+import type { ClientRun } from "./client-transport.js";
 import type { InvocationIdProvider } from "./invocation.js";
 
 describe("client transport", () => {
   it("publishes input before poking and sends locked invocation fields", async () => {
     const calls: string[] = [];
     const { channel, fetch, ids } = setupCalls(calls);
-    const transport = createClientTransport({
+    const transport = createClientSession({
       channel,
       codec: testCodec(),
       api: "https://agent.test/run",
       clientId: "client-1",
       idProvider: ids,
-      turnStartDeadlineMs: 0,
+      runStartDeadlineMs: 0,
       fetch,
       body: () => ({ turnId: "bad", custom: "ok" }),
       headers: () => ({ Authorization: "secret" }),
@@ -40,7 +40,7 @@ describe("client transport", () => {
     const active = (await transport.view.send({
       id: "user-1",
       text: "hello",
-    })) as ActiveTurn<Message>;
+    })) as ClientRun<Message>;
 
     expect(active).toMatchObject({
       turnId: "turn-1",
@@ -72,12 +72,12 @@ describe("client transport", () => {
       status: 403,
       data: { code: 403, error: "forbidden" },
     });
-    const transport = createClientTransport({
+    const transport = createClientSession({
       channel,
       codec: testCodec(),
       api: "https://agent.test/run",
       idProvider: fixedIds(),
-      turnStartDeadlineMs: 0,
+      runStartDeadlineMs: 0,
       fetch: okFetch(),
     });
 
@@ -95,7 +95,7 @@ describe("client transport", () => {
     });
 
     expect(() =>
-      createClientTransport({
+      createClientSession({
         client,
         channelName: "chat",
         codec: testCodec(),
@@ -128,7 +128,7 @@ describe("client transport", () => {
 
   it("accepts clients that advertise ai-transport or cannot expose feature flags yet", () => {
     expect(() =>
-      createClientTransport({
+      createClientSession({
         client: withConnectionFeatures(createMockClient({ clientId: "client-1" }), [
           "ai-transport",
         ]),
@@ -140,7 +140,7 @@ describe("client transport", () => {
       }),
     ).not.toThrow();
     expect(() =>
-      createClientTransport({
+      createClientSession({
         client: createMockClient({ clientId: "client-1" }),
         channelName: "chat",
         codec: testCodec(),
@@ -155,12 +155,12 @@ describe("client transport", () => {
     const client = createMockClient({ clientId: "client-1" });
     const channel = client.getMockChannel("chat");
     const errors: ErrorInfo[] = [];
-    const transport = createClientTransport({
+    const transport = createClientSession({
       channel,
       codec: testCodec(),
       api: "https://agent.test/run",
       idProvider: fixedIds(),
-      turnStartDeadlineMs: 0,
+      runStartDeadlineMs: 0,
       fetch: vi.fn(() => Promise.resolve(new Response(null, { status: 500 }))),
     });
     transport.on("error", (error) => errors.push(error));
@@ -168,34 +168,34 @@ describe("client transport", () => {
     const active = (await transport.view.send({
       id: "user-1",
       text: "hello",
-    })) as ActiveTurn<Message>;
+    })) as ClientRun<Message>;
     await Promise.resolve();
 
     expect(transport.view.getMessages()).toEqual([{ id: "user-1", text: "hello" }]);
     expect(errors).toHaveLength(1);
     await expect(active.stream.getReader().read()).rejects.toMatchObject({
-      code: ErrorCode.TransportSendFailed,
+      code: ErrorCode.SessionSendFailed,
     });
   });
 
   it("waits for matching turn-start and routes output chunks", async () => {
     const client = createMockClient({ clientId: "client-1" });
     const channel = client.getMockChannel("chat");
-    const transport = createClientTransport({
+    const transport = createClientSession({
       channel,
       codec: testCodec(),
       api: "https://agent.test/run",
       clientId: "client-1",
       idProvider: fixedIds(),
       fetch: okFetch(),
-      turnStartDeadlineMs: 100,
+      runStartDeadlineMs: 100,
     });
 
     const pending = transport.view.send({ id: "user-1", text: "hello" });
     queueMicrotask(() => {
-      channel.inject(lifecycle(EVENT_AI_TURN_START, "turn-1", "inv-1", 2));
+      channel.inject(lifecycle(EVENT_AI_RUN_START, "turn-1", "inv-1", 2));
     });
-    const active = (await pending) as ActiveTurn<Message>;
+    const active = (await pending) as ClientRun<Message>;
     channel.inject(output("turn-1", "inv-1", "assistant-1", "token", 3));
 
     await expect(active.stream.getReader().read()).resolves.toEqual({
@@ -207,14 +207,14 @@ describe("client transport", () => {
   it("does not fold future summary actions into reduced state", () => {
     const client = createMockClient({ clientId: "client-1" });
     const channel = client.getMockChannel("chat");
-    const transport = createClientTransport({
+    const transport = createClientSession({
       channel,
       codec: testCodec(),
       api: "https://agent.test/run",
       clientId: "client-1",
       idProvider: fixedIds(),
       fetch: okFetch(),
-      turnStartDeadlineMs: 0,
+      runStartDeadlineMs: 0,
     });
     const rawMessages: string[] = [];
     transport.on("message", (message) => {
@@ -236,7 +236,7 @@ describe("client transport", () => {
       extras: {
         ai: {
           transport: {
-            [HEADER_TURN_ID]: "turn-1",
+            [HEADER_RUN_ID]: "turn-1",
             [HEADER_INVOCATION_ID]: "inv-1",
             [HEADER_CODEC_MESSAGE_ID]: "assistant-1",
           },
@@ -255,32 +255,32 @@ describe("client transport", () => {
 
   it("rejects when turn-start misses the configured deadline", async () => {
     const client = createMockClient({ clientId: "client-1" });
-    const transport = createClientTransport({
+    const transport = createClientSession({
       channel: client.getMockChannel("chat"),
       codec: testCodec(),
       api: "https://agent.test/run",
       idProvider: fixedIds(),
       fetch: okFetch(),
-      turnStartDeadlineMs: 1,
+      runStartDeadlineMs: 1,
     });
 
     await expect(transport.view.send({ id: "user-1", text: "hello" })).rejects.toMatchObject({
-      code: ErrorCode.TurnStartDeadlineExceeded,
+      code: ErrorCode.RunStartDeadlineExceeded,
       statusCode: 504,
     });
   });
 
-  it("publishes cancel filters and waitForTurn resolves on terminal turn-end", async () => {
+  it("publishes cancel filters and waitForRun resolves on terminal turn-end", async () => {
     const client = createMockClient({ clientId: "client-1" });
     const channel = client.getMockChannel("chat");
-    const transport = createClientTransport({
+    const transport = createClientSession({
       channel,
       codec: testCodec(),
       api: "https://agent.test/run",
       clientId: "client-1",
       idProvider: fixedIds(),
       fetch: okFetch(),
-      turnStartDeadlineMs: 0,
+      runStartDeadlineMs: 0,
     });
     const published: unknown[] = [];
     const originalPublish = channel.publish.bind(channel);
@@ -292,10 +292,10 @@ describe("client transport", () => {
     const active = (await transport.view.send({
       id: "user-1",
       text: "hello",
-    })) as ActiveTurn<Message>;
-    const waiting = transport.waitForTurn({ own: true });
+    })) as ClientRun<Message>;
+    const waiting = transport.waitForRun({ own: true });
     await active.cancel();
-    channel.inject(lifecycle(EVENT_AI_TURN_END, "turn-1", "inv-1", 3, "cancelled"));
+    channel.inject(lifecycle(EVENT_AI_RUN_END, "turn-1", "inv-1", 3, "cancelled"));
 
     await expect(waiting).resolves.toBeUndefined();
     expect(published).toContainEqual(
@@ -309,13 +309,13 @@ describe("client transport", () => {
   it("stages events locally and drains them into the next send body", async () => {
     const client = createMockClient({ clientId: "client-1" });
     const fetch = okFetch();
-    const transport = createClientTransport({
+    const transport = createClientSession({
       channel: client.getMockChannel("chat"),
       codec: testCodec(),
       api: "https://agent.test/run",
       idProvider: fixedIds(),
       fetch,
-      turnStartDeadlineMs: 0,
+      runStartDeadlineMs: 0,
       messages: [{ id: "assistant-1", text: "old" }],
     });
 
@@ -383,7 +383,7 @@ function fixedIds(): InvocationIdProvider {
 }
 
 function lifecycle(
-  name: typeof EVENT_AI_TURN_START | typeof EVENT_AI_TURN_END,
+  name: typeof EVENT_AI_RUN_START | typeof EVENT_AI_RUN_END,
   turnId: string,
   invocationId: string,
   serial: number,
@@ -400,9 +400,9 @@ function lifecycle(
     extras: {
       ai: {
         transport: {
-          [HEADER_TURN_ID]: turnId,
+          [HEADER_RUN_ID]: turnId,
           [HEADER_INVOCATION_ID]: invocationId,
-          ...(reason !== undefined ? { [HEADER_TURN_REASON]: reason } : {}),
+          ...(reason !== undefined ? { [HEADER_RUN_REASON]: reason } : {}),
         },
       },
     },
@@ -427,7 +427,7 @@ function output(
     extras: {
       ai: {
         transport: {
-          [HEADER_TURN_ID]: turnId,
+          [HEADER_RUN_ID]: turnId,
           [HEADER_INVOCATION_ID]: invocationId,
           [HEADER_CODEC_MESSAGE_ID]: messageId,
           [HEADER_STREAM]: "true",

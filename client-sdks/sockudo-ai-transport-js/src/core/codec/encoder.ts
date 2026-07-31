@@ -362,7 +362,7 @@ async function publishWithError(
     return await writer.publish(publish);
   } catch (error) {
     throw toErrorInfo(error, {
-      code: ErrorCode.TransportSendFailed,
+      code: ErrorCode.SessionSendFailed,
       message: `unable to ${operation}; channel publish failed`,
     });
   }
@@ -377,13 +377,13 @@ function appendWithError(
   try {
     return writer.appendMessage(messageSerial, data, mutation).catch((error: unknown) => {
       throw toErrorInfo(error, {
-        code: ErrorCode.TransportSendFailed,
+        code: ErrorCode.SessionSendFailed,
         message: "unable to append stream; channel append failed",
       });
     });
   } catch (error) {
     throw toErrorInfo(error, {
-      code: ErrorCode.TransportSendFailed,
+      code: ErrorCode.SessionSendFailed,
       message: "unable to append stream; channel append failed",
     });
   }
@@ -397,13 +397,13 @@ function updateWithError(
   try {
     return writer.updateMessage(messageSerial, mutation).catch((error: unknown) => {
       throw toErrorInfo(error, {
-        code: ErrorCode.TransportSendFailed,
+        code: ErrorCode.SessionSendFailed,
         message: "unable to update stream; channel update failed",
       });
     });
   } catch (error) {
     throw toErrorInfo(error, {
-      code: ErrorCode.TransportSendFailed,
+      code: ErrorCode.SessionSendFailed,
       message: "unable to update stream; channel update failed",
     });
   }

@@ -2,11 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   EVENT_AI_OUTPUT,
-  EVENT_AI_TURN_END,
+  EVENT_AI_RUN_END,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
-  HEADER_TURN_ID,
-  HEADER_TURN_REASON,
+  HEADER_RUN_ID,
+  HEADER_RUN_REASON,
 } from "../../constants.js";
 import type { InvocationIdProvider } from "../../core/transport/index.js";
 import { createMockClient, type MockChannel } from "../../realtime/mocks.js";
@@ -17,7 +17,7 @@ import {
   deriveContinuationInputs,
   type ChatTransportOptions,
 } from "./chat-transport.js";
-import { createClientTransport } from "../index.js";
+import { createClientSession } from "../index.js";
 import type { AI } from "../codec/index.js";
 
 describe("Vercel ChatTransport", () => {
@@ -312,11 +312,11 @@ function setup(
     return originalPublish(message);
   });
   const fetch = okFetch();
-  const transport = createClientTransport({
+  const transport = createClientSession({
     channel,
     fetch,
     idProvider: fixedIds(),
-    turnStartDeadlineMs: 0,
+    runStartDeadlineMs: 0,
     messages: options.messages ?? [],
   });
   const chatOptions: ChatTransportOptions = {};
@@ -411,7 +411,7 @@ function output(
     extras: {
       ai: {
         transport: {
-          [HEADER_TURN_ID]: turnId,
+          [HEADER_RUN_ID]: turnId,
           [HEADER_INVOCATION_ID]: invocationId,
           [HEADER_CODEC_MESSAGE_ID]: messageId,
         },
@@ -432,7 +432,7 @@ function turnEnd(
 ): SockudoRawMessage {
   return {
     event: "sockudo:message.create",
-    name: EVENT_AI_TURN_END,
+    name: EVENT_AI_RUN_END,
     channel: "chat",
     data: {},
     message_serial: `end-${String(serial)}`,
@@ -441,9 +441,9 @@ function turnEnd(
     extras: {
       ai: {
         transport: {
-          [HEADER_TURN_ID]: turnId,
+          [HEADER_RUN_ID]: turnId,
           [HEADER_INVOCATION_ID]: invocationId,
-          [HEADER_TURN_REASON]: reason,
+          [HEADER_RUN_REASON]: reason,
         },
       },
     },

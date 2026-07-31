@@ -1,16 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import { normalizeInboundMessage } from "../../src/realtime/adapter.js";
-import { createConversationTree } from "../../src/core/transport/tree.js";
+import { createTree } from "../../src/core/transport/tree.js";
 import { createView } from "../../src/core/transport/view.js";
 import { UIMessageCodec } from "../../src/vercel/codec/index.js";
 import {
   EVENT_AI_RUN_RESUME,
   EVENT_AI_RUN_SUSPEND,
-  EVENT_AI_TURN_END,
-  EVENT_AI_TURN_START,
-  HEADER_TURN_CONTINUE,
-  HEADER_TURN_REASON,
+  EVENT_AI_RUN_END,
+  EVENT_AI_RUN_START,
+  HEADER_RUN_REASON,
 } from "../../src/constants.js";
 import { mergeHeaders } from "../../src/utils.js";
 import {
@@ -30,7 +29,7 @@ describe("golden transcript replay", () => {
     expect(transcripts.length).toBeGreaterThan(0);
 
     const materialized = transcripts.map((transcript) => {
-      const tree = createConversationTree(UIMessageCodec);
+      const tree = createTree(UIMessageCodec);
       const view = createView({ tree, codec: UIMessageCodec });
       const decoder = UIMessageCodec.createDecoder();
       let decodedEvents = 0;
@@ -43,9 +42,9 @@ describe("golden transcript replay", () => {
         }
         const message = normalizeInboundMessage(raw);
         const headers = message.getTransportHeaders();
-        if (message.name === EVENT_AI_TURN_START) {
-          tree.applyTurnLifecycle({
-            type: "turn-start",
+        if (message.name === EVENT_AI_RUN_START) {
+          tree.applyRunLifecycle({
+            type: "start",
             headers,
             serial: message.historySerial,
           });
@@ -53,32 +52,32 @@ describe("golden transcript replay", () => {
           continue;
         }
         if (message.name === EVENT_AI_RUN_RESUME) {
-          tree.applyTurnLifecycle({
-            type: "turn-start",
-            headers: mergeHeaders(headers, { [HEADER_TURN_CONTINUE]: "true" }),
+          tree.applyRunLifecycle({
+            type: "resume",
+            headers,
             serial: message.historySerial,
           });
           lifecycleEvents += 1;
           continue;
         }
         if (message.name === EVENT_AI_RUN_SUSPEND) {
-          tree.applyTurnLifecycle({
-            type: "turn-end",
-            headers: mergeHeaders(headers, { [HEADER_TURN_REASON]: "suspended" }),
+          tree.applyRunLifecycle({
+            type: "suspend",
+            headers: mergeHeaders(headers, { [HEADER_RUN_REASON]: "suspended" }),
             serial: message.historySerial,
             reason: "suspended",
           });
           lifecycleEvents += 1;
           continue;
         }
-        if (message.name === EVENT_AI_TURN_END) {
+        if (message.name === EVENT_AI_RUN_END) {
           const turnEnd = {
-            type: "turn-end",
+            type: "end",
             headers,
             serial: message.historySerial,
           } as const;
-          const turnReason = reason(headers[HEADER_TURN_REASON]);
-          tree.applyTurnLifecycle(
+          const turnReason = reason(headers[HEADER_RUN_REASON]);
+          tree.applyRunLifecycle(
             turnReason === undefined ? turnEnd : { ...turnEnd, reason: turnReason },
           );
           lifecycleEvents += 1;
@@ -90,7 +89,7 @@ describe("golden transcript replay", () => {
         tree.applyMessage(events, headers, message.historySerial);
       }
 
-      const nodes = tree.getTurnNodes();
+      const nodes = tree.getRunNodes();
       return {
         name: transcript.name,
         decodedEvents,
@@ -101,7 +100,7 @@ describe("golden transcript replay", () => {
           status: node.status,
           messageCount: UIMessageCodec.getMessages(node.projection).length,
         })),
-        activeTurns: Array.from(tree.getActiveTurnIds()).map(([clientId, turns]) => [
+        activeTurns: Array.from(tree.getActiveRunIds()).map(([clientId, turns]) => [
           clientId,
           Array.from(turns).sort(),
         ]),

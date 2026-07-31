@@ -5,10 +5,11 @@ import {
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
-  HEADER_TURN_CLIENT_ID,
-  HEADER_TURN_CONTINUE,
-  HEADER_TURN_ID,
-  HEADER_TURN_REASON,
+  HEADER_RUN_CLIENT_ID,
+  HEADER_RUN_CONTINUE,
+  INBOUND_LEGACY_HEADER_TURN_CONTINUE,
+  HEADER_RUN_ID,
+  HEADER_RUN_REASON,
 } from "../../constants.js";
 import { EventEmitter, type EventUnsubscribe } from "../../event-emitter.js";
 import type { HeaderMap } from "../../utils.js";
@@ -22,29 +23,29 @@ export type TreeSerial = number | string;
 /**
  * Wire turn-end reasons.
  */
-export type TurnEndReason = "complete" | "cancelled" | "error" | "suspended";
+export type RunEndReason = "complete" | "cancelled" | "error" | "suspended";
 
 /**
- * Turn status tracked by the conversation tree.
+ * AgentRun status tracked by the conversation tree.
  */
-export type TurnStatus = "active" | TurnEndReason;
+export type RunStatus = "active" | RunEndReason;
 
 /**
- * Turn-keyed node in the conversation tree.
+ * AgentRun-keyed node in the conversation tree.
  */
-export interface TurnNode<TProjection> {
+export interface RunNode<TProjection> {
   /** Stable turn id. */
   turnId: string;
   /** Parent turn id, resolved from parent or fork metadata. */
   parentTurnId?: string;
-  /** Turn id this node forked from. */
+  /** AgentRun id this node forked from. */
   forkOf?: string;
   /** Anchored codec message id this turn regenerates. */
   regeneratesCodecMessageId?: string;
   /** Verified client id. */
   clientId?: string;
   /** Current turn status. */
-  status: TurnStatus;
+  status: RunStatus;
   /** Codec projection. May be mutated in place by the reducer. */
   projection: TProjection;
   /** Latest invocation id for the turn or continuation. */
@@ -56,17 +57,23 @@ export interface TurnNode<TProjection> {
 }
 
 /**
- * Turn lifecycle event accepted by {@link ConversationTree.applyTurnLifecycle}.
+ * AgentRun lifecycle event accepted by {@link Tree.applyRunLifecycle}.
  */
-export interface TurnLifecycleEvent {
-  /** Lifecycle kind. */
-  type: "turn-start" | "turn-end";
+export interface RunLifecycleEvent {
+  /**
+   * Lifecycle kind, mirroring the four wire events.
+   *
+   * `resume` is a distinct arm rather than a `start` carrying a continuation
+   * header: re-entry is already identified on the wire by the `ai-run-resume`
+   * event name, so the header carried no information the name did not.
+   */
+  type: "start" | "suspend" | "resume" | "end";
   /** Transport headers carried by the lifecycle message. */
   headers: HeaderMap;
   /** Serial assigned by Sockudo delivery or history. */
   serial: TreeSerial;
   /** Optional decoded turn-end reason override. */
-  reason?: TurnEndReason;
+  reason?: RunEndReason;
 }
 
 /**
@@ -76,7 +83,7 @@ export interface TreeMessageEvent<TEvent, TProjection> {
   /** Owning turn id. */
   turnId: string;
   /** Owning turn node. */
-  node: TurnNode<TProjection>;
+  node: RunNode<TProjection>;
   /** Folded codec event. */
   event: TEvent;
   /** Codec message id. */
@@ -88,23 +95,23 @@ export interface TreeMessageEvent<TEvent, TProjection> {
 /**
  * Conversation tree event map.
  */
-export interface ConversationTreeEvents<TEvent, TProjection> {
+export interface TreeEvents<TEvent, TProjection> {
   /** Structural tree state changed. */
   update: { structuralVersion: number };
   /** Preferred message-fold event. */
   message: TreeMessageEvent<TEvent, TProjection>;
   /** Deprecated Ably-compatible message-fold alias. */
   "ably-message": TreeMessageEvent<TEvent, TProjection>;
-  /** Turn metadata or status changed. */
-  turn: TurnNode<TProjection>;
-  /** Turn projection was folded, possibly mutating in place. */
+  /** AgentRun metadata or status changed. */
+  turn: RunNode<TProjection>;
+  /** AgentRun projection was folded, possibly mutating in place. */
   "turn-projection-updated": TreeMessageEvent<TEvent, TProjection>;
 }
 
 /**
  * Conversation tree construction options.
  */
-export interface ConversationTreeOptions<TProjection> {
+export interface TreeOptions<TProjection> {
   /** Optional optimistic projection seed for tests and docs adapters. */
   createProjection?(): TProjection;
 }
@@ -112,7 +119,7 @@ export interface ConversationTreeOptions<TProjection> {
 /**
  * Public conversation tree API.
  */
-export interface ConversationTree<TEvent, TProjection> {
+export interface Tree<TEvent, TProjection> {
   /** Current structural cache version. */
   readonly structuralVersion: number;
   /** Applies decoded message events using the shared live/history upsert path. */
@@ -120,9 +127,9 @@ export interface ConversationTree<TEvent, TProjection> {
     decodedEvents: readonly DecodedEvent<TEvent>[],
     transportHeaders: HeaderMap,
     serial: TreeSerial,
-  ): TurnNode<TProjection> | undefined;
+  ): RunNode<TProjection> | undefined;
   /** Applies turn lifecycle metadata. */
-  applyTurnLifecycle(event: TurnLifecycleEvent): TurnNode<TProjection> | undefined;
+  applyRunLifecycle(event: RunLifecycleEvent): RunNode<TProjection> | undefined;
   /** Deletes a codec message id and removes unreachable turns. */
   delete(codecMessageId: string): void;
   /** Docs-compatible upsert alias for {@link applyMessage}. */
@@ -130,35 +137,35 @@ export interface ConversationTree<TEvent, TProjection> {
     decodedEvents: readonly DecodedEvent<TEvent>[],
     transportHeaders: HeaderMap,
     serial: TreeSerial,
-  ): TurnNode<TProjection> | undefined;
+  ): RunNode<TProjection> | undefined;
   /** Gets a node by turn id. */
-  getTurnNode(turnId: string): TurnNode<TProjection> | undefined;
+  getRunNode(turnId: string): RunNode<TProjection> | undefined;
   /** Gets a node by codec message id. */
-  getTurnByCodecMessageId(codecMessageId: string): TurnNode<TProjection> | undefined;
+  getNodeByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined;
   /** Docs-compatible message-granularity node lookup. */
-  getNode(codecMessageId: string): TurnNode<TProjection> | undefined;
+  getNode(codecMessageId: string): RunNode<TProjection> | undefined;
   /** Gets edit siblings for a turn id or codec message id. */
-  getSiblingTurns(id: string): readonly TurnNode<TProjection>[];
+  getSiblingNodes(id: string): readonly RunNode<TProjection>[];
   /** Docs-compatible sibling lookup alias. */
-  getSiblings(id: string): readonly TurnNode<TProjection>[];
+  getSiblings(id: string): readonly RunNode<TProjection>[];
   /** Returns whether a turn or codec message id has edit siblings. */
-  hasSiblingTurns(id: string): boolean;
+  hasSiblingNodes(id: string): boolean;
   /** Docs-compatible sibling predicate alias. */
   hasSiblings(id: string): boolean;
   /** Gets the regenerate group for an anchored codec message id. */
-  getRegenerateGroup(codecMessageId: string): readonly TurnNode<TProjection>[];
+  getRegenerateGroup(codecMessageId: string): readonly RunNode<TProjection>[];
   /** Gets the latest continuation invocation for a turn. */
   getLatestContinuationInvocation(turnId: string): string | undefined;
   /** Gets active and suspended turns grouped by verified client id. */
-  getActiveTurnIds(): Map<string, Set<string>>;
+  getActiveRunIds(): Map<string, Set<string>>;
   /** Gets defensive transport headers by codec message id. */
   getHeaders(codecMessageId: string): HeaderMap | undefined;
   /** Gets all turn nodes in start-serial order, with optimistic turns last. */
-  getTurnNodes(): readonly TurnNode<TProjection>[];
+  getRunNodes(): readonly RunNode<TProjection>[];
   /** Subscribes to conversation tree events. */
-  on<K extends keyof ConversationTreeEvents<TEvent, TProjection>>(
+  on<K extends keyof TreeEvents<TEvent, TProjection>>(
     event: K,
-    handler: (payload: ConversationTreeEvents<TEvent, TProjection>[K]) => void,
+    handler: (payload: TreeEvents<TEvent, TProjection>[K]) => void,
   ): EventUnsubscribe;
 }
 
@@ -168,16 +175,16 @@ export interface ConversationTree<TEvent, TProjection> {
  * Projection ref-equality is not a change signal: reducers may mutate the
  * projection in place, and streaming folds emit `turn-projection-updated`.
  */
-export function createConversationTree<TEvent, TProjection>(
+export function createTree<TEvent, TProjection>(
   reducer: Reducer<TEvent, TProjection>,
-  options: ConversationTreeOptions<TProjection> = {},
-): ConversationTree<TEvent, TProjection> {
-  return new ConversationTreeImpl(reducer, options);
+  options: TreeOptions<TProjection> = {},
+): Tree<TEvent, TProjection> {
+  return new TreeImpl(reducer, options);
 }
 
-class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEvent, TProjection> {
-  private readonly emitter = new EventEmitter<ConversationTreeEvents<TEvent, TProjection>>();
-  private readonly turnIndex = new Map<string, TurnNode<TProjection>>();
+class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
+  private readonly emitter = new EventEmitter<TreeEvents<TEvent, TProjection>>();
+  private readonly turnIndex = new Map<string, RunNode<TProjection>>();
   private readonly codecMessageIdToTurnId = new Map<string, string>();
   private readonly turnCodecMessageIds = new Map<string, Set<string>>();
   private readonly headersByCodecMessageId = new Map<string, HeaderMap>();
@@ -194,7 +201,7 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
 
   public constructor(
     private readonly reducer: Reducer<TEvent, TProjection>,
-    private readonly options: ConversationTreeOptions<TProjection>,
+    private readonly options: TreeOptions<TProjection>,
   ) {}
 
   public get structuralVersion(): number {
@@ -205,7 +212,7 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     decodedEvents: readonly DecodedEvent<TEvent>[],
     transportHeaders: HeaderMap,
     serial: TreeSerial,
-  ): TurnNode<TProjection> | undefined {
+  ): RunNode<TProjection> | undefined {
     if (decodedEvents.length === 0) {
       return undefined;
     }
@@ -216,7 +223,7 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     const metadata = this.metadataFromHeaders(
       route.turnId,
       transportHeaders,
-      transportHeaders[HEADER_TURN_CONTINUE] !== "true",
+      !isContinuationHeaders(transportHeaders),
     );
     const node = this.ensureTurn(route.turnId, metadata, serial);
     if (this.promoteSerial(node, serial)) {
@@ -244,20 +251,19 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     return node;
   }
 
-  public applyTurnLifecycle(event: TurnLifecycleEvent): TurnNode<TProjection> | undefined {
-    const turnId = event.headers[HEADER_TURN_ID];
+  public applyRunLifecycle(event: RunLifecycleEvent): RunNode<TProjection> | undefined {
+    const turnId = event.headers[HEADER_RUN_ID];
     if (!turnId) {
       return undefined;
     }
-    if (event.type === "turn-start") {
-      const metadata = this.metadataFromHeaders(
-        turnId,
-        event.headers,
-        event.headers[HEADER_TURN_CONTINUE] !== "true",
-      );
+    if (event.type === "start" || event.type === "resume") {
+      // The `resume` arm is the current signal. The header check keeps pre-3.0
+      // channel history readable, where re-entry was a `start` carrying
+      // `turn-continue`/`run-continue` rather than its own event name.
+      const isContinuation = event.type === "resume" || isContinuationHeaders(event.headers);
+      const metadata = this.metadataFromHeaders(turnId, event.headers, !isContinuation);
       const node = this.ensureTurn(turnId, metadata, event.serial);
       const wasTerminal = isTerminalStatus(node.status);
-      const isContinuation = event.headers[HEADER_TURN_CONTINUE] === "true";
       let changed = this.promoteSerial(node, event.serial);
       if (
         !wasTerminal &&
@@ -270,11 +276,11 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
       const invocationId = event.headers[HEADER_INVOCATION_ID];
       if (invocationId !== undefined) {
         node.invocationId = invocationId;
-        if (event.headers[HEADER_TURN_CONTINUE] === "true") {
+        if (isContinuation) {
           this.latestContinuationInvocation.set(turnId, invocationId);
         }
       }
-      if (event.headers[HEADER_TURN_CONTINUE] !== "true") {
+      if (!isContinuation) {
         changed = this.backfillMetadata(node, metadata) || changed;
       }
       if (changed) {
@@ -288,7 +294,7 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
       this.metadataFromHeaders(turnId, event.headers, true),
       undefined,
     );
-    const reason = event.reason ?? readTurnReason(event.headers[HEADER_TURN_REASON]);
+    const reason = event.reason ?? readTurnReason(event.headers[HEADER_RUN_REASON]);
     let changed = false;
     if (reason !== undefined && node.status !== reason) {
       node.status = reason;
@@ -326,24 +332,24 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     decodedEvents: readonly DecodedEvent<TEvent>[],
     transportHeaders: HeaderMap,
     serial: TreeSerial,
-  ): TurnNode<TProjection> | undefined {
+  ): RunNode<TProjection> | undefined {
     return this.applyMessage(decodedEvents, transportHeaders, serial);
   }
 
-  public getTurnNode(turnId: string): TurnNode<TProjection> | undefined {
+  public getRunNode(turnId: string): RunNode<TProjection> | undefined {
     return this.turnIndex.get(turnId);
   }
 
-  public getTurnByCodecMessageId(codecMessageId: string): TurnNode<TProjection> | undefined {
+  public getNodeByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined {
     const turnId = this.codecMessageIdToTurnId.get(codecMessageId);
     return turnId === undefined ? undefined : this.turnIndex.get(turnId);
   }
 
-  public getNode(codecMessageId: string): TurnNode<TProjection> | undefined {
-    return this.getTurnByCodecMessageId(codecMessageId);
+  public getNode(codecMessageId: string): RunNode<TProjection> | undefined {
+    return this.getNodeByCodecMessageId(codecMessageId);
   }
 
-  public getSiblingTurns(id: string): readonly TurnNode<TProjection>[] {
+  public getSiblingNodes(id: string): readonly RunNode<TProjection>[] {
     const node = this.resolveNode(id);
     if (!node) {
       return [];
@@ -360,19 +366,19 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     return nodes;
   }
 
-  public getSiblings(id: string): readonly TurnNode<TProjection>[] {
-    return this.getSiblingTurns(id);
+  public getSiblings(id: string): readonly RunNode<TProjection>[] {
+    return this.getSiblingNodes(id);
   }
 
-  public hasSiblingTurns(id: string): boolean {
-    return this.getSiblingTurns(id).length > 1;
+  public hasSiblingNodes(id: string): boolean {
+    return this.getSiblingNodes(id).length > 1;
   }
 
   public hasSiblings(id: string): boolean {
-    return this.hasSiblingTurns(id);
+    return this.hasSiblingNodes(id);
   }
 
-  public getRegenerateGroup(codecMessageId: string): readonly TurnNode<TProjection>[] {
+  public getRegenerateGroup(codecMessageId: string): readonly RunNode<TProjection>[] {
     const cached = this.regenerateCache.get(codecMessageId);
     if (cached?.version === this.version) {
       return cached.nodes;
@@ -391,7 +397,7 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     );
   }
 
-  public getActiveTurnIds(): Map<string, Set<string>> {
+  public getActiveRunIds(): Map<string, Set<string>> {
     const active = new Map<string, Set<string>>();
     for (const turnId of this.sortedTurns) {
       const node = this.turnIndex.get(turnId);
@@ -412,16 +418,16 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     return this.headersByCodecMessageId.get(codecMessageId);
   }
 
-  public getTurnNodes(): readonly TurnNode<TProjection>[] {
+  public getRunNodes(): readonly RunNode<TProjection>[] {
     return this.sortedTurns.flatMap((turnId) => {
       const node = this.turnIndex.get(turnId);
       return node === undefined ? [] : [node];
     });
   }
 
-  public on<K extends keyof ConversationTreeEvents<TEvent, TProjection>>(
+  public on<K extends keyof TreeEvents<TEvent, TProjection>>(
     event: K,
-    handler: (payload: ConversationTreeEvents<TEvent, TProjection>[K]) => void,
+    handler: (payload: TreeEvents<TEvent, TProjection>[K]) => void,
   ): EventUnsubscribe {
     return this.emitter.on(event, handler);
   }
@@ -434,13 +440,13 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
       headers[HEADER_CODEC_MESSAGE_ID] ??
       decodedEvents[0]?.messageId ??
       decodedEvents[0]?.meta.messageId;
-    if (headers[HEADER_TURN_CONTINUE] === "true" && codecMessageId) {
+    if (isContinuationHeaders(headers) && codecMessageId) {
       const existing = this.codecMessageIdToTurnId.get(codecMessageId);
       if (existing) {
         return { turnId: existing };
       }
     }
-    const turnId = headers[HEADER_TURN_ID];
+    const turnId = headers[HEADER_RUN_ID];
     if (turnId) {
       return { turnId };
     }
@@ -457,8 +463,8 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     turnId: string,
     headers: HeaderMap,
     allowGraphMetadata: boolean,
-  ): TurnMetadata {
-    const metadata: TurnMetadata = {};
+  ): RunMetadata {
+    const metadata: RunMetadata = {};
     if (allowGraphMetadata) {
       const forkRef = headers[HEADER_FORK_OF];
       const forkedTurnId = this.resolveReference(forkRef);
@@ -489,7 +495,7 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
         }
       }
     }
-    const clientId = headers[HEADER_TURN_CLIENT_ID] ?? headers[HEADER_INPUT_CLIENT_ID];
+    const clientId = headers[HEADER_RUN_CLIENT_ID] ?? headers[HEADER_INPUT_CLIENT_ID];
     if (clientId !== undefined) {
       metadata.clientId = clientId;
     }
@@ -502,9 +508,9 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
 
   private ensureTurn(
     turnId: string,
-    metadata: TurnMetadata,
+    metadata: RunMetadata,
     serial: TreeSerial | undefined,
-  ): TurnNode<TProjection> {
+  ): RunNode<TProjection> {
     const existing = this.turnIndex.get(turnId);
     if (existing) {
       if (this.backfillMetadata(existing, metadata)) {
@@ -512,7 +518,7 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
       }
       return existing;
     }
-    const node: TurnNode<TProjection> = {
+    const node: RunNode<TProjection> = {
       turnId,
       status: "active",
       projection: this.options.createProjection?.() ?? this.reducer.init(),
@@ -528,7 +534,7 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     return node;
   }
 
-  private backfillMetadata(node: TurnNode<TProjection>, metadata: TurnMetadata): boolean {
+  private backfillMetadata(node: RunNode<TProjection>, metadata: RunMetadata): boolean {
     let changed = false;
     if (
       metadata.parentTurnId !== undefined &&
@@ -570,7 +576,7 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     return changed;
   }
 
-  private promoteSerial(node: TurnNode<TProjection>, serial: TreeSerial): boolean {
+  private promoteSerial(node: RunNode<TProjection>, serial: TreeSerial): boolean {
     if (node.startSerial !== undefined && compareSerial(serial, node.startSerial) >= 0) {
       return false;
     }
@@ -626,7 +632,7 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
   }
 
   private moveParent(
-    node: TurnNode<TProjection>,
+    node: RunNode<TProjection>,
     parentTurnId: string | undefined,
     propagateForkChildren = true,
   ): void {
@@ -655,7 +661,7 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     }
   }
 
-  private moveRegenerateAnchor(node: TurnNode<TProjection>, anchor: string): void {
+  private moveRegenerateAnchor(node: RunNode<TProjection>, anchor: string): void {
     if (node.regeneratesCodecMessageId !== undefined) {
       this.regenerateByMsgId.get(node.regeneratesCodecMessageId)?.delete(node.turnId);
     }
@@ -668,7 +674,7 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     turns.add(node.turnId);
   }
 
-  private moveForkChildrenToParent(node: TurnNode<TProjection>, seen: Set<string>): void {
+  private moveForkChildrenToParent(node: RunNode<TProjection>, seen: Set<string>): void {
     if (seen.has(node.turnId)) {
       return;
     }
@@ -716,7 +722,7 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     this.latestContinuationInvocation.delete(turnId);
   }
 
-  private computeSiblingTurns(node: TurnNode<TProjection>): TurnNode<TProjection>[] {
+  private computeSiblingTurns(node: RunNode<TProjection>): RunNode<TProjection>[] {
     const candidateIds =
       node.parentTurnId === undefined ? this.rootTurns : this.parentIndex.get(node.parentTurnId);
     if (!candidateIds) {
@@ -748,9 +754,9 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     return this.nodesInSortOrder(group);
   }
 
-  private computeRegenerateGroup(codecMessageId: string): TurnNode<TProjection>[] {
-    const nodes: TurnNode<TProjection>[] = [];
-    const owner = this.getTurnByCodecMessageId(codecMessageId);
+  private computeRegenerateGroup(codecMessageId: string): RunNode<TProjection>[] {
+    const nodes: RunNode<TProjection>[] = [];
+    const owner = this.getNodeByCodecMessageId(codecMessageId);
     if (owner) {
       nodes.push(owner);
     }
@@ -765,7 +771,7 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     return nodes;
   }
 
-  private forkChainTouches(node: TurnNode<TProjection>, group: Set<string>): boolean {
+  private forkChainTouches(node: RunNode<TProjection>, group: Set<string>): boolean {
     const seen = new Set<string>();
     let current: string | undefined = node.forkOf;
     while (current !== undefined && !seen.has(current)) {
@@ -791,8 +797,8 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     return false;
   }
 
-  private nodesInSortOrder(ids: Set<string>): TurnNode<TProjection>[] {
-    const nodes: TurnNode<TProjection>[] = [];
+  private nodesInSortOrder(ids: Set<string>): RunNode<TProjection>[] {
+    const nodes: RunNode<TProjection>[] = [];
     for (const turnId of this.sortedTurns) {
       if (ids.has(turnId)) {
         const node = this.turnIndex.get(turnId);
@@ -804,8 +810,8 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
     return nodes;
   }
 
-  private resolveNode(id: string): TurnNode<TProjection> | undefined {
-    return this.turnIndex.get(id) ?? this.getTurnByCodecMessageId(id);
+  private resolveNode(id: string): RunNode<TProjection> | undefined {
+    return this.turnIndex.get(id) ?? this.getNodeByCodecMessageId(id);
   }
 
   private resolveReference(reference: string | undefined): string | undefined {
@@ -831,7 +837,7 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
   }
 }
 
-interface TurnMetadata {
+interface RunMetadata {
   parentTurnId?: string;
   parentRef?: string;
   forkOf?: string;
@@ -843,10 +849,10 @@ interface TurnMetadata {
 
 interface CachedNodes<TProjection> {
   version: number;
-  nodes: readonly TurnNode<TProjection>[];
+  nodes: readonly RunNode<TProjection>[];
 }
 
-function readTurnReason(value: string | undefined): TurnEndReason | undefined {
+function readTurnReason(value: string | undefined): RunEndReason | undefined {
   switch (value) {
     case "complete":
     case "cancelled":
@@ -858,11 +864,11 @@ function readTurnReason(value: string | undefined): TurnEndReason | undefined {
   }
 }
 
-function isTerminalStatus(status: TurnStatus): boolean {
+function isTerminalStatus(status: RunStatus): boolean {
   return status === "complete" || status === "cancelled" || status === "error";
 }
 
-function isLiveStatus(status: TurnStatus): boolean {
+function isLiveStatus(status: RunStatus): boolean {
   return status === "active" || status === "suspended";
 }
 
@@ -919,3 +925,17 @@ export const treeRoutingRoles = {
   /** Tool output role. */
   tool: "tool",
 } as const satisfies Record<string, string>;
+
+/**
+ * Whether headers mark a run continuation.
+ *
+ * `run-continue` is the current key. `turn-continue` is accepted read-only so
+ * history written before 3.0 still promotes a suspended run back to active
+ * instead of silently stalling.
+ */
+function isContinuationHeaders(headers: HeaderMap): boolean {
+  return (
+    headers[HEADER_RUN_CONTINUE] === "true" ||
+    headers[INBOUND_LEGACY_HEADER_TURN_CONTINUE] === "true"
+  );
+}

@@ -75,7 +75,7 @@ class DefaultStreamRouter<TOutput> implements StreamRouter<TOutput> {
     );
     if (!controller) {
       throw new ErrorInfo({
-        code: ErrorCode.TransportSubscriptionError,
+        code: ErrorCode.SessionSubscriptionError,
         message: "unable to create stream; ReadableStream did not provide a controller",
       });
     }

@@ -11,7 +11,7 @@ import {
   EVENT_AI_OUTPUT,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
-  HEADER_TURN_ID,
+  HEADER_RUN_ID,
 } from "../../constants.js";
 import { ErrorCode, ErrorInfo } from "../../errors.js";
 import { createMockClient, type MockChannel } from "../../realtime/mocks.js";
@@ -22,7 +22,7 @@ import {
   ChatTransportProvider,
   mergeMessages,
   useChatTransport,
-  useClientTransport,
+  useClientSession,
   useMessageSync,
   useView,
 } from "./index.js";
@@ -65,7 +65,7 @@ describe("Vercel React transport hooks", () => {
         nearest: useChatTransport(),
         outer: useChatTransport({ channelName: "outer" }),
         view: useView({ limit: 30 }),
-        core: useClientTransport(),
+        core: useClientSession(),
       }),
       { wrapper },
     );
@@ -423,7 +423,7 @@ function outputStart(
     extras: {
       ai: {
         transport: {
-          [HEADER_TURN_ID]: turnId,
+          [HEADER_RUN_ID]: turnId,
           [HEADER_INVOCATION_ID]: invocationId,
           [HEADER_CODEC_MESSAGE_ID]: messageId,
         },

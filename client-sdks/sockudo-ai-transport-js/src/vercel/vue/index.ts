@@ -12,11 +12,11 @@ import {
 } from "vue";
 import { ErrorCode, ErrorInfo } from "../../errors.js";
 import {
-  createTransportScope as createVueTransportScope,
-  type TransportProviderOptions,
-  type UseActiveTurnsOptions,
-  type UseClientTransportOptions,
-  type UseClientTransportResult,
+  createSessionScope as createVueSessionScope,
+  type ClientSessionProviderOptions,
+  type UseActiveRunsOptions,
+  type UseClientSessionOptions,
+  type UseClientSessionResult,
   type UseCreateViewOptions,
   type UseSockudoMessagesOptions,
   type UseTreeOptions,
@@ -25,7 +25,7 @@ import {
   type TreeHandle,
 } from "../../vue/index.js";
 import type { InboundMessage } from "../../realtime/index.js";
-import type { ClientTransport } from "../../core/transport/index.js";
+import type { ClientSession } from "../../core/transport/index.js";
 import {
   createChatTransport,
   type ChatTransport,
@@ -39,13 +39,13 @@ import {
   type VercelProjection,
 } from "../codec/index.js";
 
-type VercelTransport = ClientTransport<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+type VercelSession = ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
 /**
  * Provider options for the Vercel AI SDK Vue transport layer.
  */
 export type ChatTransportProviderOptions = Omit<
-  TransportProviderOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
+  ClientSessionProviderOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
   "api" | "codec"
 > & {
   /** Server endpoint URL for the route handler.
@@ -64,7 +64,7 @@ export interface UseChatTransportResult {
   /** Resolved Vercel chat transport ref. */
   chatTransport: ShallowRef<ChatTransport | undefined>;
   /** Resolved underlying client transport ref. */
-  transport: ShallowRef<VercelTransport | undefined>;
+  transport: ShallowRef<VercelSession | undefined>;
   /** Chat transport lookup or construction error ref. */
   chatTransportError: ShallowRef<ErrorInfo | undefined>;
   /** Underlying client transport lookup or construction error ref. */
@@ -84,7 +84,7 @@ interface ChatTransportRegistry {
 const chatTransportKey: InjectionKey<ChatTransportRegistry> = Symbol(
   "sockudo-ai-transport-vercel-vue",
 );
-const vercelScope = createVueTransportScope<
+const vercelScope = createVueSessionScope<
   VercelInput,
   VercelOutput,
   VercelProjection,
@@ -100,7 +100,7 @@ export function provideChatTransport(
 ): UseChatTransportResult {
   const parent = inject(chatTransportKey, undefined);
   const { chatOptions, api = "/api/chat", ...transportOptions } = options;
-  const client = vercelScope.provideTransport({
+  const client = vercelScope.provideSession({
     ...transportOptions,
     api,
     codec: UIMessageCodec,
@@ -140,8 +140,8 @@ export function provideChatTransport(
 /**
  * Reads the nearest or named Vercel chat transport.
  */
-export function useChatTransport(options: UseClientTransportOptions = {}): UseChatTransportResult {
-  const client = useClientTransport(options);
+export function useChatTransport(options: UseClientSessionOptions = {}): UseChatTransportResult {
+  const client = useClientSession(options);
   if (options.skip === true) {
     return {
       chatTransport: shallowRef(undefined),
@@ -166,17 +166,17 @@ export function useChatTransport(options: UseClientTransportOptions = {}): UseCh
 /**
  * Creates a Vercel-typed generic transport scope.
  */
-export function createTransportScope() {
-  return createVueTransportScope<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>();
+export function createSessionScope() {
+  return createVueSessionScope<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>();
 }
 
 /**
  * Reads the nearest or named Vercel client transport.
  */
-export function useClientTransport(
-  options?: UseClientTransportOptions,
-): UseClientTransportResult<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> {
-  return vercelScope.useClientTransport(options);
+export function useClientSession(
+  options?: UseClientSessionOptions,
+): UseClientSessionResult<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> {
+  return vercelScope.useClientSession(options);
 }
 
 /**
@@ -207,10 +207,10 @@ export function useTree(options?: UseTreeOptions<VercelInput, AI.UIMessage>): Tr
 /**
  * Subscribes to active/suspended Vercel turn ownership.
  */
-export function useActiveTurns(
-  options?: UseActiveTurnsOptions<VercelInput, AI.UIMessage>,
+export function useActiveRuns(
+  options?: UseActiveRunsOptions<VercelInput, AI.UIMessage>,
 ): ComputedRef<Map<string, Set<string>>> {
-  return vercelScope.useActiveTurns(options);
+  return vercelScope.useActiveRuns(options);
 }
 
 /**

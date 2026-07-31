@@ -13,7 +13,7 @@ import { createVercelProjection, foldVercelEvent } from "./reducer.js";
  * mutable stream create/append/terminal writes. All other UIMessageChunk
  * families are discrete `ai-output` events with codec headers carrying the
  * Vercel chunk type and stable ids. User UI messages may be published either as
- * raw `{ message }` inputs by `ClientTransport` or as `ai-input` user-part
+ * raw `{ message }` inputs by `ClientSession` or as `ai-input` user-part
  * discretes by the codec encoder; observers decode both forms. Tool results,
  * tool errors, approval responses, and regenerate requests are `ai-input`
  * discretes with their tool/branch ids in codec or transport headers.

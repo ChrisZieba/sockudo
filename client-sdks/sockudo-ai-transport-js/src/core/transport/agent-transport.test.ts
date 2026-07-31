@@ -4,12 +4,12 @@ import {
   EVENT_AI_CANCEL,
   EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
-  EVENT_AI_TURN_END,
-  EVENT_AI_TURN_START,
+  EVENT_AI_RUN_END,
+  EVENT_AI_RUN_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INVOCATION_ID,
-  HEADER_TURN_ID,
+  HEADER_RUN_ID,
 } from "../../constants.js";
 import { ErrorCode } from "../../errors.js";
 import { createMockClient, type MockChannel } from "../../realtime/mocks.js";
@@ -25,18 +25,18 @@ import type {
   ReducerMeta,
   UserMessage,
 } from "../codec/index.js";
-import { createServerTransport } from "./agent-transport.js";
+import { createAgentSession } from "./agent-transport.js";
 
 describe("server transport", () => {
   it("starts from a buffered input event and publishes turn-start once", async () => {
     const { channel, published } = setupChannel();
-    const transport = createServerTransport({
+    const transport = createAgentSession({
       channel,
       codec: testCodec(),
       inputEventLookupTimeoutMs: 10,
     });
     channel.inject(input("turn-1", "inv-1", "input-1", "client-1", 1));
-    const turn = transport.newTurn({
+    const turn = transport.createRun({
       turnId: "turn-1",
       clientId: "client-1",
       invocationId: "inv-1",
@@ -47,17 +47,17 @@ describe("server transport", () => {
     await turn.start();
 
     expect(turn.messages).toEqual([{ id: "input-1", text: "hello" }]);
-    expect(published.filter((message) => message.name === EVENT_AI_TURN_START)).toHaveLength(1);
+    expect(published.filter((message) => message.name === EVENT_AI_RUN_START)).toHaveLength(1);
   });
 
   it("times out input lookup without publishing turn-start", async () => {
     const { channel, published } = setupChannel();
-    const transport = createServerTransport({
+    const transport = createAgentSession({
       channel,
       codec: testCodec(),
       inputEventLookupTimeoutMs: 1,
     });
-    const turn = transport.newTurn({
+    const turn = transport.createRun({
       turnId: "turn-1",
       invocationId: "missing",
       inputEventId: "input-1",
@@ -67,13 +67,13 @@ describe("server transport", () => {
       code: ErrorCode.InputEventNotFound,
       statusCode: 504,
     });
-    expect(published.some((message) => message.name === EVENT_AI_TURN_START)).toBe(false);
+    expect(published.some((message) => message.name === EVENT_AI_RUN_START)).toBe(false);
   });
 
   it("routes own cancel through onCancel and aborts registered turns", async () => {
     const { channel } = setupChannel();
     const onCancel = vi.fn(() => true);
-    const turn = createServerTransport({ channel, codec: testCodec() }).newTurn({
+    const turn = createAgentSession({ channel, codec: testCodec() }).createRun({
       turnId: "turn-1",
       clientId: "client-1",
       onCancel,
@@ -92,7 +92,7 @@ describe("server transport", () => {
 
   it("publishes discrete messages with override ids in order", async () => {
     const { channel, published } = setupChannel();
-    const turn = createServerTransport({ channel, codec: testCodec() }).newTurn({
+    const turn = createAgentSession({ channel, codec: testCodec() }).createRun({
       turnId: "turn-1",
       clientId: "client-1",
     });
@@ -109,7 +109,7 @@ describe("server transport", () => {
 
   it("pipes response chunks and returns complete without ending the turn", async () => {
     const { channel, published } = setupChannel();
-    const turn = createServerTransport({ channel, codec: testCodec() }).newTurn({
+    const turn = createAgentSession({ channel, codec: testCodec() }).createRun({
       turnId: "turn-1",
       clientId: "client-1",
     });
@@ -131,7 +131,7 @@ describe("server transport", () => {
 
   it("stamps one generated assistant message id onto streamed responses", async () => {
     const { channel, published } = setupChannel();
-    const turn = createServerTransport({
+    const turn = createAgentSession({
       channel,
       codec: testCodec(),
       idProvider: {
@@ -140,7 +140,7 @@ describe("server transport", () => {
         inputEventId: () => "evt-generated",
         messageId: () => "assistant-generated",
       },
-    }).newTurn({
+    }).createRun({
       turnId: "turn-1",
       clientId: "client-1",
     });
@@ -162,7 +162,7 @@ describe("server transport", () => {
 
   it("publishes turn-end before deregistering", async () => {
     const { channel, published } = setupChannel();
-    const turn = createServerTransport({ channel, codec: testCodec() }).newTurn({
+    const turn = createAgentSession({ channel, codec: testCodec() }).createRun({
       turnId: "turn-1",
       clientId: "client-1",
     });
@@ -171,7 +171,7 @@ describe("server transport", () => {
     channel.inject(cancel("client-1"));
     await Promise.resolve();
 
-    expect(published.map((message) => message.name)).toEqual([EVENT_AI_TURN_END]);
+    expect(published.map((message) => message.name)).toEqual([EVENT_AI_RUN_END]);
     expect(turn.abortSignal.aborted).toBe(false);
   });
 });
@@ -209,7 +209,7 @@ function input(
     extras: {
       ai: {
         transport: {
-          [HEADER_TURN_ID]: turnId,
+          [HEADER_RUN_ID]: turnId,
           [HEADER_INVOCATION_ID]: invocationId,
           [HEADER_CODEC_MESSAGE_ID]: messageId,
           [HEADER_INPUT_CLIENT_ID]: clientId,

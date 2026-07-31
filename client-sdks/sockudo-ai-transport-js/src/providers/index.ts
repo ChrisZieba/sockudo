@@ -1,7 +1,7 @@
 export { version } from "../version.js";
 
-import { vercelTurnEndReason } from "../vercel/transport/index.js";
-import type { StreamResult, Turn, TurnEndReason } from "../core/transport/index.js";
+import { vercelRunEndReason } from "../vercel/transport/index.js";
+import type { StreamResult, AgentRun, RunEndReason } from "../core/transport/index.js";
 import type { AI, VercelOutput, VercelProjection } from "../vercel/codec/index.js";
 
 /**
@@ -184,13 +184,13 @@ export interface DirectLlmProviderRegistry {
 }
 
 /**
- * Result returned by {@link runDirectLlmTurn}.
+ * Result returned by {@link runDirectLlm}.
  */
-export interface RunDirectLlmTurnResult {
+export interface RunDirectLlmResult {
   /** Pipe result from `turn.streamResponse`. */
   pipeResult: StreamResult;
   /** Published turn end reason. */
-  turnEndReason: TurnEndReason;
+  turnEndReason: RunEndReason;
 }
 
 /**
@@ -382,18 +382,18 @@ export function createDirectLlmProviderRegistry(
  * `turn.streamResponse`, maps completion to a run end reason, publishes
  * `ai-run-end`, and returns the evidence.
  */
-export async function runDirectLlmTurn(
-  turn: Turn<VercelOutput, VercelProjection, AI.UIMessage>,
+export async function runDirectLlm(
+  turn: AgentRun<VercelOutput, VercelProjection, AI.UIMessage>,
   provider: DirectLlmProvider,
   request: ProviderTextRequest,
-): Promise<RunDirectLlmTurnResult> {
+): Promise<RunDirectLlmResult> {
   await turn.start();
   const stream = await provider.streamText({
     ...request,
     signal: turn.abortSignal,
   });
   const pipeResult = await turn.streamResponse(stream);
-  const turnEndReason = await vercelTurnEndReason(
+  const turnEndReason = await vercelRunEndReason(
     pipeResult,
     Promise.resolve(finishReasonFromPipe(pipeResult)),
   );

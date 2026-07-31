@@ -10,12 +10,12 @@ import { describe, expect, it } from "vitest";
 import {
   EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
-  EVENT_AI_TURN_START,
+  EVENT_AI_RUN_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_STATUS,
   HEADER_STREAM,
-  HEADER_TURN_ID,
+  HEADER_RUN_ID,
 } from "../src/constants.js";
 import type {
   Codec,
@@ -24,11 +24,11 @@ import type {
   ReducerMeta,
   UserMessage,
 } from "../src/core/codec/index.js";
-import { createClientTransport } from "../src/core/transport/client-transport.js";
-import type { ActiveTurn } from "../src/core/transport/client-transport.js";
+import { createClientSession } from "../src/core/transport/client-transport.js";
+import type { ClientRun } from "../src/core/transport/client-transport.js";
 import type { InvocationIdProvider } from "../src/core/transport/invocation.js";
 import { createStreamRouter } from "../src/core/transport/stream-router.js";
-import { createConversationTree } from "../src/core/transport/tree.js";
+import { createTree } from "../src/core/transport/tree.js";
 import { createView } from "../src/core/transport/view.js";
 import { ErrorCode } from "../src/errors.js";
 import {
@@ -126,8 +126,8 @@ describe("P15 bundle budgets", () => {
     const vercelIncremental = sizes.coreVercel - sizes.core;
     const vercelReactIncremental = sizes.coreVercelReact - sizes.coreVercel;
     const coreOnly = await bundledCode("core-only", [
-      "import { createClientTransport } from '@sockudo/ai-transport';",
-      "console.log(typeof createClientTransport);",
+      "import { createClientSession } from '@sockudo/ai-transport';",
+      "console.log(typeof createClientSession);",
     ]);
     const noVercelReact = !coreOnly.includes("ChatTransportProvider");
     const noReactRuntime = !coreOnly.includes("useSyncExternalStore");
@@ -209,13 +209,13 @@ describe("P15 throughput and latency budgets", () => {
   });
 
   it("keeps send() local pipeline p50/p99 under budget with mocked network", async () => {
-    const { transport } = connectedTransport({ turnStartDeadlineMs: 0 });
+    const { transport } = connectedTransport({ runStartDeadlineMs: 0 });
     const samples: number[] = [];
     for (let index = 0; index < 500; index += 1) {
       const start = performance.now();
       await transport.view.send(
         { id: `send-${String(index)}`, text: "hello" },
-        { waitForTurnStart: false },
+        { waitForRunStart: false },
       );
       samples.push(performance.now() - start);
     }
@@ -231,7 +231,7 @@ describe("P15 throughput and latency budgets", () => {
 describe("P15 memory and hostile-input bounds", () => {
   it("keeps 10k-message tree retained size under 50 MB when GC is available", () => {
     const before = heapUsedAfterGc();
-    const tree = createConversationTree(codec);
+    const tree = createTree(codec);
     for (let index = 0; index < 10_000; index += 1) {
       tree.applyMessage(
         [
@@ -267,9 +267,9 @@ describe("P15 memory and hostile-input bounds", () => {
     });
     const active = (await transport.view.send(
       { id: "user-flat", text: "flat" },
-      { waitForTurnStart: false },
-    )) as ActiveTurn<Message>;
-    channel.inject(lifecycle(EVENT_AI_TURN_START, 1, "turn-1", "inv-1"));
+      { waitForRunStart: false },
+    )) as ClientRun<Message>;
+    channel.inject(lifecycle(EVENT_AI_RUN_START, 1, "turn-1", "inv-1"));
     for (let index = 0; index < tokenCount; index += 1) {
       channel.inject(output(0, index + 2, "x"));
     }
@@ -319,7 +319,7 @@ describe("P15 React/view rerender and reference stability budgets", () => {
       }
       previous = current;
     });
-    channel.inject(lifecycle(EVENT_AI_TURN_START, 1, "turn-1", "inv-1"));
+    channel.inject(lifecycle(EVENT_AI_RUN_START, 1, "turn-1", "inv-1"));
     for (let index = 0; index < 64; index += 1) {
       channel.inject(output(0, index + 2, String(index)));
     }
@@ -471,7 +471,7 @@ function measureSingleStream(tokens: number): {
 } {
   const { channel, transport } = connectedTransport();
   transport.view.getMessages();
-  channel.inject(lifecycle(EVENT_AI_TURN_START, 1, "turn-1", "inv-1"));
+  channel.inject(lifecycle(EVENT_AI_RUN_START, 1, "turn-1", "inv-1"));
   const latencies: number[] = [];
   let lastStart = 0;
   transport.view.on("message", () => {
@@ -490,23 +490,23 @@ function measureSingleStream(tokens: number): {
 }
 
 function connectedTransport(options: {
-  turnStartDeadlineMs?: number;
+  runStartDeadlineMs?: number;
   streamQueueLimit?: number;
 } = {}): {
   channel: BenchChannel;
   transport: ReturnType<
-    typeof createClientTransport<Message, Message, Projection, Message>
+    typeof createClientSession<Message, Message, Projection, Message>
   >;
 } {
   const channel = new BenchChannel("chat");
-  const transport = createClientTransport({
+  const transport = createClientSession({
     channel,
     codec,
     api: "https://agent.test/run",
     clientId: "client-1",
     idProvider: fixedIds(),
     fetch: okFetch(),
-    turnStartDeadlineMs: options.turnStartDeadlineMs ?? 0,
+    runStartDeadlineMs: options.runStartDeadlineMs ?? 0,
     ...(options.streamQueueLimit === undefined
       ? {}
       : { streamQueueLimit: options.streamQueueLimit }),
@@ -519,7 +519,7 @@ function injectTurnStarts(channel: BenchChannel, count: number): void {
   for (let index = 0; index < count; index += 1) {
     channel.inject(
       lifecycle(
-        EVENT_AI_TURN_START,
+        EVENT_AI_RUN_START,
         index + 1,
         `turn-${String(index + 1)}`,
         `inv-${String(index + 1)}`,
@@ -653,7 +653,7 @@ function output(
     extras: {
       ai: {
         transport: {
-          [HEADER_TURN_ID]: `turn-${suffix}`,
+          [HEADER_RUN_ID]: `turn-${suffix}`,
           [HEADER_INVOCATION_ID]: `inv-${suffix}`,
           [HEADER_CODEC_MESSAGE_ID]: `assistant-${suffix}`,
           [HEADER_STREAM]: "true",
@@ -682,7 +682,7 @@ function lifecycle(
     extras: {
       ai: {
         transport: {
-          [HEADER_TURN_ID]: turnId,
+          [HEADER_RUN_ID]: turnId,
           [HEADER_INVOCATION_ID]: invocationId,
         },
       },
@@ -692,7 +692,7 @@ function lifecycle(
 
 function headers(index: number, messageId: string): Record<string, string> {
   return {
-    [HEADER_TURN_ID]: `turn-${String(index)}`,
+    [HEADER_RUN_ID]: `turn-${String(index)}`,
     [HEADER_CODEC_MESSAGE_ID]: messageId,
   };
 }

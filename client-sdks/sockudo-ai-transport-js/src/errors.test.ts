@@ -16,15 +16,15 @@ describe("ErrorInfo", () => {
     expect(statusCodeForErrorCode(ErrorCode.TokenExpired)).toBe(401);
     expect(statusCodeForErrorCode(ErrorCode.InsufficientCapability)).toBe(401);
     expect(statusCodeForErrorCode(ErrorCode.EncoderRecoveryFailed)).toBe(500);
-    expect(statusCodeForErrorCode(ErrorCode.TransportSubscriptionError)).toBe(500);
+    expect(statusCodeForErrorCode(ErrorCode.SessionSubscriptionError)).toBe(500);
     expect(statusCodeForErrorCode(ErrorCode.CancelListenerError)).toBe(500);
-    expect(statusCodeForErrorCode(ErrorCode.TurnLifecycleError)).toBe(500);
-    expect(statusCodeForErrorCode(ErrorCode.TransportClosed)).toBe(500);
-    expect(statusCodeForErrorCode(ErrorCode.TransportSendFailed)).toBe(500);
+    expect(statusCodeForErrorCode(ErrorCode.RunLifecycleError)).toBe(500);
+    expect(statusCodeForErrorCode(ErrorCode.SessionClosed)).toBe(500);
+    expect(statusCodeForErrorCode(ErrorCode.SessionSendFailed)).toBe(500);
     expect(statusCodeForErrorCode(ErrorCode.ChannelContinuityLost)).toBe(500);
     expect(statusCodeForErrorCode(ErrorCode.ChannelNotReady)).toBe(500);
     expect(statusCodeForErrorCode(ErrorCode.StreamError)).toBe(500);
-    expect(statusCodeForErrorCode(ErrorCode.TurnStartDeadlineExceeded)).toBe(504);
+    expect(statusCodeForErrorCode(ErrorCode.RunStartDeadlineExceeded)).toBe(504);
     expect(statusCodeForErrorCode(ErrorCode.InputEventNotFound)).toBe(504);
     expect(statusCodeForErrorCode(93002)).toBe(500);
   });
@@ -53,7 +53,7 @@ describe("ErrorInfo", () => {
 
   it("normalizes thrown values and capability HTTP failures", () => {
     const existing = new ErrorInfo({
-      code: ErrorCode.TransportClosed,
+      code: ErrorCode.SessionClosed,
       message: formatErrorMessage("publish", "closed"),
     });
     expect(toErrorInfo(existing, existing)).toBe(existing);
@@ -62,7 +62,7 @@ describe("ErrorInfo", () => {
       toErrorInfo(
         { data: { code: 40009, message: "too large", status: 413 } },
         {
-          code: ErrorCode.TransportSendFailed,
+          code: ErrorCode.SessionSendFailed,
           message: formatErrorMessage("publish", "failed"),
         },
       ),
@@ -72,7 +72,7 @@ describe("ErrorInfo", () => {
       toErrorInfo(
         { data: { code: 40009, error: "too large" } },
         {
-          code: ErrorCode.TransportSendFailed,
+          code: ErrorCode.SessionSendFailed,
           message: formatErrorMessage("publish", "failed"),
         },
       ),
@@ -82,7 +82,7 @@ describe("ErrorInfo", () => {
       toErrorInfo(
         { data: { code: 40003, message: "forbidden", status: 403 } },
         {
-          code: ErrorCode.TransportSendFailed,
+          code: ErrorCode.SessionSendFailed,
           message: formatErrorMessage("publish", "failed"),
         },
       ),
@@ -96,7 +96,7 @@ describe("ErrorInfo", () => {
       toErrorInfo(
         { code: "40142", error: "expired", statusCode: 401 },
         {
-          code: ErrorCode.TransportSendFailed,
+          code: ErrorCode.SessionSendFailed,
           message: formatErrorMessage("publish", "failed"),
         },
       ),
@@ -110,7 +110,7 @@ describe("ErrorInfo", () => {
       toErrorInfo(
         { code: "40142", message: "expired" },
         {
-          code: ErrorCode.TransportSendFailed,
+          code: ErrorCode.SessionSendFailed,
           message: formatErrorMessage("publish", "failed"),
         },
       ),
@@ -124,12 +124,12 @@ describe("ErrorInfo", () => {
       toErrorInfo(
         { code: "not-numeric", error: "bad" },
         {
-          code: ErrorCode.TransportSendFailed,
+          code: ErrorCode.SessionSendFailed,
           message: formatErrorMessage("publish", "failed"),
         },
       ),
     ).toMatchObject({
-      code: ErrorCode.TransportSendFailed,
+      code: ErrorCode.SessionSendFailed,
       message: "bad",
       statusCode: 500,
     });
@@ -138,7 +138,7 @@ describe("ErrorInfo", () => {
       toErrorInfo(
         { data: { code: "not-numeric", error: "denied", status: 403 } },
         {
-          code: ErrorCode.TransportSendFailed,
+          code: ErrorCode.SessionSendFailed,
           message: formatErrorMessage("publish", "failed"),
         },
       ),
@@ -152,7 +152,7 @@ describe("ErrorInfo", () => {
       toErrorInfo(
         { status: 403 },
         {
-          code: ErrorCode.TransportSendFailed,
+          code: ErrorCode.SessionSendFailed,
           message: formatErrorMessage("publish", "failed"),
         },
       ),
@@ -164,11 +164,11 @@ describe("ErrorInfo", () => {
 
     expect(
       toErrorInfo(undefined, {
-        code: ErrorCode.TransportSendFailed,
+        code: ErrorCode.SessionSendFailed,
         message: formatErrorMessage("publish", "failed"),
       }),
     ).toMatchObject({
-      code: ErrorCode.TransportSendFailed,
+      code: ErrorCode.SessionSendFailed,
       message: "unable to publish; failed",
     });
   });

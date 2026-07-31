@@ -1,4 +1,4 @@
-import { HEADER_INPUT_CLIENT_ID, HEADER_TURN_CLIENT_ID, HEADER_TURN_ID } from "../../constants.js";
+import { HEADER_INPUT_CLIENT_ID, HEADER_RUN_CLIENT_ID, HEADER_RUN_ID } from "../../constants.js";
 import { ErrorCode, ErrorInfo } from "../../errors.js";
 import type { InboundMessage } from "../../realtime/index.js";
 import type { HeaderMap } from "../../utils.js";
@@ -17,8 +17,8 @@ export interface CancelRequest {
 }
 
 /** Registered server-side turn state. */
-export interface ManagedTurn {
-  /** Turn identity. */
+export interface ManagedRun {
+  /** AgentRun identity. */
   turnId: string;
   /** Owning client id. */
   clientId?: string;
@@ -40,8 +40,8 @@ export interface BufferedInputEvent {
   headers: HeaderMap;
 }
 
-/** Turn manager options. */
-export interface TurnManagerOptions {
+/** AgentRun manager options. */
+export interface RunManagerOptions {
   /** Maximum buffered input events.
    *
    * @defaultValue `200`
@@ -52,8 +52,8 @@ export interface TurnManagerOptions {
 /**
  * O(1) registry for server turns, early input lookup, and cancel routing.
  */
-export class TurnManager {
-  private readonly turns = new Map<string, ManagedTurn>();
+export class RunManager {
+  private readonly turns = new Map<string, ManagedRun>();
   private readonly inputBuffer = new Map<string, BufferedInputEvent[]>();
   private readonly inputWaiters = new Map<string, Set<(event: BufferedInputEvent) => void>>();
   private readonly bufferOrder: string[] = [];
@@ -61,12 +61,12 @@ export class TurnManager {
   private readonly bufferLimit: number;
 
   /** Creates a manager. */
-  public constructor(options: TurnManagerOptions = {}) {
+  public constructor(options: RunManagerOptions = {}) {
     this.bufferLimit = options.inputEventBufferLimit ?? 200;
   }
 
   /** Registers a turn for input lookup and cancellation. */
-  public register(turn: ManagedTurn): void {
+  public register(turn: ManagedRun): void {
     this.turns.set(turn.turnId, turn);
   }
 
@@ -180,7 +180,7 @@ export class TurnManager {
     this.inputWaiters.clear();
   }
 
-  private async authorizeAndAbort(turn: ManagedTurn, request: CancelRequest): Promise<void> {
+  private async authorizeAndAbort(turn: ManagedRun, request: CancelRequest): Promise<void> {
     try {
       if (turn.onCancel && !(await turn.onCancel(request))) {
         return;
@@ -216,7 +216,7 @@ export class TurnManager {
       "clientId" in filter && filter.clientId
         ? filter.clientId
         : "own" in filter && filter.own
-          ? (headers[HEADER_INPUT_CLIENT_ID] ?? headers[HEADER_TURN_CLIENT_ID])
+          ? (headers[HEADER_INPUT_CLIENT_ID] ?? headers[HEADER_RUN_CLIENT_ID])
           : undefined;
     if (!targetClientId) {
       return matched;
@@ -245,8 +245,8 @@ export class TurnManager {
 }
 
 function parseCancelFilter(headers: HeaderMap, data: unknown): CancelFilter {
-  if (headers[HEADER_TURN_ID]) {
-    return { turnId: headers[HEADER_TURN_ID] };
+  if (headers[HEADER_RUN_ID]) {
+    return { turnId: headers[HEADER_RUN_ID] };
   }
   const record =
     data !== null && typeof data === "object" ? (data as Record<string, unknown>) : undefined;

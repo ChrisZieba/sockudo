@@ -51,7 +51,7 @@ export const FEATURE_RECEIPTS: readonly FeatureReceipt[] = [
     status: "✅",
   },
   {
-    feature: "Concurrent turns and waitForTurn routing",
+    feature: "Concurrent turns and waitForRun routing",
     specFile: "test/conformance/golden-replay.test.ts",
     status: "✅",
   },

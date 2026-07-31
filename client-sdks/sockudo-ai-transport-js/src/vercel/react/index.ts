@@ -11,13 +11,13 @@ import {
 } from "react";
 import { ErrorCode, ErrorInfo } from "../../errors.js";
 import {
-  createTransportHooks as createGenericTransportHooks,
-  type TransportHooks,
-  type TransportProviderProps,
+  createSessionHooks as createGenericSessionHooks,
+  type SessionHooks,
+  type ClientSessionProviderProps,
   type TreeHandle,
-  type UseActiveTurnsOptions,
-  type UseClientTransportOptions,
-  type UseClientTransportResult,
+  type UseActiveRunsOptions,
+  type UseClientSessionOptions,
+  type UseClientSessionResult,
   type UseCreateViewOptions,
   type UseSockudoMessagesOptions,
   type UseTreeOptions,
@@ -25,7 +25,7 @@ import {
   type ViewHandle,
 } from "../../react/index.js";
 import type { InboundMessage } from "../../realtime/index.js";
-import type { ClientTransport } from "../../core/transport/index.js";
+import type { ClientSession } from "../../core/transport/index.js";
 import {
   createChatTransport,
   type ChatTransport,
@@ -39,7 +39,7 @@ import {
   type VercelProjection,
 } from "../codec/index.js";
 
-type VercelTransport = ClientTransport<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+type VercelSession = ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
 type MessageSetter = (
   value: readonly AI.UIMessage[] | ((messages: readonly AI.UIMessage[]) => readonly AI.UIMessage[]),
@@ -55,7 +55,7 @@ type MessageSetter = (
  * @defaultValue `api` defaults to `"/api/chat"`.
  */
 export type ChatTransportProviderProps = Omit<
-  TransportProviderProps<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
+  ClientSessionProviderProps<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
   "api" | "codec"
 > & {
   /** Server endpoint URL for the route handler.
@@ -101,7 +101,7 @@ export interface UseChatTransportResult {
   /** Resolved Vercel chat transport or a throwing stub. */
   chatTransport: ChatTransport;
   /** Resolved underlying client transport or a throwing stub. */
-  transport: VercelTransport;
+  transport: VercelSession;
   /**
    * Chat transport lookup or construction error.
    *
@@ -148,7 +148,7 @@ interface ChatTransportRegistry {
 
 const ChatTransportContext = createContext<ChatTransportRegistry | undefined>(undefined);
 const emptyChatOptions: ChatTransportOptions = {};
-const vercelHooks = createGenericTransportHooks<
+const vercelHooks = createGenericSessionHooks<
   VercelInput,
   VercelOutput,
   VercelProjection,
@@ -160,20 +160,20 @@ const vercelHooks = createGenericTransportHooks<
  *
  * @defaultValue Type parameters are fixed to the Vercel UIMessage codec.
  */
-export function createTransportHooks(): TransportHooks<
+export function createSessionHooks(): SessionHooks<
   VercelInput,
   VercelOutput,
   VercelProjection,
   AI.UIMessage
 > {
-  return createGenericTransportHooks<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>();
+  return createGenericSessionHooks<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>();
 }
 
 /**
  * Provides a Vercel `ChatTransport` and the underlying Vercel-typed client
  * transport for one Sockudo channel.
  *
- * This component wraps the generic {@link TransportProvider} with
+ * This component wraps the generic {@link ClientSessionProvider} with
  * {@link UIMessageCodec}. It does not close the chat transport on unmount; the
  * underlying generic transport provider owns lifecycle and strict-mode cleanup.
  */
@@ -183,7 +183,7 @@ export function ChatTransportProvider(
   const { children, chatOptions, api = "/api/chat", channelName, ...transportOptions } = props;
   const innerProps = chatOptions === undefined ? { channelName } : { channelName, chatOptions };
   return createElement(
-    VercelTransportProvider,
+    VercelClientSessionProvider,
     {
       ...transportOptions,
       api,
@@ -204,7 +204,7 @@ export function ChatTransportProvider(
  */
 export function useChatTransport(options: UseChatTransportOptions = {}): UseChatTransportResult {
   const registry = useContext(ChatTransportContext);
-  const client = useClientTransport({
+  const client = useClientSession({
     ...(options.channelName !== undefined ? { channelName: options.channelName } : {}),
     ...(options.skip !== undefined ? { skip: options.skip } : {}),
   });
@@ -313,10 +313,10 @@ export function mergeMessages(
  *
  * @defaultValue Uses the nearest provider when `channelName` is omitted.
  */
-export function useClientTransport(
-  options?: UseClientTransportOptions,
-): UseClientTransportResult<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> {
-  return vercelHooks.useClientTransport(options);
+export function useClientSession(
+  options?: UseClientSessionOptions,
+): UseClientSessionResult<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> {
+  return vercelHooks.useClientSession(options);
 }
 
 /**
@@ -355,10 +355,10 @@ export function useTree(options?: UseTreeOptions<VercelInput, AI.UIMessage>): Tr
  *
  * @defaultValue Uses the context transport.
  */
-export function useActiveTurns(
-  options?: UseActiveTurnsOptions<VercelInput, AI.UIMessage>,
+export function useActiveRuns(
+  options?: UseActiveRunsOptions<VercelInput, AI.UIMessage>,
 ): Map<string, Set<string>> {
-  return vercelHooks.useActiveTurns(options);
+  return vercelHooks.useActiveRuns(options);
 }
 
 /**
@@ -383,7 +383,7 @@ function ChatTransportProviderInner({
   children?: ReactNode;
 }): ReturnType<typeof createElement> {
   const parent = useContext(ChatTransportContext);
-  const { transport, transportError } = useClientTransport({ channelName });
+  const { transport, transportError } = useClientSession({ channelName });
   const options = chatOptions ?? emptyChatOptions;
   const slot = useMemo<ChatTransportSlot>(() => {
     if (transportError !== undefined) {
@@ -482,10 +482,10 @@ function recordPart(part: AI.UIMessagePart): Record<string, unknown> {
   return part;
 }
 
-function VercelTransportProvider(
-  props: TransportProviderProps<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
+function VercelClientSessionProvider(
+  props: ClientSessionProviderProps<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
 ): ReturnType<typeof createElement> {
-  return vercelHooks.TransportProvider(props);
+  return vercelHooks.ClientSessionProvider(props);
 }
 
 function resolveChatSlot(

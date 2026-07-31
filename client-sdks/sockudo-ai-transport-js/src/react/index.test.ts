@@ -10,8 +10,8 @@ import {
   EVENT_AI_OUTPUT,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
-  HEADER_TURN_CLIENT_ID,
-  HEADER_TURN_ID,
+  HEADER_RUN_CLIENT_ID,
+  HEADER_RUN_ID,
 } from "../constants.js";
 import { ErrorCode, ErrorInfo } from "../errors.js";
 import { EventEmitter } from "../event-emitter.js";
@@ -19,18 +19,18 @@ import { createMockClient, type MockChannel } from "../realtime/mocks.js";
 import type { SockudoRawMessage } from "../realtime/adapter.js";
 import type { Codec, DecodedBatch, Decoder, UserMessage } from "../core/codec/index.js";
 import {
-  createClientTransport,
-  type ClientTransport,
-  type ConversationTree,
-  type TurnNode,
+  createClientSession,
+  type ClientSession,
+  type Tree,
+  type RunNode,
   type View,
   type ViewEvents,
 } from "../core/transport/index.js";
 import {
-  TransportProvider,
-  createTransportHooks,
-  useActiveTurns,
-  useClientTransport,
+  ClientSessionProvider,
+  createSessionHooks,
+  useActiveRuns,
+  useClientSession,
   useCreateView,
   useSockudoMessages,
   useTree,
@@ -50,7 +50,7 @@ describe("React transport hooks", () => {
         SockudoProvider,
         { client: asSockudo(outer) },
         createElement(
-          TransportProvider,
+          ClientSessionProvider,
           {
             channelName: "outer",
             codec: testCodec(),
@@ -60,7 +60,7 @@ describe("React transport hooks", () => {
             SockudoProvider,
             { client: asSockudo(inner) },
             createElement(
-              TransportProvider,
+              ClientSessionProvider,
               {
                 channelName: "inner",
                 codec: testCodec(),
@@ -74,8 +74,8 @@ describe("React transport hooks", () => {
 
     const { result } = renderHook(
       () => ({
-        nearest: useClientTransport(),
-        outer: useClientTransport({ channelName: "outer" }),
+        nearest: useClientSession(),
+        outer: useClientSession({ channelName: "outer" }),
       }),
       { wrapper },
     );
@@ -86,13 +86,13 @@ describe("React transport hooks", () => {
   });
 
   it("returns throwing stubs for missing, skipped, and failed providers", () => {
-    const missing = renderHook(() => useClientTransport());
+    const missing = renderHook(() => useClientSession());
     expect(missing.result.current.transportError).toMatchObject({
       code: ErrorCode.InvalidArgument,
     });
     expect(() => missing.result.current.transport.view).toThrow(ErrorInfo);
 
-    const skipped = renderHook(() => useClientTransport({ skip: true }));
+    const skipped = renderHook(() => useClientSession({ skip: true }));
     expect(skipped.result.current.transportError).toBeUndefined();
     expect(() => skipped.result.current.transport.view).toThrow(ErrorInfo);
 
@@ -101,7 +101,7 @@ describe("React transport hooks", () => {
         SockudoProvider,
         { client: asSockudo({}) },
         createElement(
-          TransportProvider,
+          ClientSessionProvider,
           {
             channelName: "broken",
             codec: testCodec(),
@@ -110,7 +110,7 @@ describe("React transport hooks", () => {
           children,
         ),
       );
-    const failed = renderHook(() => useClientTransport(), { wrapper });
+    const failed = renderHook(() => useClientSession(), { wrapper });
     expect(failed.result.current.transportError).toMatchObject({
       code: ErrorCode.InvalidArgument,
     });
@@ -128,7 +128,7 @@ describe("React transport hooks", () => {
     const tree = renderHook(() => useTree());
     expect(() => tree.result.current.getNode("missing")).toThrow(ErrorInfo);
 
-    const active = renderHook(() => useActiveTurns());
+    const active = renderHook(() => useActiveRuns());
     expect(active.result.current.size).toBe(0);
 
     const raw = renderHook(() => useSockudoMessages());
@@ -136,10 +136,10 @@ describe("React transport hooks", () => {
   });
 
   it("defers provider close until after unmount microtask", async () => {
-    let captured: ClientTransport<Message, Message, Projection, Message> | undefined;
+    let captured: ClientSession<Message, Message, Projection, Message> | undefined;
     const client = createMockClient({ clientId: "client-1" });
     function Capture(): null {
-      captured = useClientTransport().transport as ClientTransport<
+      captured = useClientSession().transport as ClientSession<
         Message,
         Message,
         Projection,
@@ -154,7 +154,7 @@ describe("React transport hooks", () => {
         SockudoProvider,
         { client: asSockudo(client) },
         createElement(
-          TransportProvider,
+          ClientSessionProvider,
           {
             channelName: "chat",
             codec: testCodec(),
@@ -234,7 +234,7 @@ describe("React transport hooks", () => {
     expect(result.current).toBe(firstHandle);
   });
 
-  it("useClientTransport does not re-render during message delivery", () => {
+  it("useClientSession does not re-render during message delivery", () => {
     const client = createMockClient({ clientId: "client-1" });
     const channel = client.getMockChannel("chat");
     let renders = 0;
@@ -243,7 +243,7 @@ describe("React transport hooks", () => {
         SockudoProvider,
         { client: asSockudo(client) },
         createElement(
-          TransportProvider,
+          ClientSessionProvider,
           {
             channelName: "chat",
             codec: testCodec(),
@@ -255,7 +255,7 @@ describe("React transport hooks", () => {
     const { result } = renderHook(
       () => {
         renders += 1;
-        return useClientTransport();
+        return useClientSession();
       },
       { wrapper },
     );
@@ -268,9 +268,9 @@ describe("React transport hooks", () => {
     expect(renders).toBe(1);
   });
 
-  it("useActiveTurns publishes new map identities on turn changes", () => {
+  it("useActiveRuns publishes new map identities on turn changes", () => {
     const transport = createRealTransport();
-    const { result } = renderHook(() => useActiveTurns({ transport }));
+    const { result } = renderHook(() => useActiveRuns({ transport }));
     const first = result.current;
 
     act(() => {
@@ -301,7 +301,7 @@ describe("React transport hooks", () => {
     expect(result.current).toEqual([]);
   });
 
-  it("useClientTransport onError uses the latest callback ref", () => {
+  it("useClientSession onError uses the latest callback ref", () => {
     const client = createMockClient({ clientId: "client-1" });
     const channel = client.getMockChannel("chat");
     const first = vi.fn();
@@ -311,18 +311,18 @@ describe("React transport hooks", () => {
         SockudoProvider,
         { client: asSockudo(client) },
         createElement(
-          TransportProvider,
+          ClientSessionProvider,
           {
             channelName: "chat",
             codec: testCodec(),
             api: "/api/chat",
             fetch: vi.fn(() => Promise.resolve(new Response(null, { status: 200 }))),
-            turnStartDeadlineMs: 0,
+            runStartDeadlineMs: 0,
           },
           children,
         ),
       );
-    const { result, rerender } = renderHook(({ onError }) => useClientTransport({ onError }), {
+    const { result, rerender } = renderHook(({ onError }) => useClientSession({ onError }), {
       initialProps: { onError: first },
       wrapper,
     });
@@ -339,9 +339,9 @@ describe("React transport hooks", () => {
     expect(second).toHaveBeenCalled();
   });
 
-  it("createTransportHooks returns an isolated generic hook bundle", () => {
-    const hooks = createTransportHooks<Message, Message, Projection, Message>();
-    expect(Object.hasOwn(hooks, "TransportProvider")).toBe(true);
+  it("createSessionHooks returns an isolated generic hook bundle", () => {
+    const hooks = createSessionHooks<Message, Message, Projection, Message>();
+    expect(Object.hasOwn(hooks, "ClientSessionProvider")).toBe(true);
     expect(Object.hasOwn(hooks, "useView")).toBe(true);
   });
 
@@ -358,7 +358,7 @@ describe("React transport hooks", () => {
 
 class FakeView<TMessage> implements View<unknown, TMessage> {
   public messages: readonly TMessage[] = [];
-  public nodes: readonly TurnNode<unknown>[] = [];
+  public nodes: readonly RunNode<unknown>[] = [];
   public hasOlderValue = false;
   public loading = false;
   public loadError: ErrorInfo | undefined = undefined;
@@ -375,7 +375,7 @@ class FakeView<TMessage> implements View<unknown, TMessage> {
     return this.messages;
   }
 
-  public flattenNodes(): readonly TurnNode<unknown>[] {
+  public flattenNodes(): readonly RunNode<unknown>[] {
     return this.nodes;
   }
 
@@ -391,7 +391,7 @@ class FakeView<TMessage> implements View<unknown, TMessage> {
     return 0;
   }
 
-  public getSiblings(): readonly TurnNode<unknown>[] {
+  public getSiblings(): readonly RunNode<unknown>[] {
     return [];
   }
 
@@ -399,7 +399,7 @@ class FakeView<TMessage> implements View<unknown, TMessage> {
     return false;
   }
 
-  public getNode(): TurnNode<unknown> | undefined {
+  public getNode(): RunNode<unknown> | undefined {
     return undefined;
   }
 
@@ -435,11 +435,11 @@ class FakeView<TMessage> implements View<unknown, TMessage> {
   }
 }
 
-type FakeTransport = ClientTransport<unknown, unknown, unknown, Message> & {
+type FakeSession = ClientSession<unknown, unknown, unknown, Message> & {
   readonly createViewMock: ReturnType<typeof vi.fn<() => View<unknown, Message>>>;
 };
 
-function fakeTransport(view: View<unknown, Message>): FakeTransport {
+function fakeTransport(view: View<unknown, Message>): FakeSession {
   const createViewMock = vi.fn(() => view);
   return {
     tree: createRealTransport().tree,
@@ -447,7 +447,7 @@ function fakeTransport(view: View<unknown, Message>): FakeTransport {
     createView: createViewMock,
     createViewMock,
     cancel: vi.fn(() => Promise.resolve(undefined)),
-    waitForTurn: vi.fn(() => Promise.resolve(undefined)),
+    waitForRun: vi.fn(() => Promise.resolve(undefined)),
     stageEvents: vi.fn(),
     stageMessage: vi.fn(),
     on: vi.fn(() => () => undefined),
@@ -459,13 +459,13 @@ function createRealTransport(
   channel: MockChannel = createMockClient({
     clientId: "client-1",
   }).getMockChannel("chat"),
-): ClientTransport<Message, Message, Projection, Message> {
-  return createClientTransport({
+): ClientSession<Message, Message, Projection, Message> {
+  return createClientSession({
     channel,
     codec: testCodec(),
     api: "/api/chat",
     fetch: vi.fn(() => Promise.resolve(new Response(null, { status: 200 }))),
-    turnStartDeadlineMs: 0,
+    runStartDeadlineMs: 0,
   });
 }
 
@@ -474,15 +474,15 @@ function asSockudo(client: unknown): Parameters<typeof SockudoProvider>[0]["clie
 }
 
 function applyTurnStart(
-  tree: ConversationTree<Message, Projection>,
+  tree: Tree<Message, Projection>,
   turnId: string,
   clientId: string,
 ): void {
-  tree.applyTurnLifecycle({
-    type: "turn-start",
+  tree.applyRunLifecycle({
+    type: "start",
     headers: {
-      [HEADER_TURN_ID]: turnId,
-      [HEADER_TURN_CLIENT_ID]: clientId,
+      [HEADER_RUN_ID]: turnId,
+      [HEADER_RUN_CLIENT_ID]: clientId,
       [HEADER_INVOCATION_ID]: "inv-1",
     },
     serial: 1,
@@ -506,7 +506,7 @@ function output(
     extras: {
       ai: {
         transport: {
-          [HEADER_TURN_ID]: turnId,
+          [HEADER_RUN_ID]: turnId,
           [HEADER_INVOCATION_ID]: invocationId,
           [HEADER_CODEC_MESSAGE_ID]: messageId,
         },

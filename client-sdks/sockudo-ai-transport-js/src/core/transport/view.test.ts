@@ -1,16 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  EVENT_AI_TURN_END,
-  EVENT_AI_TURN_START,
+  EVENT_AI_RUN_END,
+  EVENT_AI_RUN_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_STATUS,
   HEADER_STREAM,
-  HEADER_TURN_ID,
-  HEADER_TURN_REASON,
+  HEADER_RUN_ID,
+  HEADER_RUN_REASON,
 } from "../../constants.js";
 import { ErrorInfo } from "../../errors.js";
 import type { HeaderMap } from "../../utils.js";
@@ -21,10 +21,10 @@ import type {
   PaginatedResult,
   Serial,
 } from "../../realtime/types.js";
-import { createConversationTree } from "./tree.js";
+import { createTree } from "./tree.js";
 import { decodeHistoryPage } from "./decode-history.js";
 import { createView } from "./view.js";
-import type { ConversationTree } from "./tree.js";
+import type { Tree } from "./tree.js";
 import type { View } from "./view.js";
 
 const TOKEN_PATCH_BUDGET_MS = process.env.CI === "true" ? 1.5 : 0.5;
@@ -113,8 +113,8 @@ describe("transport view", () => {
       headers({ turnId: "b", codecMessageId: "b" }),
       4,
     );
-    tree.applyTurnLifecycle({
-      type: "turn-end",
+    tree.applyRunLifecycle({
+      type: "end",
       headers: headers({ turnId: "b", turnReason: "complete" }),
       serial: 5,
     });
@@ -195,7 +195,7 @@ describe("transport view", () => {
 
   it("patches token-streaming tail updates without changing untouched message references", () => {
     const codec = createCodec();
-    const tree = createConversationTree(codec as Reducer<Message, Projection>);
+    const tree = createTree(codec as Reducer<Message, Projection>);
     for (let index = 0; index < 10_000; index += 1) {
       createTurn(
         tree,
@@ -231,11 +231,11 @@ describe("decode history", () => {
     const { tree, decoder } = setup();
     const page = pageFrom([
       inbound({
-        name: EVENT_AI_TURN_START,
+        name: EVENT_AI_RUN_START,
         action: "create",
         data: null,
         serial: 1,
-        transport: { [HEADER_TURN_ID]: "turn-1" },
+        transport: { [HEADER_RUN_ID]: "turn-1" },
       }),
       inbound({
         name: "ai-output",
@@ -244,20 +244,20 @@ describe("decode history", () => {
         serial: 2,
         messageSerial: "hist",
         transport: {
-          [HEADER_TURN_ID]: "turn-1",
+          [HEADER_RUN_ID]: "turn-1",
           [HEADER_CODEC_MESSAGE_ID]: "hist",
           [HEADER_STREAM]: "true",
           [HEADER_STATUS]: "complete",
         },
       }),
       inbound({
-        name: EVENT_AI_TURN_END,
+        name: EVENT_AI_RUN_END,
         action: "create",
         data: null,
         serial: 3,
         transport: {
-          [HEADER_TURN_ID]: "turn-1",
-          [HEADER_TURN_REASON]: "complete",
+          [HEADER_RUN_ID]: "turn-1",
+          [HEADER_RUN_REASON]: "complete",
         },
       }),
     ]);
@@ -267,11 +267,11 @@ describe("decode history", () => {
       decodedEvents: 1,
       lifecycleEvents: 2,
     });
-    expect(tree.getTurnNode("turn-1")).toMatchObject({
+    expect(tree.getRunNode("turn-1")).toMatchObject({
       status: "complete",
       endSerial: 3,
     });
-    expect(tree.getTurnNode("turn-1")?.projection.messages).toEqual([
+    expect(tree.getRunNode("turn-1")?.projection.messages).toEqual([
       { id: "hist", text: "history" },
     ]);
   });
@@ -296,13 +296,13 @@ interface HeaderOptions {
 }
 
 function setup(): {
-  tree: ConversationTree<Message, Projection>;
+  tree: Tree<Message, Projection>;
   codec: Codec<Message, Message, Projection, Message>;
   decoder: Decoder<Message, Message>;
   view: View<Message, Message>;
 } {
   const codec = createCodec();
-  const tree = createConversationTree(codec as Reducer<Message, Projection>);
+  const tree = createTree(codec as Reducer<Message, Projection>);
   const decoder = codec.createDecoder();
   return {
     tree,
@@ -360,7 +360,7 @@ function createCodec(): Codec<Message, Message, Projection, Message> {
 }
 
 function createTurn(
-  tree: ConversationTree<Message, Projection>,
+  tree: Tree<Message, Projection>,
   turnId: string,
   messages: readonly Message[],
   serial: number,
@@ -391,12 +391,12 @@ function decoded(event: Message, messageId: string, serial: Serial): DecodedEven
 
 function headers(options: HeaderOptions): HeaderMap {
   const map = Object.create(null) as Record<string, string>;
-  set(map, HEADER_TURN_ID, options.turnId);
+  set(map, HEADER_RUN_ID, options.turnId);
   set(map, HEADER_CODEC_MESSAGE_ID, options.codecMessageId);
   set(map, HEADER_PARENT, options.parent);
   set(map, HEADER_FORK_OF, options.forkOf);
   set(map, HEADER_MSG_REGENERATE, headerValue(options.regenerates));
-  set(map, HEADER_TURN_REASON, options.turnReason);
+  set(map, HEADER_RUN_REASON, options.turnReason);
   return map;
 }
 
@@ -459,7 +459,7 @@ function createHistory(): {
             serial: 0,
             messageSerial: "hist",
             transport: {
-              [HEADER_TURN_ID]: "hist-turn",
+              [HEADER_RUN_ID]: "hist-turn",
               [HEADER_CODEC_MESSAGE_ID]: "hist",
             },
           }),

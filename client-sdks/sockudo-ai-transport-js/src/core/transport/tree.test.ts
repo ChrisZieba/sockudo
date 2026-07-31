@@ -9,14 +9,14 @@ import {
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
-  HEADER_TURN_CLIENT_ID,
-  HEADER_TURN_CONTINUE,
-  HEADER_TURN_ID,
-  HEADER_TURN_REASON,
+  HEADER_RUN_CLIENT_ID,
+  HEADER_RUN_CONTINUE,
+  HEADER_RUN_ID,
+  HEADER_RUN_REASON,
 } from "../../constants.js";
 import type { HeaderMap } from "../../utils.js";
-import { createConversationTree } from "./tree.js";
-import type { ConversationTree, TreeSerial, TurnEndReason, TurnNode } from "./tree.js";
+import { createTree } from "./tree.js";
+import type { Tree, TreeSerial, RunEndReason, RunNode } from "./tree.js";
 import type { DecodedEvent, Reducer } from "../codec/index.js";
 
 const REPLAY_BUDGET_MS = process.env.CI === "true" ? 750 : 250;
@@ -26,7 +26,7 @@ describe("conversation tree", () => {
     const tree = createTestTree();
 
     expect(tree.applyMessage([], headers({ turnId: "turn-1" }), 1)).toBeUndefined();
-    expect(tree.getTurnNode("turn-1")).toBeUndefined();
+    expect(tree.getRunNode("turn-1")).toBeUndefined();
     expect(tree.structuralVersion).toBe(0);
   });
 
@@ -43,8 +43,8 @@ describe("conversation tree", () => {
       }),
       2,
     );
-    tree.applyTurnLifecycle({
-      type: "turn-start",
+    tree.applyRunLifecycle({
+      type: "start",
       headers: headers({
         turnId: "turn-1",
         turnClientId: "client-1",
@@ -61,8 +61,8 @@ describe("conversation tree", () => {
       }),
       3,
     );
-    tree.applyTurnLifecycle({
-      type: "turn-end",
+    tree.applyRunLifecycle({
+      type: "end",
       headers: headers({
         turnId: "turn-1",
         turnReason: "suspended",
@@ -71,18 +71,18 @@ describe("conversation tree", () => {
     });
 
     expect(user?.turnId).toBe("turn-1");
-    expect(tree.getTurnByCodecMessageId("msg-assistant")?.projection.events).toEqual([
+    expect(tree.getNodeByCodecMessageId("msg-assistant")?.projection.events).toEqual([
       "2:msg-user:user",
       "3:msg-assistant:assistant",
     ]);
-    expect(tree.getTurnNode("turn-1")).toMatchObject({
+    expect(tree.getRunNode("turn-1")).toMatchObject({
       startSerial: 1,
       endSerial: 4,
       status: "suspended",
       invocationId: "inv-1",
       clientId: "client-1",
     });
-    expect(Array.from(tree.getActiveTurnIds().get("client-1") ?? [])).toEqual(["turn-1"]);
+    expect(Array.from(tree.getActiveRunIds().get("client-1") ?? [])).toEqual(["turn-1"]);
   });
 
   it("tolerates assistant output before turn-start and backfills parent metadata", () => {
@@ -102,8 +102,8 @@ describe("conversation tree", () => {
       }),
       3,
     );
-    tree.applyTurnLifecycle({
-      type: "turn-start",
+    tree.applyRunLifecycle({
+      type: "start",
       headers: headers({
         turnId: "child",
         parent: "msg-parent",
@@ -112,7 +112,7 @@ describe("conversation tree", () => {
       serial: 2,
     });
 
-    expect(tree.getTurnNode("child")).toMatchObject({
+    expect(tree.getRunNode("child")).toMatchObject({
       parentTurnId: "parent",
       startSerial: 2,
       invocationId: "inv-child",
@@ -132,29 +132,29 @@ describe("conversation tree", () => {
       headers({
         turnId: "turn-other",
         codecMessageId: "msg-1",
-        turnContinue: true,
+        runContinue: true,
         forkOf: "msg-1",
       }),
       2,
     );
-    tree.applyTurnLifecycle({
-      type: "turn-start",
+    tree.applyRunLifecycle({
+      type: "start",
       headers: headers({
         turnId: "turn-1",
         codecMessageId: "msg-1",
-        turnContinue: true,
+        runContinue: true,
         invocationId: "inv-continue",
         forkOf: "msg-1",
       }),
       serial: 3,
     });
 
-    expect(tree.getTurnNode("turn-other")).toBeUndefined();
-    expect(tree.getTurnNode("turn-1")?.projection.events).toEqual([
+    expect(tree.getRunNode("turn-other")).toBeUndefined();
+    expect(tree.getRunNode("turn-1")?.projection.events).toEqual([
       "1:msg-1:start",
       "2:msg-1:continue",
     ]);
-    expect(tree.getTurnNode("turn-1")?.forkOf).toBeUndefined();
+    expect(tree.getRunNode("turn-1")?.forkOf).toBeUndefined();
     expect(tree.getLatestContinuationInvocation("turn-1")).toBe("inv-continue");
   });
 
@@ -167,9 +167,9 @@ describe("conversation tree", () => {
     createTurn(tree, "c", "msg-c", 4, { forkOf: "msg-b" });
     createTurn(tree, "descendant", "msg-descendant", 5, { parent: "msg-a" });
 
-    expect(tree.getSiblingTurns("msg-a").map((node) => node.turnId)).toEqual(["a", "b", "c"]);
-    expect(tree.hasSiblingTurns("msg-c")).toBe(true);
-    expect(tree.getSiblingTurns("msg-descendant").map((node) => node.turnId)).toEqual([
+    expect(tree.getSiblingNodes("msg-a").map((node) => node.turnId)).toEqual(["a", "b", "c"]);
+    expect(tree.hasSiblingNodes("msg-c")).toBe(true);
+    expect(tree.getSiblingNodes("msg-descendant").map((node) => node.turnId)).toEqual([
       "descendant",
     ]);
   });
@@ -186,7 +186,7 @@ describe("conversation tree", () => {
       "owner",
       "regen",
     ]);
-    expect(tree.getTurnNode("regen")).toMatchObject({
+    expect(tree.getRunNode("regen")).toMatchObject({
       regeneratesCodecMessageId: "msg-owner",
     });
   });
@@ -197,7 +197,7 @@ describe("conversation tree", () => {
     createTurn(tree, "late", "msg-late", 20);
     createTurn(tree, "early", "msg-early", 10);
 
-    expect(tree.getTurnNodes().map((node) => node.turnId)).toEqual(["early", "late"]);
+    expect(tree.getRunNodes().map((node) => node.turnId)).toEqual(["early", "late"]);
   });
 
   it("deletes unreachable turns and descendants by codec message id", () => {
@@ -208,8 +208,8 @@ describe("conversation tree", () => {
 
     tree.delete("msg-parent");
 
-    expect(tree.getTurnNode("parent")).toBeUndefined();
-    expect(tree.getTurnNode("child")).toBeUndefined();
+    expect(tree.getRunNode("parent")).toBeUndefined();
+    expect(tree.getRunNode("child")).toBeUndefined();
     expect(tree.getHeaders("msg-parent")).toBeUndefined();
   });
 
@@ -262,7 +262,7 @@ describe("conversation tree", () => {
     }
     const elapsed = performance.now() - started;
 
-    expect(tree.getTurnNode("turn-1")?.projection.events).toHaveLength(100_000);
+    expect(tree.getRunNode("turn-1")?.projection.events).toHaveLength(100_000);
     expect(elapsed).toBeLessThan(REPLAY_BUDGET_MS);
   });
 });
@@ -281,11 +281,11 @@ interface HeaderOptions {
   turnClientId?: string;
   inputClientId?: string;
   invocationId?: string;
-  turnContinue?: boolean;
-  turnReason?: TurnEndReason;
+  runContinue?: boolean;
+  turnReason?: RunEndReason;
 }
 
-type TestTree = ConversationTree<string, Projection>;
+type TestTree = Tree<string, Projection>;
 
 const reducer: Reducer<string, Projection> = {
   init() {
@@ -298,22 +298,22 @@ const reducer: Reducer<string, Projection> = {
 };
 
 function createTestTree(): TestTree {
-  return createConversationTree(reducer);
+  return createTree(reducer);
 }
 
 function headers(options: HeaderOptions): HeaderMap {
   const map = Object.create(null) as Record<string, string>;
-  set(map, HEADER_TURN_ID, options.turnId);
+  set(map, HEADER_RUN_ID, options.turnId);
   set(map, HEADER_CODEC_MESSAGE_ID, options.codecMessageId);
   set(map, HEADER_PARENT, options.parent);
   set(map, HEADER_FORK_OF, options.forkOf);
   set(map, HEADER_MSG_REGENERATE, headerValue(options.regenerates));
   set(map, HEADER_ROLE, options.role);
-  set(map, HEADER_TURN_CLIENT_ID, options.turnClientId);
+  set(map, HEADER_RUN_CLIENT_ID, options.turnClientId);
   set(map, HEADER_INPUT_CLIENT_ID, options.inputClientId);
   set(map, HEADER_INVOCATION_ID, options.invocationId);
-  set(map, HEADER_TURN_CONTINUE, bool(options.turnContinue));
-  set(map, HEADER_TURN_REASON, options.turnReason);
+  set(map, HEADER_RUN_CONTINUE, bool(options.runContinue));
+  set(map, HEADER_RUN_REASON, options.turnReason);
   return map;
 }
 
@@ -334,7 +334,7 @@ function createTurn(
   codecMessageId: string,
   serial: number,
   metadata: HeaderOptions = {},
-): TurnNode<Projection> | undefined {
+): RunNode<Projection> | undefined {
   return tree.applyMessage(
     [decoded(turnId, codecMessageId, serial)],
     headers({
@@ -354,7 +354,7 @@ interface Op {
   parent?: string;
   forkOf?: string;
   regenerates?: string | boolean;
-  reason?: TurnEndReason;
+  reason?: RunEndReason;
 }
 
 const validOps: Op[] = [
@@ -418,14 +418,14 @@ function applyOps(ops: readonly Op[]): TestTree {
       setOptional(headerOptions, "parent", op.parent);
       setOptional(headerOptions, "forkOf", op.forkOf);
       setOptional(headerOptions, "regenerates", op.regenerates);
-      tree.applyTurnLifecycle({
-        type: "turn-start",
+      tree.applyRunLifecycle({
+        type: "start",
         headers: headers(headerOptions),
         serial: op.serial,
       });
     } else {
-      tree.applyTurnLifecycle({
-        type: "turn-end",
+      tree.applyRunLifecycle({
+        type: "end",
         headers: headers({
           turnId: op.turnId,
           turnReason: op.reason ?? "complete",
@@ -439,7 +439,7 @@ function applyOps(ops: readonly Op[]): TestTree {
 
 function summarize(tree: TestTree): unknown {
   return ["root", "child", "regen"].map((turnId) => {
-    const node = tree.getTurnNode(turnId);
+    const node = tree.getRunNode(turnId);
     return {
       turnId,
       parentTurnId: node?.parentTurnId,

@@ -1,6 +1,6 @@
 // core
 export { version } from "./version.js";
-export { EVENT_AI_CANCEL, EVENT_AI_INPUT, EVENT_AI_OUTPUT, EVENT_AI_TURN_END, EVENT_AI_TURN_START, HEADER_CODEC_MESSAGE_ID, HEADER_DISCRETE, HEADER_ERROR_CODE, HEADER_ERROR_MESSAGE, HEADER_EVENT_ID, HEADER_FORK_OF, HEADER_INPUT_CLIENT_ID, HEADER_INVOCATION_ID, HEADER_MSG_REGENERATE, HEADER_PARENT, HEADER_ROLE, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID, HEADER_TURN_CLIENT_ID, HEADER_TURN_CONTINUE, HEADER_TURN_ID, HEADER_TURN_REASON, } from "./constants.js";
+export { EVENT_AI_CANCEL, EVENT_AI_INPUT, EVENT_AI_OUTPUT, EVENT_AI_RUN_END, EVENT_AI_RUN_RESUME, EVENT_AI_RUN_START, EVENT_AI_RUN_SUSPEND, EVENT_AI_STEP_END, EVENT_AI_STEP_START, HEADER_CODEC_MESSAGE_ID, HEADER_DISCRETE, HEADER_ERROR_CODE, HEADER_ERROR_MESSAGE, HEADER_EVENT_ID, HEADER_FORK_OF, HEADER_INPUT_CLIENT_ID, HEADER_INPUT_CODEC_MESSAGE_ID, HEADER_INVOCATION_ID, HEADER_MSG_REGENERATE, HEADER_PARENT, HEADER_ROLE, HEADER_RUN_CLIENT_ID, HEADER_RUN_ID, HEADER_RUN_REASON, HEADER_STATUS, HEADER_STEP_CLIENT_ID, HEADER_STEP_ID, HEADER_STEP_REASON, HEADER_STEP_START_SERIAL, HEADER_STREAM, HEADER_STREAM_ID, } from "./constants.js";
 export { ErrorCode, ErrorInfo, errorInfoIs, formatErrorMessage, statusCodeForErrorCode, toErrorInfo, type ErrorInfoOptions, } from "./errors.js";
 export { EventEmitter, type EventEmitterOptions, type EventUnsubscribe, type EventsMap, } from "./event-emitter.js";
 export { LogLevel, consoleLogger, makeLogger, redactValue, type LogContext, type LogHandler, type Logger, type MakeLoggerOptions, } from "./logger.js";
@@ -15,7 +15,7 @@ export { version } from "../version.js";
 import { createElement, type ReactNode } from "react";
 import { ErrorInfo } from "../errors.js";
 import type { InboundMessage } from "../realtime/index.js";
-import { type BranchSelectionIntent, type ClientTransport, type ClientTransportOptions, type TurnNode, type View } from "../core/transport/index.js";
+import { type BranchSelectionIntent, type ClientSession, type ClientSessionOptions, type RunNode, type View } from "../core/transport/index.js";
 /**
  * Provider props for the generic AI Transport React layer.
  *
@@ -25,10 +25,10 @@ import { type BranchSelectionIntent, type ClientTransport, type ClientTransportO
  * through `src/realtime/react`, where the Sockudo client is adapted into the
  * realtime seam.
  *
- * Construction errors are caught and exposed by {@link useClientTransport} as
+ * Construction errors are caught and exposed by {@link useClientSession} as
  * `transportError`; children still render under the provider registry.
  */
-export type TransportProviderProps<TInput, TOutput, TProjection, TMessage> = Omit<ClientTransportOptions<TInput, TOutput, TProjection, TMessage>, "client" | "channel" | "channelName"> & {
+export type ClientSessionProviderProps<TInput, TOutput, TProjection, TMessage> = Omit<ClientSessionOptions<TInput, TOutput, TProjection, TMessage>, "client" | "channel" | "channelName"> & {
     /**
      * Registry key and Sockudo channel name for unnamed hook lookups.
      *
@@ -39,12 +39,12 @@ export type TransportProviderProps<TInput, TOutput, TProjection, TMessage> = Omi
     children?: ReactNode;
 };
 /**
- * Options for {@link useClientTransport}.
+ * Options for {@link useClientSession}.
  *
  * Lookup failures return a throwing `InvalidArgument` stub and set
  * `transportError`; when `skip` is true, `transportError` is omitted.
  */
-export interface UseClientTransportOptions {
+export interface UseClientSessionOptions {
     /**
      * Provider channel name.
      *
@@ -65,14 +65,14 @@ export interface UseClientTransportOptions {
     onError?(error: ErrorInfo): void;
 }
 /**
- * Result returned by {@link useClientTransport}.
+ * Result returned by {@link useClientSession}.
  *
  * Missing, skipped, and failed providers expose a transport proxy that throws
  * {@link ErrorInfo} with {@link ErrorCode.InvalidArgument} on property access.
  */
-export interface UseClientTransportResult<TInput, TOutput, TProjection, TMessage> {
+export interface UseClientSessionResult<TInput, TOutput, TProjection, TMessage> {
     /** Resolved transport or a throwing stub. */
-    transport: ClientTransport<TInput, TOutput, TProjection, TMessage>;
+    transport: ClientSession<TInput, TOutput, TProjection, TMessage>;
     /**
      * Provider construction or lookup error.
      *
@@ -93,7 +93,7 @@ export interface UseViewOptions<TInput, TMessage> {
      *
      * @defaultValue Context transport.
      */
-    transport?: ClientTransport<TInput, unknown, unknown, TMessage>;
+    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
     /**
      * Explicit view; wins over `transport`.
      *
@@ -123,7 +123,7 @@ export interface ViewHandle<TMessage> {
     /** Current visible messages. */
     messages: readonly TMessage[];
     /** Current visible turn nodes. */
-    nodes: readonly TurnNode<unknown>[];
+    nodes: readonly RunNode<unknown>[];
     /** Whether older messages can be loaded. */
     hasOlder: boolean;
     /** Whether a load operation is active. */
@@ -137,11 +137,11 @@ export interface ViewHandle<TMessage> {
     /** Gets selected sibling index. */
     getSelectedIndex(id: string): number;
     /** Gets sibling turn nodes. */
-    getSiblings(id: string): readonly TurnNode<unknown>[];
+    getSiblings(id: string): readonly RunNode<unknown>[];
     /** Returns whether siblings exist. */
     hasSiblings(id: string): boolean;
     /** Gets a turn node by turn id or codec message id. */
-    getNode(id: string): TurnNode<unknown> | undefined;
+    getNode(id: string): RunNode<unknown> | undefined;
     /** Sends a user message. */
     send(message: TMessage): Promise<unknown>;
     /** Requests regeneration. */
@@ -163,7 +163,7 @@ export interface UseCreateViewOptions<TInput, TMessage> {
      *
      * @defaultValue Context transport.
      */
-    transport?: ClientTransport<TInput, unknown, unknown, TMessage>;
+    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
     /**
      * Auto-load page size once per owned view instance.
      *
@@ -189,7 +189,7 @@ export interface UseTreeOptions<TInput, TMessage> {
      *
      * @defaultValue Context transport.
      */
-    transport?: ClientTransport<TInput, unknown, unknown, TMessage>;
+    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
 }
 /**
  * Stable tree helper handle.
@@ -199,24 +199,24 @@ export interface UseTreeOptions<TInput, TMessage> {
  */
 export interface TreeHandle {
     /** Gets sibling turn nodes without subscribing to tree changes. */
-    getSiblings(id: string): readonly TurnNode<unknown>[];
+    getSiblings(id: string): readonly RunNode<unknown>[];
     /** Returns whether siblings exist without subscribing to tree changes. */
     hasSiblings(id: string): boolean;
     /** Gets a turn node without subscribing to tree changes. */
-    getNode(id: string): TurnNode<unknown> | undefined;
+    getNode(id: string): RunNode<unknown> | undefined;
 }
 /**
- * Options for {@link useActiveTurns}.
+ * Options for {@link useActiveRuns}.
  *
  * Without a resolved transport, the hook returns a stable empty map.
  */
-export interface UseActiveTurnsOptions<TInput, TMessage> {
+export interface UseActiveRunsOptions<TInput, TMessage> {
     /**
      * Explicit transport.
      *
      * @defaultValue Context transport.
      */
-    transport?: ClientTransport<TInput, unknown, unknown, TMessage>;
+    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
 }
 /**
  * Options for {@link useSockudoMessages}.
@@ -230,7 +230,7 @@ export interface UseSockudoMessagesOptions<TInput, TMessage> {
      *
      * @defaultValue Context transport.
      */
-    transport?: ClientTransport<TInput, unknown, unknown, TMessage>;
+    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
     /**
      * Suppresses subscription and returns a stable empty list.
      *
@@ -239,16 +239,16 @@ export interface UseSockudoMessagesOptions<TInput, TMessage> {
     skip?: boolean;
 }
 /**
- * Generic hook bundle returned by {@link createTransportHooks}.
+ * Generic hook bundle returned by {@link createSessionHooks}.
  *
  * The bundled hooks share the same baked type parameters and error behavior as
  * the default exports.
  */
-export interface TransportHooks<TInput, TOutput, TProjection, TMessage> {
+export interface SessionHooks<TInput, TOutput, TProjection, TMessage> {
     /** Provider for a channel-keyed transport registry. */
-    TransportProvider(props: TransportProviderProps<TInput, TOutput, TProjection, TMessage>): ReturnType<typeof createElement>;
+    ClientSessionProvider(props: ClientSessionProviderProps<TInput, TOutput, TProjection, TMessage>): ReturnType<typeof createElement>;
     /** Reads the nearest or named client transport. */
-    useClientTransport(options?: UseClientTransportOptions): UseClientTransportResult<TInput, TOutput, TProjection, TMessage>;
+    useClientSession(options?: UseClientSessionOptions): UseClientSessionResult<TInput, TOutput, TProjection, TMessage>;
     /** Subscribes to a branch-aware view. */
     useView(options?: UseViewOptions<TInput, TMessage>): ViewHandle<TMessage>;
     /** Creates, owns, and subscribes to an additional view. */
@@ -256,7 +256,7 @@ export interface TransportHooks<TInput, TOutput, TProjection, TMessage> {
     /** Returns stable tree callbacks without re-rendering on tree changes. */
     useTree(options?: UseTreeOptions<TInput, TMessage>): TreeHandle;
     /** Subscribes to active/suspended turn ownership. */
-    useActiveTurns(options?: UseActiveTurnsOptions<TInput, TMessage>): Map<string, Set<string>>;
+    useActiveRuns(options?: UseActiveRunsOptions<TInput, TMessage>): Map<string, Set<string>>;
     /** Subscribes to raw normalized inbound messages. */
     useSockudoMessages(options?: UseSockudoMessagesOptions<TInput, TMessage>): readonly InboundMessage[];
 }
@@ -268,7 +268,7 @@ export interface TransportHooks<TInput, TOutput, TProjection, TMessage> {
  * Returned hooks throw only via synchronous handle/stub access for invalid
  * usage; async transport/view methods reject with {@link ErrorInfo}.
  */
-export declare function createTransportHooks<TInput = unknown, TOutput = unknown, TProjection = unknown, TMessage = unknown>(): TransportHooks<TInput, TOutput, TProjection, TMessage>;
+export declare function createSessionHooks<TInput = unknown, TOutput = unknown, TProjection = unknown, TMessage = unknown>(): SessionHooks<TInput, TOutput, TProjection, TMessage>;
 /**
  * Provides a channel-keyed AI client transport using the outer
  * `@sockudo/client/react` `SockudoProvider`.
@@ -276,9 +276,9 @@ export declare function createTransportHooks<TInput = unknown, TOutput = unknown
  * @defaultValue No default `channelName`; the prop is required.
  *
  * Construction failures are caught and exposed through
- * {@link useClientTransport}; children continue to render.
+ * {@link useClientSession}; children continue to render.
  */
-export declare function TransportProvider(props: TransportProviderProps<unknown, unknown, unknown, unknown>): ReturnType<typeof createElement>;
+export declare function ClientSessionProvider(props: ClientSessionProviderProps<unknown, unknown, unknown, unknown>): ReturnType<typeof createElement>;
 /**
  * Reads the nearest or named AI client transport.
  *
@@ -287,7 +287,7 @@ export declare function TransportProvider(props: TransportProviderProps<unknown,
  * Missing, skipped, and failed providers return a throwing `InvalidArgument`
  * stub; `transportError` is set except when `skip` is true.
  */
-export declare function useClientTransport(options?: UseClientTransportOptions): UseClientTransportResult<unknown, unknown, unknown, unknown>;
+export declare function useClientSession(options?: UseClientSessionOptions): UseClientSessionResult<unknown, unknown, unknown, unknown>;
 /**
  * Subscribes to a branch-aware view and returns a reactive snapshot handle.
  *
@@ -324,7 +324,7 @@ export declare function useTree(options?: UseTreeOptions<unknown, unknown>): Tre
  * Returns a new `Map<clientId, Set<turnId>>` reference for each turn event and a
  * stable empty map without a resolved transport.
  */
-export declare function useActiveTurns(options?: UseActiveTurnsOptions<unknown, unknown>): Map<string, Set<string>>;
+export declare function useActiveRuns(options?: UseActiveRunsOptions<unknown, unknown>): Map<string, Set<string>>;
 /**
  * Subscribes to the raw normalized Sockudo inbound message firehose.
  *
@@ -342,11 +342,11 @@ export { version } from "../version.js";
 import { type ComputedRef, type InjectionKey, type Ref, type ShallowRef } from "vue";
 import { ErrorInfo } from "../errors.js";
 import type { ClientLike, InboundMessage } from "../realtime/index.js";
-import { type BranchSelectionIntent, type ClientTransport, type ClientTransportOptions, type TurnNode, type View } from "../core/transport/index.js";
+import { type BranchSelectionIntent, type ClientSession, type ClientSessionOptions, type RunNode, type View } from "../core/transport/index.js";
 /**
  * Provider options for the generic AI Transport Vue layer.
  */
-export type TransportProviderOptions<TInput, TOutput, TProjection, TMessage> = Omit<ClientTransportOptions<TInput, TOutput, TProjection, TMessage>, "client" | "channel" | "channelName"> & {
+export type ClientSessionProviderOptions<TInput, TOutput, TProjection, TMessage> = Omit<ClientSessionOptions<TInput, TOutput, TProjection, TMessage>, "client" | "channel" | "channelName"> & {
     /** Registry key and Sockudo channel name. */
     channelName: string;
     /** Explicit realtime client. Defaults to `@sockudo/client/vue` context. */
@@ -358,9 +358,9 @@ export type TransportProviderOptions<TInput, TOutput, TProjection, TMessage> = O
     closeOnScopeDispose?: boolean;
 };
 /**
- * Options for {@link useClientTransport}.
+ * Options for {@link useClientSession}.
  */
-export interface UseClientTransportOptions {
+export interface UseClientSessionOptions {
     /** Provider channel name. Defaults to nearest provided transport. */
     channelName?: string;
     /** Suppresses lookup and returns empty refs. */
@@ -369,11 +369,11 @@ export interface UseClientTransportOptions {
     onError?(error: ErrorInfo): void;
 }
 /**
- * Result returned by {@link useClientTransport}.
+ * Result returned by {@link useClientSession}.
  */
-export interface UseClientTransportResult<TInput, TOutput, TProjection, TMessage> {
+export interface UseClientSessionResult<TInput, TOutput, TProjection, TMessage> {
     /** Resolved transport ref. */
-    transport: ShallowRef<ClientTransport<TInput, TOutput, TProjection, TMessage> | undefined>;
+    transport: ShallowRef<ClientSession<TInput, TOutput, TProjection, TMessage> | undefined>;
     /** Provider construction or lookup error ref. */
     transportError: ShallowRef<ErrorInfo | undefined>;
 }
@@ -382,7 +382,7 @@ export interface UseClientTransportResult<TInput, TOutput, TProjection, TMessage
  */
 export interface UseViewOptions<TInput, TMessage> {
     /** Explicit transport. */
-    transport?: ClientTransport<TInput, unknown, unknown, TMessage>;
+    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
     /** Explicit view; wins over `transport`. */
     view?: View<TInput, TMessage>;
     /** Auto-load page size once per view instance. */
@@ -397,7 +397,7 @@ export interface ViewHandle<TMessage> {
     /** Current visible messages. */
     messages: Ref<readonly TMessage[]>;
     /** Current visible turn nodes. */
-    nodes: Ref<readonly TurnNode<unknown>[]>;
+    nodes: Ref<readonly RunNode<unknown>[]>;
     /** Whether older messages can be loaded. */
     hasOlder: Ref<boolean>;
     /** Whether a load operation is active. */
@@ -411,11 +411,11 @@ export interface ViewHandle<TMessage> {
     /** Gets selected sibling index. */
     getSelectedIndex(id: string): number;
     /** Gets sibling turn nodes. */
-    getSiblings(id: string): readonly TurnNode<unknown>[];
+    getSiblings(id: string): readonly RunNode<unknown>[];
     /** Returns whether siblings exist. */
     hasSiblings(id: string): boolean;
     /** Gets a turn node by turn id or codec message id. */
-    getNode(id: string): TurnNode<unknown> | undefined;
+    getNode(id: string): RunNode<unknown> | undefined;
     /** Sends a user message. */
     send(message: TMessage): Promise<unknown>;
     /** Requests regeneration. */
@@ -430,7 +430,7 @@ export interface ViewHandle<TMessage> {
  */
 export interface UseCreateViewOptions<TInput, TMessage> {
     /** Explicit transport. Defaults to context transport. */
-    transport?: ClientTransport<TInput, unknown, unknown, TMessage>;
+    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
     /** Auto-load page size once per owned view instance. */
     limit?: number;
     /** Suppresses view creation. */
@@ -441,43 +441,43 @@ export interface UseCreateViewOptions<TInput, TMessage> {
  */
 export interface UseTreeOptions<TInput, TMessage> {
     /** Explicit transport. Defaults to context transport. */
-    transport?: ClientTransport<TInput, unknown, unknown, TMessage>;
+    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
 }
 /**
  * Stable tree helper handle.
  */
 export interface TreeHandle {
     /** Gets sibling turn nodes without subscribing to tree changes. */
-    getSiblings(id: string): readonly TurnNode<unknown>[];
+    getSiblings(id: string): readonly RunNode<unknown>[];
     /** Returns whether siblings exist without subscribing to tree changes. */
     hasSiblings(id: string): boolean;
     /** Gets a turn node without subscribing to tree changes. */
-    getNode(id: string): TurnNode<unknown> | undefined;
+    getNode(id: string): RunNode<unknown> | undefined;
 }
 /**
  * Options for active-turn subscriptions.
  */
-export interface UseActiveTurnsOptions<TInput, TMessage> {
+export interface UseActiveRunsOptions<TInput, TMessage> {
     /** Explicit transport. Defaults to context transport. */
-    transport?: ClientTransport<TInput, unknown, unknown, TMessage>;
+    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
 }
 /**
  * Options for raw Sockudo message subscriptions.
  */
 export interface UseSockudoMessagesOptions<TInput, TMessage> {
     /** Explicit transport. Defaults to context transport. */
-    transport?: ClientTransport<TInput, unknown, unknown, TMessage>;
+    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
     /** Suppresses subscription and returns a stable empty list. */
     skip?: boolean;
 }
 /**
- * Vue transport scope returned by {@link createTransportScope}.
+ * Vue transport scope returned by {@link createSessionScope}.
  */
-export interface TransportScope<TInput, TOutput, TProjection, TMessage> {
+export interface SessionScope<TInput, TOutput, TProjection, TMessage> {
     /** Provides a channel-keyed transport registry. */
-    provideTransport(options: TransportProviderOptions<TInput, TOutput, TProjection, TMessage>): UseClientTransportResult<TInput, TOutput, TProjection, TMessage>;
+    provideSession(options: ClientSessionProviderOptions<TInput, TOutput, TProjection, TMessage>): UseClientSessionResult<TInput, TOutput, TProjection, TMessage>;
     /** Reads the nearest or named client transport. */
-    useClientTransport(options?: UseClientTransportOptions): UseClientTransportResult<TInput, TOutput, TProjection, TMessage>;
+    useClientSession(options?: UseClientSessionOptions): UseClientSessionResult<TInput, TOutput, TProjection, TMessage>;
     /** Subscribes to a branch-aware view. */
     useView(options?: UseViewOptions<TInput, TMessage>): ViewHandle<TMessage>;
     /** Creates, owns, and subscribes to an additional view. */
@@ -485,30 +485,30 @@ export interface TransportScope<TInput, TOutput, TProjection, TMessage> {
     /** Returns stable tree callbacks without re-rendering on tree changes. */
     useTree(options?: UseTreeOptions<TInput, TMessage>): TreeHandle;
     /** Subscribes to active/suspended turn ownership. */
-    useActiveTurns(options?: UseActiveTurnsOptions<TInput, TMessage>): ComputedRef<Map<string, Set<string>>>;
+    useActiveRuns(options?: UseActiveRunsOptions<TInput, TMessage>): ComputedRef<Map<string, Set<string>>>;
     /** Subscribes to raw normalized inbound messages. */
     useSockudoMessages(options?: UseSockudoMessagesOptions<TInput, TMessage>): Ref<readonly InboundMessage[]>;
 }
-interface TransportSlot {
-    transport: ShallowRef<ClientTransport<unknown, unknown, unknown, unknown> | undefined>;
+interface SessionSlot {
+    transport: ShallowRef<ClientSession<unknown, unknown, unknown, unknown> | undefined>;
     transportError: ShallowRef<ErrorInfo | undefined>;
 }
-interface TransportRegistry {
+interface SessionRegistry {
     defaultChannelName?: string;
-    slots: Map<string, TransportSlot>;
+    slots: Map<string, SessionSlot>;
 }
 /**
  * Creates generic Vue composables for a specific codec/message type family.
  */
-export declare function createTransportScope<TInput = unknown, TOutput = unknown, TProjection = unknown, TMessage = unknown>(key?: InjectionKey<TransportRegistry>): TransportScope<TInput, TOutput, TProjection, TMessage>;
+export declare function createSessionScope<TInput = unknown, TOutput = unknown, TProjection = unknown, TMessage = unknown>(key?: InjectionKey<SessionRegistry>): SessionScope<TInput, TOutput, TProjection, TMessage>;
 /**
  * Provides a channel-keyed AI client transport using `@sockudo/client/vue`.
  */
-export declare function provideTransport(options: TransportProviderOptions<unknown, unknown, unknown, unknown>): UseClientTransportResult<unknown, unknown, unknown, unknown>;
+export declare function provideSession(options: ClientSessionProviderOptions<unknown, unknown, unknown, unknown>): UseClientSessionResult<unknown, unknown, unknown, unknown>;
 /**
  * Reads the nearest or named Vue client transport.
  */
-export declare function useClientTransport(options?: UseClientTransportOptions): UseClientTransportResult<unknown, unknown, unknown, unknown>;
+export declare function useClientSession(options?: UseClientSessionOptions): UseClientSessionResult<unknown, unknown, unknown, unknown>;
 /**
  * Subscribes to a branch-aware view and returns reactive refs.
  */
@@ -524,7 +524,7 @@ export declare function useTree(options?: UseTreeOptions<unknown, unknown>): Tre
 /**
  * Subscribes to active/suspended turn ownership.
  */
-export declare function useActiveTurns(options?: UseActiveTurnsOptions<unknown, unknown>): ComputedRef<Map<string, Set<string>>>;
+export declare function useActiveRuns(options?: UseActiveRunsOptions<unknown, unknown>): ComputedRef<Map<string, Set<string>>>;
 /**
  * Subscribes to the raw normalized Sockudo inbound message firehose.
  */
@@ -536,11 +536,11 @@ export { version } from "../version.js";
 import { type Readable } from "svelte/store";
 import { ErrorInfo } from "../errors.js";
 import type { InboundMessage } from "../realtime/index.js";
-import { type BranchSelectionIntent, type ClientTransport, type ClientTransportOptions, type TurnNode, type View } from "../core/transport/index.js";
+import { type BranchSelectionIntent, type ClientSession, type ClientSessionOptions, type RunNode, type View } from "../core/transport/index.js";
 /**
  * Svelte transport store options.
  */
-export type TransportStoreOptions<TInput, TOutput, TProjection, TMessage> = ClientTransportOptions<TInput, TOutput, TProjection, TMessage> & {
+export type SessionStoreOptions<TInput, TOutput, TProjection, TMessage> = ClientSessionOptions<TInput, TOutput, TProjection, TMessage> & {
     /** Closes the transport when the current Svelte component is destroyed.
      *
      * @defaultValue `true`.
@@ -548,9 +548,9 @@ export type TransportStoreOptions<TInput, TOutput, TProjection, TMessage> = Clie
     closeOnDestroy?: boolean;
 };
 /**
- * Options for {@link getClientTransport}.
+ * Options for {@link getClientSession}.
  */
-export interface GetClientTransportOptions {
+export interface GetClientSessionOptions {
     /** Provider channel name. Defaults to nearest context transport. */
     channelName?: string;
     /** Suppresses lookup and returns empty state. */
@@ -561,16 +561,16 @@ export interface GetClientTransportOptions {
 /**
  * Svelte transport state.
  */
-export interface ClientTransportState<TInput, TOutput, TProjection, TMessage> {
+export interface ClientSessionState<TInput, TOutput, TProjection, TMessage> {
     /** Resolved transport. */
-    transport?: ClientTransport<TInput, TOutput, TProjection, TMessage>;
+    transport?: ClientSession<TInput, TOutput, TProjection, TMessage>;
     /** Provider construction or lookup error. */
     transportError?: ErrorInfo;
 }
 /**
  * Svelte transport store.
  */
-export interface ClientTransportStore<TInput, TOutput, TProjection, TMessage> extends Readable<ClientTransportState<TInput, TOutput, TProjection, TMessage>> {
+export interface ClientSessionStore<TInput, TOutput, TProjection, TMessage> extends Readable<ClientSessionState<TInput, TOutput, TProjection, TMessage>> {
     /** Channel registry key. */
     readonly channelName?: string;
     /** Closes the transport if it exists. */
@@ -581,7 +581,7 @@ export interface ClientTransportStore<TInput, TOutput, TProjection, TMessage> ex
  */
 export interface ViewStoreOptions<TInput, TMessage> {
     /** Explicit transport. */
-    transport?: ClientTransport<TInput, unknown, unknown, TMessage> | Readable<ClientTransportState<TInput, unknown, unknown, TMessage>>;
+    transport?: ClientSession<TInput, unknown, unknown, TMessage> | Readable<ClientSessionState<TInput, unknown, unknown, TMessage>>;
     /** Explicit view; wins over `transport`. */
     view?: View<TInput, TMessage>;
     /** Auto-load page size once per view instance. */
@@ -596,7 +596,7 @@ export interface ViewState<TMessage> {
     /** Current visible messages. */
     messages: readonly TMessage[];
     /** Current visible turn nodes. */
-    nodes: readonly TurnNode<unknown>[];
+    nodes: readonly RunNode<unknown>[];
     /** Whether older messages can be loaded. */
     hasOlder: boolean;
     /** Whether a load operation is active. */
@@ -615,11 +615,11 @@ export interface ViewStore<TMessage> extends Readable<ViewState<TMessage>> {
     /** Gets selected sibling index. */
     getSelectedIndex(id: string): number;
     /** Gets sibling turn nodes. */
-    getSiblings(id: string): readonly TurnNode<unknown>[];
+    getSiblings(id: string): readonly RunNode<unknown>[];
     /** Returns whether siblings exist. */
     hasSiblings(id: string): boolean;
     /** Gets a turn node by turn id or codec message id. */
-    getNode(id: string): TurnNode<unknown> | undefined;
+    getNode(id: string): RunNode<unknown> | undefined;
     /** Sends a user message. */
     send(message: TMessage): Promise<unknown>;
     /** Requests regeneration. */
@@ -634,35 +634,35 @@ export interface ViewStore<TMessage> extends Readable<ViewState<TMessage>> {
 /**
  * Options for active-turn subscriptions.
  */
-export interface ActiveTurnsStoreOptions<TInput, TMessage> {
+export interface ActiveRunsStoreOptions<TInput, TMessage> {
     /** Explicit transport. Defaults to context transport. */
-    transport?: ClientTransport<TInput, unknown, unknown, TMessage> | Readable<ClientTransportState<TInput, unknown, unknown, TMessage>>;
+    transport?: ClientSession<TInput, unknown, unknown, TMessage> | Readable<ClientSessionState<TInput, unknown, unknown, TMessage>>;
 }
 /**
  * Options for raw Sockudo message subscriptions.
  */
 export interface SockudoMessagesStoreOptions<TInput, TMessage> {
     /** Explicit transport. Defaults to context transport. */
-    transport?: ClientTransport<TInput, unknown, unknown, TMessage> | Readable<ClientTransportState<TInput, unknown, unknown, TMessage>>;
+    transport?: ClientSession<TInput, unknown, unknown, TMessage> | Readable<ClientSessionState<TInput, unknown, unknown, TMessage>>;
     /** Suppresses subscription and returns a stable empty list. */
     skip?: boolean;
 }
 /**
  * Creates a Svelte readable store that owns one client transport.
  */
-export declare function createTransportStore<TInput = unknown, TOutput = unknown, TProjection = unknown, TMessage = unknown>(options: TransportStoreOptions<TInput, TOutput, TProjection, TMessage>): ClientTransportStore<TInput, TOutput, TProjection, TMessage>;
+export declare function createSessionStore<TInput = unknown, TOutput = unknown, TProjection = unknown, TMessage = unknown>(options: SessionStoreOptions<TInput, TOutput, TProjection, TMessage>): ClientSessionStore<TInput, TOutput, TProjection, TMessage>;
 /**
  * Sets the Svelte transport context for child components.
  */
-export declare function setTransportContext<TInput, TOutput, TProjection, TMessage>(store: ClientTransportStore<TInput, TOutput, TProjection, TMessage>): ClientTransportStore<TInput, TOutput, TProjection, TMessage>;
+export declare function setSessionContext<TInput, TOutput, TProjection, TMessage>(store: ClientSessionStore<TInput, TOutput, TProjection, TMessage>): ClientSessionStore<TInput, TOutput, TProjection, TMessage>;
 /**
  * Creates, stores, and provides a Svelte transport in one call.
  */
-export declare function provideTransport<TInput = unknown, TOutput = unknown, TProjection = unknown, TMessage = unknown>(options: TransportStoreOptions<TInput, TOutput, TProjection, TMessage>): ClientTransportStore<TInput, TOutput, TProjection, TMessage>;
+export declare function provideSession<TInput = unknown, TOutput = unknown, TProjection = unknown, TMessage = unknown>(options: SessionStoreOptions<TInput, TOutput, TProjection, TMessage>): ClientSessionStore<TInput, TOutput, TProjection, TMessage>;
 /**
  * Reads the nearest or named Svelte client transport store.
  */
-export declare function getClientTransport<TInput = unknown, TOutput = unknown, TProjection = unknown, TMessage = unknown>(options?: GetClientTransportOptions): Readable<ClientTransportState<TInput, TOutput, TProjection, TMessage>>;
+export declare function getClientSession<TInput = unknown, TOutput = unknown, TProjection = unknown, TMessage = unknown>(options?: GetClientSessionOptions): Readable<ClientSessionState<TInput, TOutput, TProjection, TMessage>>;
 /**
  * Creates a branch-aware Svelte view store.
  */
@@ -674,18 +674,18 @@ export declare function createOwnedViewStore<TInput = unknown, TMessage = unknow
 /**
  * Creates stable tree callbacks for a Svelte transport.
  */
-export declare function createTreeHandle<TInput = unknown, TMessage = unknown>(options?: ActiveTurnsStoreOptions<TInput, TMessage>): {
+export declare function createTreeHandle<TInput = unknown, TMessage = unknown>(options?: ActiveRunsStoreOptions<TInput, TMessage>): {
     /** Gets sibling turn nodes without subscribing to tree changes. */
-    getSiblings(id: string): readonly TurnNode<unknown>[];
+    getSiblings(id: string): readonly RunNode<unknown>[];
     /** Returns whether siblings exist without subscribing to tree changes. */
     hasSiblings(id: string): boolean;
     /** Gets a turn node without subscribing to tree changes. */
-    getNode(id: string): TurnNode<unknown> | undefined;
+    getNode(id: string): RunNode<unknown> | undefined;
 };
 /**
  * Subscribes to active/suspended turn ownership.
  */
-export declare function createActiveTurnsStore<TInput = unknown, TMessage = unknown>(options?: ActiveTurnsStoreOptions<TInput, TMessage>): Readable<Map<string, Set<string>>>;
+export declare function createActiveRunsStore<TInput = unknown, TMessage = unknown>(options?: ActiveRunsStoreOptions<TInput, TMessage>): Readable<Map<string, Set<string>>>;
 /**
  * Subscribes to the raw normalized Sockudo inbound message firehose.
  */
@@ -694,7 +694,7 @@ export declare function createSockudoMessagesStore<TInput = unknown, TMessage = 
 
 // vercel
 export { version } from "../version.js";
-import { type ClientTransport, type ClientTransportOptions, type ServerTransport, type ServerTransportOptions } from "../core/transport/index.js";
+import { type ClientSession, type ClientSessionOptions, type AgentSession, type AgentSessionOptions } from "../core/transport/index.js";
 export * from "./codec/index.js";
 import { type AI, type VercelInput, type VercelOutput, type VercelProjection } from "./codec/index.js";
 /**
@@ -702,7 +702,7 @@ import { type AI, type VercelInput, type VercelOutput, type VercelProjection } f
  *
  * @defaultValue `api` defaults to `"/api/chat"`.
  */
-export type VercelClientTransportOptions = Omit<ClientTransportOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, "api" | "codec"> & {
+export type VercelClientSessionOptions = Omit<ClientSessionOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, "api" | "codec"> & {
     /** Server endpoint URL for the HTTP poke.
      *
      * @defaultValue `"/api/chat"`.
@@ -712,21 +712,21 @@ export type VercelClientTransportOptions = Omit<ClientTransportOptions<VercelInp
 /**
  * Server transport options for Vercel UI messages.
  */
-export type VercelServerTransportOptions = Omit<ServerTransportOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, "codec">;
+export type VercelAgentSessionOptions = Omit<AgentSessionOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, "codec">;
 /**
  * Creates a Sockudo client transport pre-bound to {@link UIMessageCodec}.
  *
  * Async methods reject with `ErrorInfo`; synchronous misuse throws `ErrorInfo`
  * with `InvalidArgument`.
  */
-export declare function createClientTransport(options: VercelClientTransportOptions): ClientTransport<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+export declare function createClientSession(options: VercelClientSessionOptions): ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 /**
  * Creates a Sockudo server transport pre-bound to {@link UIMessageCodec}.
  *
  * Public methods reject with `ErrorInfo`; synchronous misuse throws
  * `ErrorInfo` with `InvalidArgument`.
  */
-export declare function createServerTransport(options: VercelServerTransportOptions): ServerTransport<VercelOutput, VercelProjection, AI.UIMessage>;
+export declare function createAgentSession(options: VercelAgentSessionOptions): AgentSession<VercelOutput, VercelProjection, AI.UIMessage>;
 export * from "./transport/index.js";
 //# sourceMappingURL=index.d.ts.map
 
@@ -734,12 +734,12 @@ export * from "./transport/index.js";
 export { version } from "../../version.js";
 import { createElement, type ReactNode } from "react";
 import { ErrorInfo } from "../../errors.js";
-import { type TransportHooks, type TransportProviderProps, type TreeHandle, type UseActiveTurnsOptions, type UseClientTransportOptions, type UseClientTransportResult, type UseCreateViewOptions, type UseSockudoMessagesOptions, type UseTreeOptions, type UseViewOptions, type ViewHandle } from "../../react/index.js";
+import { type SessionHooks, type ClientSessionProviderProps, type TreeHandle, type UseActiveRunsOptions, type UseClientSessionOptions, type UseClientSessionResult, type UseCreateViewOptions, type UseSockudoMessagesOptions, type UseTreeOptions, type UseViewOptions, type ViewHandle } from "../../react/index.js";
 import type { InboundMessage } from "../../realtime/index.js";
-import type { ClientTransport } from "../../core/transport/index.js";
+import type { ClientSession } from "../../core/transport/index.js";
 import { type ChatTransport, type ChatTransportOptions } from "../transport/index.js";
 import { type AI, type VercelInput, type VercelOutput, type VercelProjection } from "../codec/index.js";
-type VercelTransport = ClientTransport<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+type VercelSession = ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 type MessageSetter = (value: readonly AI.UIMessage[] | ((messages: readonly AI.UIMessage[]) => readonly AI.UIMessage[])) => void;
 /**
  * Provider props for the Vercel `useChat` transport layer.
@@ -750,7 +750,7 @@ type MessageSetter = (value: readonly AI.UIMessage[] | ((messages: readonly AI.U
  *
  * @defaultValue `api` defaults to `"/api/chat"`.
  */
-export type ChatTransportProviderProps = Omit<TransportProviderProps<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, "api" | "codec"> & {
+export type ChatTransportProviderProps = Omit<ClientSessionProviderProps<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, "api" | "codec"> & {
     /** Server endpoint URL for the route handler.
      *
      * @defaultValue `"/api/chat"`.
@@ -792,7 +792,7 @@ export interface UseChatTransportResult {
     /** Resolved Vercel chat transport or a throwing stub. */
     chatTransport: ChatTransport;
     /** Resolved underlying client transport or a throwing stub. */
-    transport: VercelTransport;
+    transport: VercelSession;
     /**
      * Chat transport lookup or construction error.
      *
@@ -830,12 +830,12 @@ export interface UseMessageSyncOptions {
  *
  * @defaultValue Type parameters are fixed to the Vercel UIMessage codec.
  */
-export declare function createTransportHooks(): TransportHooks<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+export declare function createSessionHooks(): SessionHooks<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 /**
  * Provides a Vercel `ChatTransport` and the underlying Vercel-typed client
  * transport for one Sockudo channel.
  *
- * This component wraps the generic {@link TransportProvider} with
+ * This component wraps the generic {@link ClientSessionProvider} with
  * {@link UIMessageCodec}. It does not close the chat transport on unmount; the
  * underlying generic transport provider owns lifecycle and strict-mode cleanup.
  */
@@ -870,7 +870,7 @@ export declare function mergeMessages(treeMessages: readonly AI.UIMessage[], ove
  *
  * @defaultValue Uses the nearest provider when `channelName` is omitted.
  */
-export declare function useClientTransport(options?: UseClientTransportOptions): UseClientTransportResult<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+export declare function useClientSession(options?: UseClientSessionOptions): UseClientSessionResult<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 /**
  * Subscribes to a Vercel UIMessage view.
  *
@@ -894,7 +894,7 @@ export declare function useTree(options?: UseTreeOptions<VercelInput, AI.UIMessa
  *
  * @defaultValue Uses the context transport.
  */
-export declare function useActiveTurns(options?: UseActiveTurnsOptions<VercelInput, AI.UIMessage>): Map<string, Set<string>>;
+export declare function useActiveRuns(options?: UseActiveRunsOptions<VercelInput, AI.UIMessage>): Map<string, Set<string>>;
 /**
  * Subscribes to raw normalized Sockudo inbound messages for the Vercel
  * transport.
@@ -908,16 +908,16 @@ export declare function useSockudoMessages(options?: UseSockudoMessagesOptions<V
 export { version } from "../../version.js";
 import { type ComputedRef, type Ref, type ShallowRef } from "vue";
 import { ErrorInfo } from "../../errors.js";
-import { type TransportProviderOptions, type UseActiveTurnsOptions, type UseClientTransportOptions, type UseClientTransportResult, type UseCreateViewOptions, type UseSockudoMessagesOptions, type UseTreeOptions, type UseViewOptions, type ViewHandle, type TreeHandle } from "../../vue/index.js";
+import { type ClientSessionProviderOptions, type UseActiveRunsOptions, type UseClientSessionOptions, type UseClientSessionResult, type UseCreateViewOptions, type UseSockudoMessagesOptions, type UseTreeOptions, type UseViewOptions, type ViewHandle, type TreeHandle } from "../../vue/index.js";
 import type { InboundMessage } from "../../realtime/index.js";
-import type { ClientTransport } from "../../core/transport/index.js";
+import type { ClientSession } from "../../core/transport/index.js";
 import { type ChatTransport, type ChatTransportOptions } from "../transport/index.js";
 import { type AI, type VercelInput, type VercelOutput, type VercelProjection } from "../codec/index.js";
-type VercelTransport = ClientTransport<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+type VercelSession = ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 /**
  * Provider options for the Vercel AI SDK Vue transport layer.
  */
-export type ChatTransportProviderOptions = Omit<TransportProviderOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, "api" | "codec"> & {
+export type ChatTransportProviderOptions = Omit<ClientSessionProviderOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, "api" | "codec"> & {
     /** Server endpoint URL for the route handler.
      *
      * @defaultValue `"/api/chat"`.
@@ -933,7 +933,7 @@ export interface UseChatTransportResult {
     /** Resolved Vercel chat transport ref. */
     chatTransport: ShallowRef<ChatTransport | undefined>;
     /** Resolved underlying client transport ref. */
-    transport: ShallowRef<VercelTransport | undefined>;
+    transport: ShallowRef<VercelSession | undefined>;
     /** Chat transport lookup or construction error ref. */
     chatTransportError: ShallowRef<ErrorInfo | undefined>;
     /** Underlying client transport lookup or construction error ref. */
@@ -947,15 +947,15 @@ export declare function provideChatTransport(options: ChatTransportProviderOptio
 /**
  * Reads the nearest or named Vercel chat transport.
  */
-export declare function useChatTransport(options?: UseClientTransportOptions): UseChatTransportResult;
+export declare function useChatTransport(options?: UseClientSessionOptions): UseChatTransportResult;
 /**
  * Creates a Vercel-typed generic transport scope.
  */
-export declare function createTransportScope(): import("../../vue/index.js").TransportScope<VercelInput, AI.UIMessageChunk, VercelProjection, AI.UIMessage>;
+export declare function createSessionScope(): import("../../vue/index.js").SessionScope<VercelInput, AI.UIMessageChunk, VercelProjection, AI.UIMessage>;
 /**
  * Reads the nearest or named Vercel client transport.
  */
-export declare function useClientTransport(options?: UseClientTransportOptions): UseClientTransportResult<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+export declare function useClientSession(options?: UseClientSessionOptions): UseClientSessionResult<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 /**
  * Subscribes to a Vercel UIMessage view.
  */
@@ -971,7 +971,7 @@ export declare function useTree(options?: UseTreeOptions<VercelInput, AI.UIMessa
 /**
  * Subscribes to active/suspended Vercel turn ownership.
  */
-export declare function useActiveTurns(options?: UseActiveTurnsOptions<VercelInput, AI.UIMessage>): ComputedRef<Map<string, Set<string>>>;
+export declare function useActiveRuns(options?: UseActiveRunsOptions<VercelInput, AI.UIMessage>): ComputedRef<Map<string, Set<string>>>;
 /**
  * Subscribes to raw normalized Sockudo inbound messages for the Vercel
  * transport.
@@ -983,13 +983,13 @@ export declare function useSockudoMessages(options?: UseSockudoMessagesOptions<V
 export { version } from "../../version.js";
 import { type Readable } from "svelte/store";
 import { ErrorInfo } from "../../errors.js";
-import { type ActiveTurnsStoreOptions, type ClientTransportState, type ClientTransportStore, type GetClientTransportOptions, type SockudoMessagesStoreOptions, type TransportStoreOptions, type ViewStore, type ViewStoreOptions } from "../../svelte/index.js";
+import { type ActiveRunsStoreOptions, type ClientSessionState, type ClientSessionStore, type GetClientSessionOptions, type SockudoMessagesStoreOptions, type SessionStoreOptions, type ViewStore, type ViewStoreOptions } from "../../svelte/index.js";
 import { type ChatTransport, type ChatTransportOptions } from "../transport/index.js";
 import { type AI, type VercelInput, type VercelOutput, type VercelProjection } from "../codec/index.js";
 /**
  * Svelte store options for the Vercel AI SDK transport layer.
  */
-export type ChatTransportStoreOptions = Omit<TransportStoreOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, "api" | "codec"> & {
+export type ChatTransportStoreOptions = Omit<SessionStoreOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, "api" | "codec"> & {
     /** Server endpoint URL for the route handler.
      *
      * @defaultValue `"/api/chat"`.
@@ -1005,7 +1005,7 @@ export interface ChatTransportState {
     /** Resolved Vercel chat transport. */
     chatTransport?: ChatTransport;
     /** Resolved underlying client transport. */
-    transport?: ClientTransportState<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>["transport"];
+    transport?: ClientSessionState<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>["transport"];
     /** Chat transport lookup or construction error. */
     chatTransportError?: ErrorInfo;
     /** Underlying client transport lookup or construction error. */
@@ -1031,11 +1031,11 @@ export declare function provideChatTransport(options: ChatTransportStoreOptions)
 /**
  * Reads the nearest or named Vercel chat transport store.
  */
-export declare function getChatTransport(options?: GetClientTransportOptions): Readable<ChatTransportState>;
+export declare function getChatTransport(options?: GetClientSessionOptions): Readable<ChatTransportState>;
 /**
  * Creates a Vercel-typed client transport store.
  */
-export declare function createClientTransportStore(options: Omit<TransportStoreOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, "codec">): ClientTransportStore<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+export declare function createClientSessionStore(options: Omit<SessionStoreOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, "codec">): ClientSessionStore<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 /**
  * Creates a Vercel UIMessage view store.
  */
@@ -1047,15 +1047,15 @@ export declare function createOwnedViewStore(options?: Omit<ViewStoreOptions<Ver
 /**
  * Creates stable tree callbacks for the Vercel transport.
  */
-export declare function createTreeHandle(options?: ActiveTurnsStoreOptions<VercelInput, AI.UIMessage>): {
-    getSiblings(id: string): readonly import("../../index.js").TurnNode<unknown>[];
+export declare function createTreeHandle(options?: ActiveRunsStoreOptions<VercelInput, AI.UIMessage>): {
+    getSiblings(id: string): readonly import("../../index.js").RunNode<unknown>[];
     hasSiblings(id: string): boolean;
-    getNode(id: string): import("../../index.js").TurnNode<unknown> | undefined;
+    getNode(id: string): import("../../index.js").RunNode<unknown> | undefined;
 };
 /**
  * Subscribes to active/suspended Vercel turn ownership.
  */
-export declare function createActiveTurnsStore(options?: ActiveTurnsStoreOptions<VercelInput, AI.UIMessage>): Readable<Map<string, Set<string>>>;
+export declare function createActiveRunsStore(options?: ActiveRunsStoreOptions<VercelInput, AI.UIMessage>): Readable<Map<string, Set<string>>>;
 /**
  * Subscribes to raw normalized Sockudo inbound messages for the Vercel
  * transport.
@@ -1065,7 +1065,7 @@ export declare function createSockudoMessagesStore(options?: SockudoMessagesStor
 
 // providers
 export { version } from "../version.js";
-import type { StreamResult, Turn, TurnEndReason } from "../core/transport/index.js";
+import type { StreamResult, AgentRun, RunEndReason } from "../core/transport/index.js";
 import type { AI, VercelOutput, VercelProjection } from "../vercel/codec/index.js";
 /**
  * Well-known OpenAI-compatible provider identifiers.
@@ -1229,13 +1229,13 @@ export interface DirectLlmProviderRegistry {
     streamText(name: string, request: ProviderTextRequest): Promise<ReadableStream<VercelOutput>>;
 }
 /**
- * Result returned by {@link runDirectLlmTurn}.
+ * Result returned by {@link runDirectLlm}.
  */
-export interface RunDirectLlmTurnResult {
+export interface RunDirectLlmResult {
     /** Pipe result from `turn.streamResponse`. */
     pipeResult: StreamResult;
     /** Published turn end reason. */
-    turnEndReason: TurnEndReason;
+    turnEndReason: RunEndReason;
 }
 /**
  * Streams text through a Chat Completions-compatible HTTP endpoint.
@@ -1280,13 +1280,13 @@ export declare function createAnthropicSdkProvider(defaults: Omit<AnthropicMessa
  */
 export declare function createDirectLlmProviderRegistry(providers: Record<string, DirectLlmProvider>): DirectLlmProviderRegistry;
 /**
- * Runs a Sockudo server turn from a direct provider stream.
+ * Runs a Sockudo server run from a direct provider stream.
  *
- * This helper starts the turn, streams provider chunks through
- * `turn.streamResponse`, maps completion to a turn end reason, publishes
- * `ai-turn-end`, and returns the evidence.
+ * This helper starts the run, streams provider chunks through
+ * `turn.streamResponse`, maps completion to a run end reason, publishes
+ * `ai-run-end`, and returns the evidence.
  */
-export declare function runDirectLlmTurn(turn: Turn<VercelOutput, VercelProjection, AI.UIMessage>, provider: DirectLlmProvider, request: ProviderTextRequest): Promise<RunDirectLlmTurnResult>;
+export declare function runDirectLlm(turn: AgentRun<VercelOutput, VercelProjection, AI.UIMessage>, provider: DirectLlmProvider, request: ProviderTextRequest): Promise<RunDirectLlmResult>;
 /**
  * Maps OpenAI Chat Completions stream events into UI message chunks.
  */

@@ -1,7 +1,7 @@
 import { ErrorCode, ErrorInfo, toErrorInfo } from "../../errors.js";
 import type {
-  ActiveTurn,
-  ClientTransport,
+  ClientRun,
+  ClientSession,
   CloseOptions,
   SendOptions,
 } from "../../core/transport/index.js";
@@ -110,7 +110,7 @@ export interface ChatTransport {
   onStreamingChange(cb: (streaming: boolean) => void): () => void;
 }
 
-type VercelClientTransport = ClientTransport<
+type VercelClientSession = ClientSession<
   VercelInput,
   VercelOutput,
   VercelProjection,
@@ -122,7 +122,7 @@ interface SendDecision {
   messages: readonly AI.UIMessage[];
   parent?: string;
   forkOf?: string;
-  active: Promise<ActiveTurn<VercelOutput>>;
+  active: Promise<ClientRun<VercelOutput>>;
 }
 
 const unresolvedToolStates = new Set<AI.DynamicToolState>([
@@ -135,7 +135,7 @@ const unresolvedToolStates = new Set<AI.DynamicToolState>([
  * Creates a Vercel `useChat` transport over a Sockudo client transport.
  */
 export function createChatTransport(
-  transport: VercelClientTransport,
+  transport: VercelClientSession,
   chatOptions: ChatTransportOptions = {},
 ): ChatTransport {
   return new SockudoChatTransport(transport, chatOptions);
@@ -206,7 +206,7 @@ class SockudoChatTransport implements ChatTransport {
   private streamingValue = false;
 
   public constructor(
-    private readonly transport: VercelClientTransport,
+    private readonly transport: VercelClientSession,
     private readonly options: ChatTransportOptions,
   ) {}
 
@@ -219,14 +219,14 @@ class SockudoChatTransport implements ChatTransport {
   ): Promise<ReadableStream<AI.UIMessageChunk>> {
     if (options.abortSignal?.aborted) {
       throw new ErrorInfo({
-        code: ErrorCode.TransportSendFailed,
+        code: ErrorCode.SessionSendFailed,
         statusCode: 499,
         message: "unable to send; request was already aborted",
       });
     }
 
     this.setStreaming(true);
-    let active: ActiveTurn<VercelOutput>;
+    let active: ClientRun<VercelOutput>;
     try {
       const decision = this.decide(options);
       active = await decision.active;
@@ -298,7 +298,7 @@ class SockudoChatTransport implements ChatTransport {
           messages: [],
           history: options.messages,
         }),
-      ) as Promise<ActiveTurn<VercelOutput>>,
+      ) as Promise<ClientRun<VercelOutput>>,
     };
   }
 
@@ -328,7 +328,7 @@ class SockudoChatTransport implements ChatTransport {
               messages: [],
               history: options.messages,
             }),
-          ) as Promise<ActiveTurn<VercelOutput>>,
+          ) as Promise<ClientRun<VercelOutput>>,
         };
       }
     }
@@ -359,7 +359,7 @@ class SockudoChatTransport implements ChatTransport {
       messages: [last],
       ...(parent !== undefined ? { parent } : {}),
       ...(forkOf !== undefined ? { forkOf } : {}),
-      active: active as Promise<ActiveTurn<VercelOutput>>,
+      active: active as Promise<ClientRun<VercelOutput>>,
     };
   }
 
@@ -390,7 +390,7 @@ class SockudoChatTransport implements ChatTransport {
     return {
       body,
       headers,
-      waitForTurnStart: false,
+      waitForRunStart: false,
       ...(context.turnId !== undefined ? { turnId: context.turnId } : {}),
       ...(context.parent !== undefined ? { parent: context.parent } : {}),
       ...(context.forkOf !== undefined ? { forkOf: context.forkOf } : {}),

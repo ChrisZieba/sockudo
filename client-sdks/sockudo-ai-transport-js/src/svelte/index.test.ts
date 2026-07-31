@@ -3,12 +3,12 @@ import { describe, expect, it } from "vitest";
 
 import { createMockClient } from "../realtime/mocks.js";
 import { UIMessageCodec } from "../vercel/codec/index.js";
-import { createTransportStore, createViewStore } from "./index.js";
+import { createSessionStore, createViewStore } from "./index.js";
 
 describe("Svelte transport stores", () => {
   it("creates transport and view stores from an explicit client", () => {
     const client = createMockClient({ clientId: "svelte-client" });
-    const transport = createTransportStore({
+    const transport = createSessionStore({
       client,
       channelName: "chat",
       codec: UIMessageCodec,

@@ -8,8 +8,6 @@ import {
   EVENT_AI_RUN_RESUME,
   EVENT_AI_RUN_START,
   EVENT_AI_RUN_SUSPEND,
-  EVENT_AI_TURN_END,
-  EVENT_AI_TURN_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
   HEADER_ERROR_CODE,
@@ -24,10 +22,14 @@ import {
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
   HEADER_ROLE,
+  HEADER_RUN_CONTINUE,
   HEADER_STATUS,
+  HEADER_STEP_CLIENT_ID,
+  HEADER_STEP_ID,
+  HEADER_STEP_REASON,
+  HEADER_STEP_START_SERIAL,
   HEADER_STREAM,
   HEADER_STREAM_ID,
-  HEADER_TURN_CONTINUE,
 } from "./constants.js";
 import {
   buildTransportHeaders,
@@ -48,8 +50,8 @@ describe("constants", () => {
       EVENT_AI_RUN_SUSPEND,
       EVENT_AI_RUN_RESUME,
       EVENT_AI_RUN_END,
-      EVENT_AI_TURN_START,
-      EVENT_AI_TURN_END,
+      EVENT_AI_RUN_START,
+      EVENT_AI_RUN_END,
       EVENT_AI_CANCEL,
     ]).toEqual([
       "ai-input",
@@ -66,7 +68,7 @@ describe("constants", () => {
       HEADER_RUN_ID,
       HEADER_RUN_CLIENT_ID,
       HEADER_RUN_REASON,
-      HEADER_TURN_CONTINUE,
+      HEADER_RUN_CONTINUE,
       HEADER_INVOCATION_ID,
       HEADER_EVENT_ID,
       HEADER_CODEC_MESSAGE_ID,
@@ -81,11 +83,15 @@ describe("constants", () => {
       HEADER_ERROR_CODE,
       HEADER_ERROR_MESSAGE,
       HEADER_INPUT_CLIENT_ID,
+      HEADER_STEP_ID,
+      HEADER_STEP_START_SERIAL,
+      HEADER_STEP_REASON,
+      HEADER_STEP_CLIENT_ID,
     ]).toEqual([
       "run-id",
       "run-client-id",
       "run-reason",
-      "turn-continue",
+      "run-continue",
       "invocation-id",
       "event-id",
       "codec-message-id",
@@ -100,6 +106,10 @@ describe("constants", () => {
       "error-code",
       "error-message",
       "input-client-id",
+      "step-id",
+      "step-start-serial",
+      "step-reason",
+      "step-client-id",
     ]);
   });
 });
@@ -181,7 +191,7 @@ describe("header utilities", () => {
       invocationId: "inv-1",
       inputClientId: "client-2",
       inputEventId: "event-1",
-      turnContinue: false,
+      runContinue: false,
     });
     const reader = headerReader(headers);
 
@@ -195,7 +205,7 @@ describe("header utilities", () => {
     expect(reader.string(HEADER_INVOCATION_ID)).toBe("inv-1");
     expect(reader.string(HEADER_INPUT_CLIENT_ID)).toBe("client-2");
     expect(reader.string(HEADER_EVENT_ID)).toBe("event-1");
-    expect(reader.boolean(HEADER_TURN_CONTINUE)).toBe(false);
+    expect(reader.boolean(HEADER_RUN_CONTINUE)).toBe(false);
     expect(
       buildTransportHeaders({ regenerates: true, codecMessageId: "msg-2" })[HEADER_MSG_REGENERATE],
     ).toBe("msg-2");

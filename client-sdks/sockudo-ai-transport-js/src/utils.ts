@@ -2,9 +2,9 @@ import {
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
-  HEADER_LEGACY_TURN_CLIENT_ID,
-  HEADER_LEGACY_TURN_ID,
-  HEADER_LEGACY_TURN_REASON,
+  INBOUND_LEGACY_HEADER_TURN_CLIENT_ID,
+  INBOUND_LEGACY_HEADER_TURN_ID,
+  INBOUND_LEGACY_HEADER_TURN_REASON,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
@@ -13,7 +13,7 @@ import {
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
   HEADER_ROLE,
-  HEADER_TURN_CONTINUE,
+  HEADER_RUN_CONTINUE,
 } from "./constants.js";
 
 /** Immutable string header map. */
@@ -57,7 +57,7 @@ export interface BuildTransportHeadersOptions {
   /** Input event identity. */
   inputEventId?: string;
   /** Whether this legacy turn continues a suspended turn. Native runs use `ai-run-resume`. */
-  turnContinue?: boolean;
+  runContinue?: boolean;
 }
 
 /** Reads AI transport headers into a null-prototype string map. */
@@ -185,7 +185,7 @@ export function buildTransportHeaders(options: BuildTransportHeadersOptions): He
   writer.set(HEADER_INVOCATION_ID, options.invocationId);
   writer.set(HEADER_INPUT_CLIENT_ID, options.inputClientId);
   writer.set(HEADER_EVENT_ID, options.inputEventId);
-  writer.set(HEADER_TURN_CONTINUE, options.turnContinue);
+  writer.set(HEADER_RUN_CONTINUE, options.runContinue);
   return writer.headers;
 }
 
@@ -217,20 +217,20 @@ function readHeaderTier(extras: unknown, tier: "transport" | "codec"): HeaderMap
 }
 
 function addRunHeaderAliases(headers: Record<string, string>): void {
-  if (headers[HEADER_RUN_ID] === undefined && headers[HEADER_LEGACY_TURN_ID] !== undefined) {
-    headers[HEADER_RUN_ID] = headers[HEADER_LEGACY_TURN_ID];
+  if (headers[HEADER_RUN_ID] === undefined && headers[INBOUND_LEGACY_HEADER_TURN_ID] !== undefined) {
+    headers[HEADER_RUN_ID] = headers[INBOUND_LEGACY_HEADER_TURN_ID];
   }
   if (
     headers[HEADER_RUN_CLIENT_ID] === undefined &&
-    headers[HEADER_LEGACY_TURN_CLIENT_ID] !== undefined
+    headers[INBOUND_LEGACY_HEADER_TURN_CLIENT_ID] !== undefined
   ) {
-    headers[HEADER_RUN_CLIENT_ID] = headers[HEADER_LEGACY_TURN_CLIENT_ID];
+    headers[HEADER_RUN_CLIENT_ID] = headers[INBOUND_LEGACY_HEADER_TURN_CLIENT_ID];
   }
   if (
     headers[HEADER_RUN_REASON] === undefined &&
-    headers[HEADER_LEGACY_TURN_REASON] !== undefined
+    headers[INBOUND_LEGACY_HEADER_TURN_REASON] !== undefined
   ) {
-    headers[HEADER_RUN_REASON] = headers[HEADER_LEGACY_TURN_REASON];
+    headers[HEADER_RUN_REASON] = headers[INBOUND_LEGACY_HEADER_TURN_REASON];
   }
 }
 
@@ -243,7 +243,8 @@ const transportHeaderFallbacks: Readonly<Record<string, string>> = {
   "x-sockudo-input-client-id": HEADER_INPUT_CLIENT_ID,
   "x-sockudo-run-reason": HEADER_RUN_REASON,
   "x-sockudo-turn-reason": HEADER_RUN_REASON,
-  "x-sockudo-turn-continue": HEADER_TURN_CONTINUE,
+  "x-sockudo-run-continue": HEADER_RUN_CONTINUE,
+  "x-sockudo-turn-continue": HEADER_RUN_CONTINUE,
   "x-sockudo-invocation-id": HEADER_INVOCATION_ID,
   "x-sockudo-event-id": HEADER_EVENT_ID,
   "x-sockudo-input-event-id": HEADER_EVENT_ID,

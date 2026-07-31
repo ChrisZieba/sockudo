@@ -4,16 +4,16 @@ import { fileURLToPath } from "node:url";
 
 import {
   EVENT_AI_OUTPUT,
-  EVENT_AI_TURN_END,
-  EVENT_AI_TURN_START,
+  EVENT_AI_RUN_END,
+  EVENT_AI_RUN_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_ROLE,
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_STREAM_ID,
-  HEADER_TURN_ID,
-  HEADER_TURN_REASON,
+  HEADER_RUN_ID,
+  HEADER_RUN_REASON,
 } from "../../src/constants.js";
 import type { SockudoRawMessage } from "../../src/realtime/adapter.js";
 import { GOLDEN_TRANSCRIPT_RELATIVE_DIR } from "./server-pin.js";
@@ -150,13 +150,13 @@ function transportHeaders(
 ): Record<string, string> {
   const turnId = `turn-${scenario}`;
   const transport: Record<string, string> = {
-    [HEADER_TURN_ID]: turnId,
+    [HEADER_RUN_ID]: turnId,
   };
-  if (frame.event === EVENT_AI_TURN_START) {
+  if (frame.event === EVENT_AI_RUN_START) {
     transport[HEADER_INVOCATION_ID] = `invoke-${scenario}`;
   }
-  if (frame.event === EVENT_AI_TURN_END) {
-    transport[HEADER_TURN_REASON] = turnReason(scenario);
+  if (frame.event === EVENT_AI_RUN_END) {
+    transport[HEADER_RUN_REASON] = turnReason(scenario);
   }
   if (
     frame.event === EVENT_AI_OUTPUT ||

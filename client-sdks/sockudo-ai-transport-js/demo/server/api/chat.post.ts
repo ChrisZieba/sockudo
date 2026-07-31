@@ -1,4 +1,4 @@
-import { createServerTransport } from "@sockudo/ai-transport/vercel";
+import { createAgentSession } from "@sockudo/ai-transport/vercel";
 import type { VercelOutput } from "@sockudo/ai-transport/vercel";
 import { streamText, toUIMessageStream } from "ai";
 import { demoConfig } from "../utils/config";
@@ -16,11 +16,11 @@ export default defineEventHandler(async (event) => {
   }
   const clientId = optionalString(body.clientId);
   // @docs-snippet usechat-route
-  const transport = createServerTransport({
+  const transport = createAgentSession({
     client: realtimeClient(),
     channelName,
   });
-  const turn = transport.newTurn({
+  const turn = transport.createRun({
     turnId,
     invocationId,
     inputEventId,
@@ -44,7 +44,7 @@ export default defineEventHandler(async (event) => {
 
 // @docs-snippet core-route
 async function runTurn(
-  turn: ReturnType<ReturnType<typeof createServerTransport>["newTurn"]>,
+  turn: ReturnType<ReturnType<typeof createAgentSession>["createRun"]>,
   body: Record<string, unknown>,
   model: string,
 ): Promise<void> {
