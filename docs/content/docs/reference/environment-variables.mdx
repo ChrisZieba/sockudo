@@ -16,6 +16,78 @@ the server parser and accept common true/false forms.
 
 This page lists every runtime environment variable referenced by the server, core configuration loader, push subsystem, app managers, adapters, queues, and provider workers.
 
+## Config File Interpolation
+
+Sockudo supports `${VAR}` environment variable interpolation in TOML and JSON
+configuration files. Variables are resolved from the process environment at
+startup, before the config file is parsed.
+
+### Syntax
+
+| Pattern | Behavior |
+|---------|----------|
+| `${VAR}` | Replaced with the value of `VAR`. **Startup error if unset or empty.** |
+| `${VAR:-default}` | Replaced with the value of `VAR`, or `default` if unset or empty. |
+
+### Examples
+
+Inject a secret from the environment (e.g. from AWS Secrets Manager via a pod environment variable):
+
+```toml
+[[app_manager.array.apps]]
+id = "my-app"
+key = "app-key"
+secret = "${SOCKUDO_APP_SECRET}"
+enabled = true
+```
+
+Use defaults for optional values:
+
+```toml
+port = 6001
+
+[adapter]
+driver = "${ADAPTER_DRIVER:-local}"
+
+[adapter.redis.redis_pub_options]
+url = "${REDIS_URL:-redis://localhost:6379}"
+```
+
+### Behavior
+
+- **Missing variables**: If a `${VAR}` reference has no default and the
+  variable is unset or empty, sockudo prints an error listing **all**
+  unresolved variables and exits. This is fail-fast by design — you see
+  every missing variable at once, not one at a time.
+
+- **Empty values**: An environment variable set to an empty string (`VAR=""`)
+  is treated as unset. The `:-default` fallback will activate.
+
+- **Single pass**: Interpolation runs once on the raw file text. If a
+  resolved value itself contains `${…}`, it is **not** re-expanded. This
+  prevents accidental recursion and injection.
+
+- **No bare `$VAR`**: Only the braced `${VAR}` syntax is recognized. A bare
+  `$` character (e.g., in regex patterns or currency symbols) is never
+  matched.
+
+### Limitations
+
+- **Comments**: Interpolation operates on raw text before TOML/JSON parsing.
+  A `${VAR}` reference inside a TOML comment (`# secret = "${MISSING}"`)
+  will still be resolved — and will cause a startup error if the variable
+  is missing. Remove or replace `${…}` patterns in comments if they
+  reference variables that are not set.
+
+- **Typed fields**: Interpolation produces string replacements. For string
+  config values (secrets, URLs, connection strings), this works naturally.
+  For numeric or boolean fields, prefer the existing environment variable
+  overrides instead.
+
+- **Defaults cannot contain `}`**: The default value in `${VAR:-default}`
+  ends at the first `}` character. This is sufficient for most values
+  (strings, URLs, ports) but not for JSON fragments.
+
 ## Process and listener
 
 | Variable | Purpose |

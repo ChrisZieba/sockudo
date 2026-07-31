@@ -21,6 +21,46 @@ static CACHING_CHANNEL_REGEXES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         .collect()
 });
 
+// Matches ${VAR} and ${VAR:-default} placeholders.
+static ENV_VAR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}").unwrap());
+
+/// Substitutes `${VAR}` and `${VAR:-default}` placeholders with values from
+/// the process environment. Returns an error listing all unresolved variables.
+pub fn substitute_env_vars(input: &str) -> Result<String, String> {
+    substitute_env_vars_with(input, |name| {
+        std::env::var(name).ok().filter(|v| !v.is_empty())
+    })
+}
+
+fn substitute_env_vars_with(
+    input: &str,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<String, String> {
+    let mut missing = Vec::new();
+
+    let result = ENV_VAR_RE.replace_all(input, |caps: &regex::Captures| {
+        let var_name = &caps[1];
+        if let Some(val) = lookup(var_name) {
+            val
+        } else if let Some(default) = caps.get(2) {
+            default.as_str().to_owned()
+        } else {
+            missing.push(var_name.to_owned());
+            caps[0].to_owned()
+        }
+    });
+
+    if missing.is_empty() {
+        Ok(result.into_owned())
+    } else {
+        Err(format!(
+            "unresolved environment variables in config: {}",
+            missing.join(", ")
+        ))
+    }
+}
+
 pub fn is_cache_channel(channel: &str) -> bool {
     // Use the pre-compiled regexes
     for regex in CACHING_CHANNEL_REGEXES.iter() {
@@ -705,5 +745,129 @@ mod tests {
         assert!(validate_wildcard_subscription_pattern("private-news.*").is_err());
         assert!(validate_wildcard_subscription_pattern("news.*.*").is_err());
         assert!(validate_wildcard_subscription_pattern("news.*#user-1").is_err());
+    }
+}
+
+#[cfg(test)]
+mod substitute_env_vars_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn lookup_from<'a>(map: &'a HashMap<&'a str, &'a str>) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| map.get(name).map(|v| v.to_string())
+    }
+
+    #[test]
+    fn resolves_known_var() {
+        let vars = HashMap::from([("DB_HOST", "localhost")]);
+        let result = substitute_env_vars_with(r#"host = "${DB_HOST}""#, lookup_from(&vars));
+        assert_eq!(result.unwrap(), r#"host = "localhost""#);
+    }
+
+    #[test]
+    fn errors_on_missing_var() {
+        let result = substitute_env_vars_with(r#"secret = "${MISSING}""#, |_| None);
+        let err = result.unwrap_err();
+        assert!(err.contains("MISSING"));
+    }
+
+    #[test]
+    fn collects_all_missing_vars() {
+        let result = substitute_env_vars_with("${A} ${B} ${C:-ok}", |_| None);
+        let err = result.unwrap_err();
+        assert!(err.contains("A"), "should list A");
+        assert!(err.contains("B"), "should list B");
+        assert!(!err.contains('C'), "C has a default, should not be listed");
+    }
+
+    #[test]
+    fn default_used_when_missing() {
+        let result = substitute_env_vars_with(r#"port = "${PORT:-6001}""#, |_| None);
+        assert_eq!(result.unwrap(), r#"port = "6001""#);
+    }
+
+    #[test]
+    fn default_ignored_when_present() {
+        let vars = HashMap::from([("PORT", "8080")]);
+        let result = substitute_env_vars_with(r#"port = "${PORT:-6001}""#, lookup_from(&vars));
+        assert_eq!(result.unwrap(), r#"port = "8080""#);
+    }
+
+    #[test]
+    fn empty_default_produces_empty_string() {
+        let result = substitute_env_vars_with(r#"val = "${UNSET:-}""#, |_| None);
+        assert_eq!(result.unwrap(), r#"val = """#);
+    }
+
+    #[test]
+    fn default_with_colons_preserved() {
+        let result = substitute_env_vars_with(r#"url = "${DB:-host:5432}""#, |_| None);
+        assert_eq!(result.unwrap(), r#"url = "host:5432""#);
+    }
+
+    #[test]
+    fn no_placeholders_unchanged() {
+        let input = r#"plain text $dollar and $(parens) and $100"#;
+        let result = substitute_env_vars_with(input, |_| None);
+        assert_eq!(result.unwrap(), input);
+    }
+
+    #[test]
+    fn adjacent_interpolations() {
+        let vars = HashMap::from([("A", "hello"), ("B", "world")]);
+        let result = substitute_env_vars_with("${A}${B}", lookup_from(&vars));
+        assert_eq!(result.unwrap(), "helloworld");
+    }
+
+    #[test]
+    fn mixed_resolved_and_default() {
+        let vars = HashMap::from([("HOST", "db.internal")]);
+        let result =
+            substitute_env_vars_with(r#"url = "${HOST}:${PORT:-5432}""#, lookup_from(&vars));
+        assert_eq!(result.unwrap(), r#"url = "db.internal:5432""#);
+    }
+
+    #[test]
+    fn toml_integration_round_trip() {
+        #[derive(serde::Deserialize, PartialEq, Debug)]
+        struct Cfg {
+            secret: String,
+            name: String,
+        }
+
+        let vars = HashMap::from([("MY_SECRET", "s3cr3t")]);
+        let toml_input = "secret = \"${MY_SECRET}\"\nname = \"${LABEL:-default-name}\"";
+        let resolved = substitute_env_vars_with(toml_input, lookup_from(&vars)).unwrap();
+        let cfg: Cfg = toml::from_str(&resolved).unwrap();
+        assert_eq!(cfg.secret, "s3cr3t");
+        assert_eq!(cfg.name, "default-name");
+    }
+
+    #[test]
+    fn json_integration_round_trip() {
+        let vars = HashMap::from([("APP_SECRET", "json-secret")]);
+        let json_input = r#"{"secret": "${APP_SECRET}", "port": "${PORT:-9000}"}"#;
+        let resolved = substitute_env_vars_with(json_input, lookup_from(&vars)).unwrap();
+        let parsed: sonic_rs::Value = sonic_rs::from_str(&resolved).unwrap();
+        assert_eq!(parsed["secret"], "json-secret");
+        assert_eq!(parsed["port"], "9000");
+    }
+
+    #[test]
+    fn backward_compat_no_interpolation() {
+        let input = concat!(
+            "[app_manager.array]\n",
+            "[[app_manager.array.apps]]\n",
+            "id = \"my-app\"\n",
+            "key = \"app-key\"\n",
+            "secret = \"plain-secret\"\n",
+            "enabled = true\n",
+        );
+        let result = substitute_env_vars_with(input, |_| None);
+        assert_eq!(
+            result.unwrap(),
+            input,
+            "input without ${{}} must be unchanged"
+        );
     }
 }
