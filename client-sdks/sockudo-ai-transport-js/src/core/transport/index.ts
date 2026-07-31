@@ -59,3 +59,6 @@ export {
   type ViewOptions,
   type ViewSendExecutor,
 } from "./view.js";
+
+export { readSteerStamp, SteerCoordinator, type SteerOutcome, type SteerResult } from "./steer.js";
+export { MAX_STEER_IDS_PER_STAMP, RunSteerTracker } from "./run-steer-tracker.js";

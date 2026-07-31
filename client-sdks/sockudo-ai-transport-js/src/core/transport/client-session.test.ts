@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   EVENT_AI_CANCEL,
+  EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
   EVENT_AI_RUN_END,
   EVENT_AI_RUN_START,
@@ -9,13 +10,17 @@ import {
   HEADER_INVOCATION_ID,
   HEADER_STATUS,
   HEADER_STREAM,
+  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_STEER_CODEC_MESSAGE_IDS,
 } from "../../constants.js";
 import { ErrorCode } from "../../errors.js";
 import type { ErrorInfo } from "../../errors.js";
-import { createMockClient, type MockChannel } from "../../realtime/mocks.js";
+import { createMockClient, MockChannel } from "../../realtime/mocks.js";
+import { getTransportHeaders } from "../../utils.js";
 import type { SockudoRawMessage } from "../../realtime/adapter.js";
+import type { PublishMessage } from "../../realtime/types.js";
 import type { Codec, DecodedBatch, Decoder, ReducerMeta, UserMessage } from "../codec/index.js";
 import { createClientSession } from "./client-session.js";
 import type { ClientRun } from "./client-session.js";
@@ -40,7 +45,7 @@ describe("client transport", () => {
     const active = (await session.view.send({
       id: "user-1",
       text: "hello",
-    })) as ClientRun<Message>;
+    })) as ClientRun<Message, Message>;
 
     expect(active).toMatchObject({
       runId: "turn-1",
@@ -62,6 +67,87 @@ describe("client transport", () => {
     expect(request.headers).toMatchObject({
       "Content-Type": "application/json",
       Authorization: "secret",
+    });
+  });
+
+  it("steers a live run and settles the outcome from the agent's stamp", async () => {
+    const client = createMockClient({ clientId: "client-1" });
+    const channel = client.getMockChannel("chat");
+    const publishes: PublishMessage[] = [];
+    const inner = MockChannel.prototype.publish.bind(channel);
+    vi.spyOn(channel, "publish").mockImplementation((message) => {
+      publishes.push(message);
+      return inner(message);
+    });
+    const fetch = okFetch();
+    const ids = fixedIds();
+    const session = createClientSession({
+      channel,
+      codec: testCodec(),
+      api: "https://agent.test/run",
+      clientId: "client-1",
+      idProvider: ids,
+      runStartDeadlineMs: 0,
+      fetch,
+    });
+
+    const run = (await session.view.send({
+      id: "user-1",
+      text: "hello",
+    })) as ClientRun<Message, Message>;
+
+    const steer = run.steer({ id: "user-2", text: "actually, in French" });
+    const ack = await steer.published;
+    expect(ack.serial).toBeDefined();
+
+    // The steer rides ai-input against the existing run, not a new run.
+    const steerPublish = publishes.find(
+      (message) => message.name === EVENT_AI_INPUT && message.messageId !== "user-1",
+    );
+    expect(getTransportHeaders(steerPublish?.extras)).toMatchObject({
+      [HEADER_RUN_ID]: run.runId,
+      [HEADER_RUN_CONTINUE]: "true",
+    });
+
+    const steerId = steerPublish?.messageId ?? "";
+
+    // The agent stamps it onto an output, then ends the run.
+    channel.inject(stampedOutput("turn-1", "inv-1", "assistant-1", 3, [steerId]));
+    channel.inject(lifecycle(EVENT_AI_RUN_END, "turn-1", "inv-1", 4, "complete"));
+
+    await expect(steer.outcome).resolves.toEqual({
+      consumed: true,
+      runTerminalReason: "complete",
+    });
+  });
+
+  it("reports a steer the agent never drained as not consumed", async () => {
+    const calls: string[] = [];
+    const { channel, fetch, ids } = setupCalls(calls);
+    const session = createClientSession({
+      channel,
+      codec: testCodec(),
+      api: "https://agent.test/run",
+      clientId: "client-1",
+      idProvider: ids,
+      runStartDeadlineMs: 0,
+      fetch,
+    });
+
+    const run = (await session.view.send({
+      id: "user-1",
+      text: "hello",
+    })) as ClientRun<Message, Message>;
+    const steer = run.steer({ id: "user-2", text: "too late" });
+    await steer.published;
+
+    // Output carrying no stamp at all, then a cancel.
+    channel.inject(output("turn-1", "inv-1", "assistant-1", "token", 3));
+    channel.inject(lifecycle(EVENT_AI_RUN_END, "turn-1", "inv-1", 4, "cancelled"));
+
+    await expect(steer.outcome).resolves.toEqual({
+      consumed: false,
+      runTerminalReason: "cancelled",
     });
   });
 
@@ -168,7 +254,7 @@ describe("client transport", () => {
     const active = (await session.view.send({
       id: "user-1",
       text: "hello",
-    })) as ClientRun<Message>;
+    })) as ClientRun<Message, Message>;
     await Promise.resolve();
 
     expect(session.view.getMessages()).toEqual([{ id: "user-1", text: "hello" }]);
@@ -195,7 +281,7 @@ describe("client transport", () => {
     queueMicrotask(() => {
       channel.inject(lifecycle(EVENT_AI_RUN_START, "turn-1", "inv-1", 2));
     });
-    const active = (await pending) as ClientRun<Message>;
+    const active = (await pending) as ClientRun<Message, Message>;
     channel.inject(output("turn-1", "inv-1", "assistant-1", "token", 3));
 
     await expect(active.stream.getReader().read()).resolves.toEqual({
@@ -292,7 +378,7 @@ describe("client transport", () => {
     const active = (await session.view.send({
       id: "user-1",
       text: "hello",
-    })) as ClientRun<Message>;
+    })) as ClientRun<Message, Message>;
     const waiting = session.waitForRun({ own: true });
     await active.cancel();
     channel.inject(lifecycle(EVENT_AI_RUN_END, "turn-1", "inv-1", 3, "cancelled"));
@@ -502,4 +588,26 @@ interface Message {
 
 interface Projection {
   messages: Message[];
+}
+
+function stampedOutput(
+  runId: string,
+  invocationId: string,
+  messageId: string,
+  serial: number,
+  steerIds: readonly string[],
+): SockudoRawMessage {
+  const base = output(runId, invocationId, messageId, "token", serial);
+  const transport = getTransportHeaders(base.extras);
+  return {
+    ...base,
+    extras: {
+      ai: {
+        transport: {
+          ...transport,
+          [HEADER_STEER_CODEC_MESSAGE_IDS]: JSON.stringify(steerIds),
+        },
+      },
+    },
+  };
 }

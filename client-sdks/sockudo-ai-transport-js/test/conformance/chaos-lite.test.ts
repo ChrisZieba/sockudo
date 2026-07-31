@@ -70,7 +70,7 @@ describe("chaos-lite deterministic matrix", () => {
     const active = (await session.view.send(
       { id: "user-1", text: "hello" },
       { waitForRunStart: false },
-    )) as ClientRun<Message>;
+    )) as ClientRun<Message, Message>;
     await Promise.resolve();
 
     expect(channel.historySize()).toBe(1);
@@ -87,7 +87,7 @@ describe("chaos-lite deterministic matrix", () => {
     const active = (await session.view.send(
       { id: "user-1", text: "hello" },
       { waitForRunStart: false },
-    )) as ClientRun<Message>;
+    )) as ClientRun<Message, Message>;
     const reader = active.stream.getReader();
 
     channel.inject(lifecycle(EVENT_AI_RUN_START, active, 2));
@@ -113,7 +113,7 @@ describe("chaos-lite deterministic matrix", () => {
     const active = (await session.view.send(
       { id: "user-1", text: "hello" },
       { waitForRunStart: false },
-    )) as ClientRun<Message>;
+    )) as ClientRun<Message, Message>;
     const reader = active.stream.getReader();
 
     channel.inject(lifecycle(EVENT_AI_RUN_START, active, 2));
@@ -162,7 +162,7 @@ describe("chaos-lite deterministic matrix", () => {
     const active = (await session.view.send(
       { id: "user-1", text: "hello" },
       { waitForRunStart: false },
-    )) as ClientRun<Message>;
+    )) as ClientRun<Message, Message>;
 
     channel.inject(lifecycle(EVENT_AI_RUN_START, active, 2));
     channel.inject(output(active, "assistant-1", "one", 3));
@@ -410,7 +410,7 @@ function fixedIds(): InvocationIdProvider {
 
 function lifecycle(
   name: typeof EVENT_AI_RUN_START | typeof EVENT_AI_RUN_END,
-  turn: ClientRun<Message>,
+  turn: ClientRun<Message, Message>,
   serial: number,
   reason?: "complete" | "cancelled" | "error" | "suspended",
 ): SockudoRawMessage {
@@ -452,7 +452,7 @@ function lifecycleFromIds(
 }
 
 function output(
-  turn: ClientRun<Message>,
+  turn: ClientRun<Message, Message>,
   messageId: string,
   text: string,
   serial: number,

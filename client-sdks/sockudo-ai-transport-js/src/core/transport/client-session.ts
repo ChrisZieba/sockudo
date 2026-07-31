@@ -26,6 +26,7 @@ import { createTree, type Tree } from "./tree.js";
 import { createView, type View, type ViewSendExecutor } from "./view.js";
 import { createDefaultInvocationIdProvider, type InvocationIdProvider } from "./invocation.js";
 import { createStreamRouter, type StreamRouter } from "./stream-router.js";
+import { SteerCoordinator, type SteerResult } from "./steer.js";
 
 /**
  * Cancellation scope for client-side turn cancellation.
@@ -69,17 +70,26 @@ export interface SendOptions {
 /**
  * A handle to an active client-side turn.
  */
-export interface ClientRun<TOutput> {
-  /** Decoded output stream for this turn. */
+export interface ClientRun<TInput, TOutput> {
+  /** Decoded output stream for this run. */
   stream: ReadableStream<TOutput>;
-  /** AgentRun identity. */
+  /** Run identity. */
   runId: string;
   /** Invocation identity for this send or continuation. */
   invocationId: string;
   /** Primary input event id. */
   inputEventId: string;
-  /** Cancels this turn and closes the local stream. */
+  /** Cancels this run and closes the local stream. */
   cancel(): Promise<void>;
+  /**
+   * Sends additional input into this already-running run.
+   *
+   * Unlike a fresh send this neither cancels the run nor starts a new one: the
+   * agent's loop picks the input up at its next step boundary. Returns two
+   * promises — `published` for the publish itself, `outcome` for whether the
+   * agent's loop had the steer visible before the run reached a terminal event.
+   */
+  steer(input: TInput): SteerResult;
   /** Optimistically inserted codec message ids. */
   optimisticMsgIds: readonly string[];
 }
@@ -142,7 +152,7 @@ export interface ClientSessionOptions<TInput, TOutput, TProjection, TMessage> {
    * @defaultValue Silent SDK logger.
    */
   logger?: Logger;
-  /** AgentRun-start wait deadline in milliseconds.
+  /** Run-start wait deadline in milliseconds.
    *
    * @defaultValue `30000`.
    */
@@ -196,12 +206,12 @@ export function createClientSession<TInput, TOutput, TProjection, TMessage>(
   return new DefaultClientSession(options);
 }
 
-interface PendingRunStart<TOutput> {
+interface PendingRunStart<TInput, TOutput> {
   invocationId: string;
-  resolve(turn: ClientRun<TOutput>): void;
+  resolve(turn: ClientRun<TInput, TOutput>): void;
   reject(error: ErrorInfo): void;
   timer: ReturnType<typeof setTimeout> | undefined;
-  turn: ClientRun<TOutput>;
+  turn: ClientRun<TInput, TOutput>;
 }
 
 interface OwnRun {
@@ -226,10 +236,11 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
   private readonly idProvider: InvocationIdProvider;
   private readonly decoder;
   private readonly router: StreamRouter<TOutput>;
+  private readonly steer = new SteerCoordinator();
   private readonly emitter = new EventEmitter<ClientSessionEvents>();
   private readonly views = new Set<View<TInput, TMessage>>();
   private readonly ownRuns = new Map<string, OwnRun>();
-  private readonly pendingRunStarts = new Map<string, PendingRunStart<TOutput>>();
+  private readonly pendingRunStarts = new Map<string, PendingRunStart<TInput, TOutput>>();
   private readonly closeResolvers = new Set<() => void>();
   private readonly unsubscribes: EventUnsubscribe[] = [];
   private readonly runStartDeadlineMs: number;
@@ -481,7 +492,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
   private async internalSend(
     messages: readonly TMessage[],
     sendOptions: SendOptions,
-  ): Promise<ClientRun<TOutput>> {
+  ): Promise<ClientRun<TInput, TOutput>> {
     const inputs = messages.map((message) => this.options.codec.createUserMessage(message).message);
     return this.sendPipeline(
       inputs.map((message) => message as unknown as TInput),
@@ -493,7 +504,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
   private internalSendInput(
     inputs: readonly TInput[],
     sendOptions: SendOptions,
-  ): Promise<ClientRun<TOutput>> {
+  ): Promise<ClientRun<TInput, TOutput>> {
     return this.sendPipeline(inputs, [], sendOptions);
   }
 
@@ -501,7 +512,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
     inputs: readonly TInput[],
     messages: readonly TMessage[],
     sendOptions: SendOptions,
-  ): Promise<ClientRun<TOutput>> {
+  ): Promise<ClientRun<TInput, TOutput>> {
     this.assertOpen("send");
     this.connect();
 
@@ -613,12 +624,13 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
       invocationId,
       clientId: this.clientId ?? "",
     });
-    const activeRun: ClientRun<TOutput> = {
+    const activeRun: ClientRun<TInput, TOutput> = {
       stream,
       runId,
       invocationId,
       inputEventId,
       cancel: () => this.cancel({ runId }),
+      steer: (input: TInput) => this.publishSteer(runId, input),
       optimisticMsgIds,
     };
 
@@ -687,6 +699,9 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
       if (message.action === "summary") {
         return;
       }
+      // Observed before folding: a steer stamp settles outcomes even when the
+      // message carries no decodable events.
+      this.steer.observe(transportHeaders);
       const batch = this.decoder.decode(message);
       const folded = decodedForFold<TInput, TOutput>(batch);
       if (folded.length > 0) {
@@ -742,6 +757,54 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
     }
   }
 
+  /**
+   * Publishes a steer into a live run.
+   *
+   * `runContinue` is set because this is by definition re-entry into an
+   * existing run, which also stops the tree re-reading `parent`/`fork-of` and
+   * re-anchoring the run.
+   *
+   * The outcome promise is registered before the publish so a stamp that
+   * arrives while the publish is still in flight is not missed.
+   */
+  private publishSteer(runId: string, input: TInput): SteerResult {
+    this.assertOpen("steer");
+    this.connect();
+
+    const codecMessageId = this.idProvider.messageId();
+    const outcome = this.steer.track(runId, codecMessageId);
+
+    const published = (async () => {
+      const ack = await this.channel.publish({
+        name: EVENT_AI_INPUT,
+        data: input,
+        messageSerial: codecMessageId,
+        messageId: codecMessageId,
+        extras: {
+          ai: {
+            transport: this.inputHeaders({
+              runId,
+              invocationId: this.idProvider.invocationId(),
+              inputEventId: this.idProvider.inputEventId(),
+              codecMessageId,
+              runContinue: true,
+            }),
+          },
+        },
+      });
+      // Sockudo has four serial spaces; the durable history serial is the one that
+      // confirms the publish landed.
+      return { serial: ack?.historySerial };
+    })().catch((error: unknown) => {
+      throw mapPublishFailure(error, {
+        code: ErrorCode.SessionSendFailed,
+        message: "unable to steer; channel publish failed",
+      });
+    });
+
+    return { published, outcome };
+  }
+
   private handleRunEnd(message: InboundMessage, headers: HeaderMap, type: "suspend" | "end"): void {
     const runId = headers[HEADER_RUN_ID];
     const invocationId = headers[HEADER_INVOCATION_ID];
@@ -758,6 +821,15 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
       headers,
       serial: message.deliverySerial ?? message.historySerial,
     });
+    if (runId) {
+      // A suspend settles only steers it can prove consumed; a resume may still
+      // claim the rest, so they stay pending until the run truly ends.
+      this.steer.settle(
+        runId,
+        node?.status === "active" ? undefined : node?.status,
+        type === "end",
+      );
+    }
     if (!runId) {
       return;
     }
@@ -783,12 +855,12 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
     this.emitError(error);
   }
 
-  private waitForRunStart(turn: ClientRun<TOutput>): Promise<ClientRun<TOutput>> {
+  private waitForRunStart(turn: ClientRun<TInput, TOutput>): Promise<ClientRun<TInput, TOutput>> {
     if (this.runStartDeadlineMs === 0) {
       return Promise.resolve(turn);
     }
     return new Promise((resolve, reject) => {
-      const pending: PendingRunStart<TOutput> = {
+      const pending: PendingRunStart<TInput, TOutput> = {
         invocationId: turn.invocationId,
         resolve,
         reject,

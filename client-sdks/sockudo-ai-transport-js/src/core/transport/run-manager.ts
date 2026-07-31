@@ -28,6 +28,12 @@ export interface ManagedRun {
   onCancel?(request: CancelRequest): Promise<boolean> | boolean;
   /** Optional turn-scoped error hook. */
   onError?(error: ErrorInfo): void;
+  /**
+   * Notified when a client input arrives naming this already-running run —
+   * a steer. Distinct from the run's originating input, which is matched by
+   * invocation id instead.
+   */
+  onSteer?(codecMessageId: string): void;
   /** Whether this turn has already observed cancellation. */
   cancelled: boolean;
 }
@@ -89,6 +95,17 @@ export class RunManager {
   /** Buffers or delivers an inbound input event. */
   public observeInput(message: InboundMessage): void {
     const headers = message.getTransportHeaders();
+    // An input naming a run we are already executing is a steer, not this
+    // run's originating input: route it to the run before invocation matching,
+    // which would otherwise never pair it with anything.
+    const steerRunId = headers["run-id"];
+    const steerCodecMessageId = headers["codec-message-id"];
+    if (steerRunId !== undefined && steerCodecMessageId !== undefined) {
+      const running = this.turns.get(steerRunId);
+      if (running?.onSteer !== undefined) {
+        running.onSteer(steerCodecMessageId);
+      }
+    }
     const invocationId = headers["invocation-id"];
     if (!invocationId) {
       return;

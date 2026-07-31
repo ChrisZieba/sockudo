@@ -77,6 +77,12 @@ export const HEADER_STEP_START_SERIAL = "step-start-serial";
 export const HEADER_STEP_REASON = "step-reason";
 /** Transport header key for the verified client identity that owns a step. */
 export const HEADER_STEP_CLIENT_ID = "step-client-id";
+/**
+ * Transport header key stamping which steers the agent had drained when the
+ * step attempt that produced this output opened. JSON-stringified array;
+ * omitted when empty.
+ */
+export const HEADER_STEER_CODEC_MESSAGE_IDS = "steer-codec-message-ids";
 
 /** Transport header key for invocation identity. */
 export const HEADER_INVOCATION_ID = "invocation-id";

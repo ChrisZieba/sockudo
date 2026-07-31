@@ -268,7 +268,7 @@ describe("P15 memory and hostile-input bounds", () => {
     const active = (await session.view.send(
       { id: "user-flat", text: "flat" },
       { waitForRunStart: false },
-    )) as ClientRun<Message>;
+    )) as ClientRun<Message, Message>;
     channel.inject(lifecycle(EVENT_AI_RUN_START, 1, "turn-1", "inv-1"));
     for (let index = 0; index < tokenCount; index += 1) {
       channel.inject(output(0, index + 2, "x"));

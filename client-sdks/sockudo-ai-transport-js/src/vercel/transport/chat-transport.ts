@@ -117,7 +117,7 @@ interface SendDecision {
   messages: readonly AI.UIMessage[];
   parent?: string;
   forkOf?: string;
-  active: Promise<ClientRun<VercelOutput>>;
+  active: Promise<ClientRun<VercelInput, VercelOutput>>;
 }
 
 const unresolvedToolStates = new Set<AI.DynamicToolState>([
@@ -221,7 +221,7 @@ class SockudoChatTransport implements ChatTransport {
     }
 
     this.setStreaming(true);
-    let active: ClientRun<VercelOutput>;
+    let active: ClientRun<VercelInput, VercelOutput>;
     try {
       const decision = this.decide(options);
       active = await decision.active;
@@ -293,7 +293,7 @@ class SockudoChatTransport implements ChatTransport {
           messages: [],
           history: options.messages,
         }),
-      ) as Promise<ClientRun<VercelOutput>>,
+      ) as Promise<ClientRun<VercelInput, VercelOutput>>,
     };
   }
 
@@ -323,7 +323,7 @@ class SockudoChatTransport implements ChatTransport {
               messages: [],
               history: options.messages,
             }),
-          ) as Promise<ClientRun<VercelOutput>>,
+          ) as Promise<ClientRun<VercelInput, VercelOutput>>,
         };
       }
     }
@@ -354,7 +354,7 @@ class SockudoChatTransport implements ChatTransport {
       messages: [last],
       ...(parent !== undefined ? { parent } : {}),
       ...(forkOf !== undefined ? { forkOf } : {}),
-      active: active as Promise<ClientRun<VercelOutput>>,
+      active: active as Promise<ClientRun<VercelInput, VercelOutput>>,
     };
   }
 

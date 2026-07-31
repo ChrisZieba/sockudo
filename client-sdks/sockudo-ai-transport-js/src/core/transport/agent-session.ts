@@ -22,6 +22,7 @@ import type { Codec, DecodedEvent, Encoder, EncoderOptions, WriteOptions } from 
 import type { RunEndReason } from "./tree.js";
 import { createDefaultInvocationIdProvider, type InvocationIdProvider } from "./invocation.js";
 import { pipeStream, type ResolveWriteOptions, type StreamResult } from "./pipe-stream.js";
+import { RunSteerTracker } from "./run-steer-tracker.js";
 import {
   RunManager,
   type BufferedInputEvent,
@@ -110,6 +111,11 @@ export interface CreateRunOptions<TOutput> {
   onCancel?(request: CancelRequest): Promise<boolean> | boolean;
   /** AgentRun-scoped non-fatal error hook. */
   onError?(error: ErrorInfo): void;
+  /**
+   * Notified when a steer arrives for this run. Optional: the run tracks
+   * steers regardless, so an agent that only calls `hasInput()` needs no hook.
+   */
+  onSteer?(codecMessageId: string): void;
   /** External abort signal. */
   signal?: AbortSignal;
   /** Invocation id for input-event lookup. */
@@ -148,6 +154,16 @@ export interface AgentRun<TOutput, TProjection, TMessage> {
   loadConversation(options?: LoadConversationOptions): Promise<TMessage[]>;
   /** Publishes run end or run suspend. */
   end(reason: RunEndReason): Promise<void>;
+  /**
+   * Claims any steer input that arrived since the last call.
+   *
+   * Call this at a step boundary, before running the next inference: whatever
+   * it drains is stamped onto that step attempt's outputs as
+   * `steer-codec-message-ids`, which is how the client settles steer outcomes.
+   * Returns true when input was claimed, so an agent loop can decide to take
+   * another iteration instead of ending the run.
+   */
+  hasInput(): boolean;
 }
 
 /** Server transport options. */
@@ -321,6 +337,7 @@ class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRu
   private loadedProjection: TProjection | undefined;
   private loadedMessages: TMessage[] = [];
   private capturedInput: BufferedInputEvent | undefined;
+  private readonly steerTracker = new RunSteerTracker();
 
   public readonly runId: string;
   public readonly managedRun: ManagedRun;
@@ -345,6 +362,13 @@ class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRu
             },
           }
         : {}),
+      // Always registered: the tracker must see every steer even when the
+      // caller supplies no onSteer hook of its own, or hasInput() would never
+      // report the input and the stamp would never be written.
+      onSteer: (codecMessageId: string) => {
+        this.steerTracker.add(codecMessageId);
+        deps.options.onSteer?.(codecMessageId);
+      },
     };
   }
 
@@ -435,7 +459,9 @@ class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRu
     return pipeStream(stream, encoder, this.signal, {
       resolveWriteOptions: (output) =>
         mergeWriteOptions(options.resolveWriteOptions?.(output), {
-          extras: { ai: { transport: this.baseHeaders("assistant") } },
+          extras: {
+            ai: { transport: withSteerStamp(this.baseHeaders("assistant"), this.steerTracker) },
+          },
         }),
       ...(this.deps.options.onAbort !== undefined
         ? {
@@ -461,9 +487,12 @@ class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRu
         await encoder.publishOutput(event, {
           extras: {
             ai: {
-              transport: mergeHeaders(this.baseHeaders("assistant"), {
-                [HEADER_CODEC_MESSAGE_ID]: node.msgId,
-              }),
+              transport: withSteerStamp(
+                mergeHeaders(this.baseHeaders("assistant"), {
+                  [HEADER_CODEC_MESSAGE_ID]: node.msgId,
+                }),
+                this.steerTracker,
+              ),
             },
           },
         });
@@ -503,6 +532,12 @@ class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRu
     await this.loadProjection();
     const maxMessages = options.maxMessages ?? 2_000;
     return this.loadedMessages.slice(-maxMessages);
+  }
+
+  public hasInput(): boolean {
+    // Draining marks the steers visible to the iteration that produces the
+    // next output, which is exactly what the stamp claims.
+    return this.steerTracker.drain().length > 0;
   }
 
   public async end(reason: RunEndReason): Promise<void> {
@@ -584,7 +619,10 @@ class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRu
       ...(clientId !== undefined ? { clientId } : {}),
       extras: {
         ai: {
-          transport: this.baseHeaders(headers.role ?? "assistant", headers),
+          transport: withSteerStamp(
+            this.baseHeaders(headers.role ?? "assistant", headers),
+            this.steerTracker,
+          ),
         },
       },
     });
@@ -625,6 +663,18 @@ class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRu
       ...(regenerateOf !== undefined ? { regenerates: regenerateOf } : {}),
     });
   }
+}
+
+/**
+ * Adds the steer stamp to agent-published headers.
+ *
+ * Kept separate from {@link baseHeaders} because the stamp belongs only on
+ * outputs, not on the run's own input echo, and because it is the one header
+ * whose size is bounded by the number of steers rather than a fixed shape.
+ */
+function withSteerStamp(headers: HeaderMap, tracker: RunSteerTracker): HeaderMap {
+  const stamp = tracker.stampHeaders();
+  return Object.keys(stamp).length === 0 ? headers : mergeHeaders(headers, stamp);
 }
 
 function publishInput<TInput, TOutput>(
