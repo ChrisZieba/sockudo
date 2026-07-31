@@ -169,7 +169,7 @@ Transport keys:
 | `step-id` | Non-empty opaque string; stable logical step identity across attempts |
 | `step-start-serial` | Non-empty serial of the corresponding `ai-step-start` attempt. Carried on `ai-output` and `ai-step-end` only — never on `ai-step-start`, whose own channel serial *is* the value |
 | `run-continue` | `true` or `false`; marks a client input as re-entering an existing run |
-| `step-reason` | `complete`, `failed`, `cancelled` |
+| `step-reason` | `complete`, `failed`, `cancelled`. Narrower than `run-reason`: a step has no `error` arm, since a stream/model/tool failure ends the attempt `failed` and is retryable |
 | `steer-codec-message-ids` | Non-empty JSON-stringified array of steer codec-message-ids the agent's loop had drained when the stamping step attempt opened; omitted when empty. Carried on a step attempt's assistant outputs. Unlike other transport values this key has a **2 KiB per-key ceiling** (≈48 UUID-shaped ids) rather than the generic 256-byte scalar budget, which would cap it at ~5 ids. Overflow still fails the whole output publish, so publishers MUST cap the list they emit |
 | `step-client-id` | Verified client identity string, or the empty native wire sentinel when the step participant is unknown |
 | `role` | `user`, `assistant`, `system`, `tool`, `agent` |

@@ -7,6 +7,8 @@ import {
   EVENT_AI_RUN_RESUME,
   EVENT_AI_RUN_START,
   EVENT_AI_RUN_SUSPEND,
+  EVENT_AI_STEP_END,
+  EVENT_AI_STEP_START,
   HEADER_INVOCATION_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
@@ -694,6 +696,14 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
       }
       if (isRunEndMessage(message.name)) {
         this.handleRunEnd(message, transportHeaders, "end");
+        return;
+      }
+      if (message.name === EVENT_AI_STEP_START || message.name === EVENT_AI_STEP_END) {
+        this.tree.applyStepLifecycle({
+          type: message.name === EVENT_AI_STEP_START ? "step-start" : "step-end",
+          headers: transportHeaders,
+          serial: message.deliverySerial ?? message.historySerial,
+        });
         return;
       }
       if (message.action === "summary") {

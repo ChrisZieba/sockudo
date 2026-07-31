@@ -4,9 +4,15 @@ import {
   EVENT_AI_RUN_END,
   EVENT_AI_RUN_START,
   EVENT_AI_RUN_SUSPEND,
+  EVENT_AI_STEP_END,
+  EVENT_AI_STEP_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_MSG_REGENERATE,
   HEADER_RUN_REASON,
+  HEADER_STEP_CLIENT_ID,
+  HEADER_STEP_ID,
+  HEADER_STEP_REASON,
+  HEADER_STEP_START_SERIAL,
 } from "../../constants.js";
 import { ErrorCode, ErrorInfo, toErrorInfo } from "../../errors.js";
 import { LogLevel, makeLogger, type Logger } from "../../logger.js";
@@ -19,7 +25,7 @@ import {
   type HeaderMap,
 } from "../../utils.js";
 import type { Codec, DecodedEvent, Encoder, EncoderOptions, WriteOptions } from "../codec/index.js";
-import type { RunEndReason } from "./tree.js";
+import type { RunEndReason, StepEndReason } from "./tree.js";
 import { createDefaultInvocationIdProvider, type InvocationIdProvider } from "./invocation.js";
 import { pipeStream, type ResolveWriteOptions, type StreamResult } from "./pipe-stream.js";
 import { RunSteerTracker } from "./run-steer-tracker.js";
@@ -77,6 +83,11 @@ export interface StreamResponseOptions<TOutput> {
   forkOf?: string;
   /** Per-output write option resolver. */
   resolveWriteOptions?: ResolveWriteOptions<TOutput>;
+  /**
+   * Step stamp applied to every output of this stream. Set by
+   * {@link RunStep.streamResponse}; not intended for direct use.
+   */
+  stepHeaders?: HeaderMap;
 }
 
 /** Options for `loadConversation`. */
@@ -91,6 +102,42 @@ export interface LoadConversationOptions {
    * @defaultValue `2000`
    */
   maxMessages?: number;
+}
+
+/** Options for {@link AgentRun.createStep}. */
+export interface StepOptions {
+  /**
+   * Stable step identity. Reuse it to publish a retry: the attempt with the
+   * highest `step-start-serial` becomes canonical and supersedes the rest.
+   *
+   * @defaultValue A generated id.
+   */
+  stepId?: string;
+  /** Verified client id owning this step. */
+  stepClientId?: string;
+}
+
+/**
+ * A re-attemptable unit of execution inside a run.
+ *
+ * Outputs published while the step is open are stamped with its `step-id` and
+ * `step-start-serial`, so a client can discard output from a superseded attempt
+ * instead of folding a failed attempt's partial content.
+ */
+export interface RunStep<TOutput> {
+  /** Stable step identity across attempts. */
+  readonly stepId: string;
+  /** Serial of this attempt's `ai-step-start`, once started. */
+  readonly startSerial: string | undefined;
+  /** Publishes `ai-step-start`, opening this attempt. */
+  start(): Promise<void>;
+  /** Streams outputs stamped with this attempt. */
+  streamResponse(
+    stream: ReadableStream<TOutput>,
+    options?: StreamResponseOptions<TOutput>,
+  ): Promise<StreamResult>;
+  /** Publishes `ai-step-end`, closing this attempt. */
+  end(reason?: StepEndReason): Promise<void>;
 }
 
 /** Server-side run construction options. */
@@ -154,6 +201,13 @@ export interface AgentRun<TOutput, TProjection, TMessage> {
   loadConversation(options?: LoadConversationOptions): Promise<TMessage[]>;
   /** Publishes run end or run suspend. */
   end(reason: RunEndReason): Promise<void>;
+  /**
+   * Opens a re-attemptable step within this run.
+   *
+   * Pass the same `stepId` again to publish a retry; the newer attempt
+   * supersedes the older one on the client.
+   */
+  createStep(options?: StepOptions): RunStep<TOutput>;
   /**
    * Claims any steer input that arrived since the last call.
    *
@@ -460,7 +514,12 @@ class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRu
       resolveWriteOptions: (output) =>
         mergeWriteOptions(options.resolveWriteOptions?.(output), {
           extras: {
-            ai: { transport: withSteerStamp(this.baseHeaders("assistant"), this.steerTracker) },
+            ai: {
+              transport: mergeHeaders(
+                withSteerStamp(this.baseHeaders("assistant"), this.steerTracker),
+                options.stepHeaders ?? {},
+              ),
+            },
           },
         }),
       ...(this.deps.options.onAbort !== undefined
@@ -534,6 +593,54 @@ class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRu
     return this.loadedMessages.slice(-maxMessages);
   }
 
+  public createStep(options: StepOptions = {}): RunStep<TOutput> {
+    const stepId = options.stepId ?? this.deps.idProvider.messageId();
+    let startSerial: string | undefined;
+
+    const stepHeaders = (): HeaderMap => {
+      const base: Record<string, string> = { [HEADER_STEP_ID]: stepId };
+      // step-start carries no back-reference: its own serial IS the identity.
+      // Everything published afterwards points back at it.
+      if (startSerial !== undefined) {
+        base[HEADER_STEP_START_SERIAL] = startSerial;
+      }
+      if (options.stepClientId !== undefined) {
+        base[HEADER_STEP_CLIENT_ID] = options.stepClientId;
+      }
+      return base;
+    };
+
+    return {
+      stepId,
+      get startSerial(): string | undefined {
+        return startSerial;
+      },
+      start: async (): Promise<void> => {
+        const ack = await this.publishLifecycle(
+          EVENT_AI_STEP_START,
+          mergeHeaders(this.baseHeaders("assistant"), stepHeaders()),
+        );
+        // The ack's message serial is this attempt's identity, so it must be
+        // captured before any output is stamped.
+        startSerial = ack?.messageSerial;
+      },
+      streamResponse: async (
+        stream: ReadableStream<TOutput>,
+        streamOptions: StreamResponseOptions<TOutput> = {},
+      ): Promise<StreamResult> =>
+        this.streamResponse(stream, { ...streamOptions, stepHeaders: stepHeaders() }),
+      end: async (reason: StepEndReason = "complete"): Promise<void> => {
+        await this.publishLifecycle(
+          EVENT_AI_STEP_END,
+          mergeHeaders(this.baseHeaders("assistant"), {
+            ...stepHeaders(),
+            [HEADER_STEP_REASON]: reason,
+          }),
+        );
+      },
+    };
+  }
+
   public hasInput(): boolean {
     // Draining marks the steers visible to the iteration that produces the
     // next output, which is exactly what the stamp claims.
@@ -587,7 +694,12 @@ class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRu
   }
 
   private async publishLifecycle(
-    name: typeof EVENT_AI_RUN_START | typeof EVENT_AI_RUN_SUSPEND | typeof EVENT_AI_RUN_END,
+    name:
+      | typeof EVENT_AI_RUN_START
+      | typeof EVENT_AI_RUN_SUSPEND
+      | typeof EVENT_AI_RUN_END
+      | typeof EVENT_AI_STEP_START
+      | typeof EVENT_AI_STEP_END,
     headers: HeaderMap,
   ): Promise<MessageAck> {
     try {

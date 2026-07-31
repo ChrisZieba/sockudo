@@ -6,10 +6,16 @@ import {
   EVENT_AI_OUTPUT,
   EVENT_AI_RUN_END,
   EVENT_AI_RUN_START,
+  EVENT_AI_STEP_END,
+  EVENT_AI_STEP_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INVOCATION_ID,
   HEADER_RUN_ID,
+  HEADER_STEP_CLIENT_ID,
+  HEADER_STEP_ID,
+  HEADER_STEP_REASON,
+  HEADER_STEP_START_SERIAL,
 } from "../../constants.js";
 import { ErrorCode } from "../../errors.js";
 import { createMockClient, type MockChannel } from "../../realtime/mocks.js";
@@ -127,6 +133,59 @@ describe("server transport", () => {
     ).resolves.toEqual({ reason: "complete" });
 
     expect(published.map((message) => message.name)).toEqual([EVENT_AI_OUTPUT, EVENT_AI_OUTPUT]);
+  });
+
+  it("publishes a step bracket and stamps outputs with the attempt serial", async () => {
+    const { channel, published } = setupChannel();
+    const run = createAgentSession({
+      channel,
+      codec: testCodec(),
+      idProvider: {
+        runId: () => "turn-generated",
+        invocationId: () => "inv-generated",
+        inputEventId: () => "evt-generated",
+        messageId: () => "step-1",
+      },
+    }).createRun({ runId: "turn-1", invocationId: "inv-1" });
+
+    const step = run.createStep({ stepClientId: "client-a" });
+    await step.start();
+    await step.streamResponse(
+      new ReadableStream<Message>({
+        start(controller) {
+          controller.enqueue({ id: "a1", text: "hi" });
+          controller.close();
+        },
+      }),
+    );
+    await step.end("complete");
+
+    const names = published.map((message) => message.name);
+    expect(names).toContain(EVENT_AI_STEP_START);
+    expect(names).toContain(EVENT_AI_STEP_END);
+
+    const start = published.find((message) => message.name === EVENT_AI_STEP_START);
+    const startHeaders = getTransportHeaders(start?.extras);
+    // The step-start's own serial is the attempt identity, so it carries no
+    // back-reference of its own.
+    expect(startHeaders[HEADER_STEP_ID]).toBe("step-1");
+    expect(startHeaders[HEADER_STEP_START_SERIAL]).toBeUndefined();
+    expect(startHeaders[HEADER_STEP_CLIENT_ID]).toBe("client-a");
+
+    // Outputs and the step-end both point back at it.
+    const attemptSerial = step.startSerial;
+    expect(attemptSerial).toBeDefined();
+    const output = published.find((message) => message.name === EVENT_AI_OUTPUT);
+    expect(getTransportHeaders(output?.extras)).toMatchObject({
+      [HEADER_STEP_ID]: "step-1",
+      [HEADER_STEP_START_SERIAL]: attemptSerial,
+    });
+    const end = published.find((message) => message.name === EVENT_AI_STEP_END);
+    expect(getTransportHeaders(end?.extras)).toMatchObject({
+      [HEADER_STEP_ID]: "step-1",
+      [HEADER_STEP_START_SERIAL]: attemptSerial,
+      [HEADER_STEP_REASON]: "complete",
+    });
   });
 
   it("stamps one generated assistant message id onto streamed responses", async () => {

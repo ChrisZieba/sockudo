@@ -125,4 +125,14 @@ export const FEATURE_RECEIPTS: readonly FeatureReceipt[] = [
     specFile: "etc/api-snapshot.d.ts",
     status: "✅",
   },
+  {
+    feature: "Steering: mid-run input and consumed outcomes",
+    specFile: "src/core/transport/steer.test.ts",
+    status: "✅",
+  },
+  {
+    feature: "Step lifecycle: attempts and retry supersession",
+    specFile: "src/core/transport/step.test.ts",
+    status: "✅",
+  },
 ];

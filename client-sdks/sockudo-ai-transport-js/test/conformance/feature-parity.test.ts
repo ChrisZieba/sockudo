@@ -34,6 +34,8 @@ describe("feature parity receipt", () => {
         "React API surface",
         "Vercel API surface",
         "Vercel React API surface",
+        "Steering: mid-run input and consumed outcomes",
+        "Step lifecycle: attempts and retry supersession",
       ]
     `);
   });

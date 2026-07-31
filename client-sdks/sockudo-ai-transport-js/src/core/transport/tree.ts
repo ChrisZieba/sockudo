@@ -10,6 +10,10 @@ import {
   INBOUND_LEGACY_HEADER_TURN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_STEP_CLIENT_ID,
+  HEADER_STEP_ID,
+  HEADER_STEP_REASON,
+  HEADER_STEP_START_SERIAL,
 } from "../../constants.js";
 import { EventEmitter, type EventUnsubscribe } from "../../event-emitter.js";
 import type { HeaderMap } from "../../utils.js";
@@ -29,6 +33,49 @@ export type RunEndReason = "complete" | "cancelled" | "error" | "suspended";
  * AgentRun status tracked by the conversation tree.
  */
 export type RunStatus = "active" | RunEndReason;
+
+/**
+ * Wire step-end reasons.
+ *
+ * Narrower than {@link RunEndReason}: a step has no `error` arm, because a
+ * stream, model, or tool failure ends the attempt `failed` and is retryable.
+ * `cancelled` is run-level bleed-through — cancelling a run closes its open
+ * step so the bracket stays balanced.
+ */
+export type StepEndReason = "complete" | "failed" | "cancelled";
+
+/**
+ * State of one logical step within a run.
+ *
+ * A step is re-attemptable: a retry publishes a fresh `ai-step-start` under the
+ * same `step-id`, and the attempt with the highest `step-start-serial` is
+ * canonical. Output stamped with a superseded attempt's serial is ignored, so a
+ * failed attempt's partial output never reaches the projection.
+ */
+export interface StepInfo {
+  /** Stable step identity across attempts. */
+  stepId: string;
+  /** Status of the canonical attempt. */
+  status: "active" | StepEndReason;
+  /** Number of distinct attempts observed. */
+  attemptCount: number;
+  /** Verified client id that owns the step, when known. */
+  stepClientId?: string;
+  /** Serial of the canonical attempt's `ai-step-start`. */
+  startSerial?: TreeSerial;
+}
+
+/**
+ * Step lifecycle event accepted by {@link Tree.applyStepLifecycle}.
+ */
+export interface StepLifecycleEvent {
+  /** Lifecycle kind. */
+  type: "step-start" | "step-end";
+  /** Transport headers carried by the lifecycle message. */
+  headers: HeaderMap;
+  /** Serial assigned by Sockudo delivery or history. */
+  serial: TreeSerial;
+}
 
 /**
  * AgentRun-keyed node in the conversation tree.
@@ -54,6 +101,8 @@ export interface RunNode<TProjection> {
   startSerial?: TreeSerial;
   /** Terminal lifecycle serial. */
   endSerial?: TreeSerial;
+  /** Steps observed for this run, in first-seen order. */
+  steps: StepInfo[];
 }
 
 /**
@@ -130,6 +179,10 @@ export interface Tree<TEvent, TProjection> {
   ): RunNode<TProjection> | undefined;
   /** Applies turn lifecycle metadata. */
   applyRunLifecycle(event: RunLifecycleEvent): RunNode<TProjection> | undefined;
+  /** Applies step lifecycle metadata. */
+  applyStepLifecycle(event: StepLifecycleEvent): RunNode<TProjection> | undefined;
+  /** Whether output stamped with this step attempt is from the canonical attempt. */
+  isCanonicalStepAttempt(stepId: string, startSerial: string): boolean;
   /** Deletes a codec message id and removes unreachable turns. */
   delete(codecMessageId: string): void;
   /** Docs-compatible upsert alias for {@link applyMessage}. */
@@ -213,6 +266,19 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
     transportHeaders: HeaderMap,
     serial: TreeSerial,
   ): RunNode<TProjection> | undefined {
+    // Output from a superseded step attempt is not materialised: a retry
+    // republishes under the same step-id, and only the highest
+    // step-start-serial is canonical, so a failed attempt's partial output must
+    // not reach the projection.
+    const stampedStepId = transportHeaders[HEADER_STEP_ID];
+    const stampedStepStart = transportHeaders[HEADER_STEP_START_SERIAL];
+    if (
+      stampedStepId !== undefined &&
+      stampedStepStart !== undefined &&
+      !this.isCanonicalStepAttempt(stampedStepId, stampedStepStart)
+    ) {
+      return this.runIndex.get(transportHeaders[HEADER_RUN_ID] ?? "");
+    }
     if (decodedEvents.length === 0) {
       return undefined;
     }
@@ -249,6 +315,81 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
       this.emitter.emit("turn-projection-updated", event);
     }
     return node;
+  }
+
+  public applyStepLifecycle(event: StepLifecycleEvent): RunNode<TProjection> | undefined {
+    const runId = event.headers[HEADER_RUN_ID];
+    const stepId = event.headers[HEADER_STEP_ID];
+    if (runId === undefined || stepId === undefined) {
+      return undefined;
+    }
+    const node = this.ensureRun(runId, {}, undefined);
+    const existing = node.steps.find((step) => step.stepId === stepId);
+
+    if (event.type === "step-start") {
+      // A step-start carries no back-reference: its own serial IS the attempt's
+      // identity. A repeat under the same step-id is a retry.
+      const stepClientId = event.headers[HEADER_STEP_CLIENT_ID];
+      if (existing === undefined) {
+        const step: StepInfo = { stepId, status: "active", attemptCount: 1 };
+        setOptional(step, "startSerial", event.serial);
+        setOptional(step, "stepClientId", stepClientId);
+        node.steps.push(step);
+      } else {
+        existing.attemptCount += 1;
+        // Only a higher serial supersedes, so out-of-order redelivery of an
+        // older attempt cannot un-promote the canonical one.
+        if (
+          existing.startSerial === undefined ||
+          compareSerial(event.serial, existing.startSerial) > 0
+        ) {
+          existing.startSerial = event.serial;
+          existing.status = "active";
+        }
+        if (stepClientId !== undefined) {
+          existing.stepClientId = stepClientId;
+        }
+      }
+      this.bump();
+      this.emitter.emit("turn", node);
+      return node;
+    }
+
+    if (existing === undefined) {
+      return node;
+    }
+    // A step-end for a superseded attempt must not close the canonical one.
+    const endsCanonical =
+      existing.startSerial === undefined ||
+      this.stepAttemptIsCanonical(existing, event.headers[HEADER_STEP_START_SERIAL]);
+    if (!endsCanonical) {
+      return node;
+    }
+    const reason = event.headers[HEADER_STEP_REASON];
+    existing.status =
+      reason === "complete" || reason === "failed" || reason === "cancelled" ? reason : "complete";
+    this.bump();
+    this.emitter.emit("turn", node);
+    return node;
+  }
+
+  public isCanonicalStepAttempt(stepId: string, startSerial: string): boolean {
+    for (const node of this.runIndex.values()) {
+      const step = node.steps.find((candidate) => candidate.stepId === stepId);
+      if (step !== undefined) {
+        return this.stepAttemptIsCanonical(step, startSerial);
+      }
+    }
+    // An unseen step cannot be judged superseded; treat its output as live so a
+    // reordered step-start does not silently drop content.
+    return true;
+  }
+
+  private stepAttemptIsCanonical(step: StepInfo, startSerial: string | undefined): boolean {
+    if (startSerial === undefined || step.startSerial === undefined) {
+      return true;
+    }
+    return compareSerial(startSerial, step.startSerial) >= 0;
   }
 
   public applyRunLifecycle(event: RunLifecycleEvent): RunNode<TProjection> | undefined {
@@ -517,6 +658,7 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
     const node: RunNode<TProjection> = {
       runId,
       status: "active",
+      steps: [],
       projection: this.options.createProjection?.() ?? this.reducer.init(),
     };
     setOptional(node, "startSerial", serial);
