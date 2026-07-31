@@ -97,6 +97,51 @@ fn publish_validation_accepts_empty_ai_step_owner() {
 }
 
 #[test]
+fn publish_validation_accepts_step_start_serial() {
+    let message = AblyMessage {
+        name: Some("ai-step-end".to_string()),
+        extras: Some(json!({
+            "ai": {
+                "transport": {
+                    "run-id": "run-1",
+                    "step-id": "step-1",
+                    "step-start-serial": "serial-1"
+                }
+            }
+        })),
+        ..AblyMessage::default()
+    };
+
+    validate_ably_publish_message(&message, false)
+        .expect("step-start-serial is the current Ably AI Transport header");
+}
+
+#[test]
+fn publish_validation_rejects_obsolete_start_serial() {
+    let message = AblyMessage {
+        name: Some("ai-step-end".to_string()),
+        extras: Some(json!({
+            "ai": {
+                "transport": {
+                    "run-id": "run-1",
+                    "step-id": "step-1",
+                    "start-serial": "serial-1"
+                }
+            }
+        })),
+        ..AblyMessage::default()
+    };
+
+    let error = validate_ably_publish_message(&message, false).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("unknown extras.ai.transport key 'start-serial'"),
+        "unexpected validation error: {error}"
+    );
+}
+
+#[test]
 fn publish_validation_rejects_reserved_and_unknown_fields() {
     let reserved = AblyMessage {
         connection_id: Some("client-supplied".to_string()),

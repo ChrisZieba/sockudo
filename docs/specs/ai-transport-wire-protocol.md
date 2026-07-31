@@ -167,7 +167,7 @@ Transport keys:
 | `event-id` | Non-empty opaque string |
 | `input-client-id` | Verified client identity string |
 | `step-id` | Non-empty opaque string; stable logical step identity across attempts |
-| `start-serial` | Non-empty serial of the corresponding `ai-step-start` attempt |
+| `step-start-serial` | Non-empty serial of the corresponding `ai-step-start` attempt |
 | `step-reason` | `complete`, `failed`, `cancelled` |
 | `step-client-id` | Verified client identity string, or the empty native wire sentinel when the step participant is unknown |
 | `role` | `user`, `assistant`, `system`, `tool`, `agent` |

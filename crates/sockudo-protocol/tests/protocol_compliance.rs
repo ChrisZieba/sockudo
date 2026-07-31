@@ -4,8 +4,8 @@ use sockudo_protocol::messages::{
     AI_EVENT_LEGACY_TURN_START, AI_EVENT_OUTPUT, AI_EVENT_RUN_END, AI_EVENT_RUN_RESUME,
     AI_EVENT_RUN_START, AI_EVENT_RUN_SUSPEND, AI_HEADER_LEGACY_TURN_ID, AI_HEADER_MSG_REGENERATE,
     AI_HEADER_RUN_CLIENT_ID, AI_HEADER_RUN_ID, AI_HEADER_STEP_CLIENT_ID,
-    AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras, ExtrasValue, MessageData, MessageExtras, PusherMessage,
-    is_ai_event,
+    AI_HEADER_STEP_START_SERIAL, AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras, ExtrasValue, MessageData,
+    MessageExtras, PusherMessage, is_ai_event,
 };
 use sonic_rs::prelude::*;
 use sonic_rs::{Value, json};
@@ -128,6 +128,10 @@ fn test_ai_transport_headers_are_borrowed_views() {
     transport.insert("status".to_string(), "streaming".to_string());
     transport.insert("parent".to_string(), "msg-0".to_string());
     transport.insert("fork-of".to_string(), "msg-old".to_string());
+    transport.insert(
+        AI_HEADER_STEP_START_SERIAL.to_string(),
+        "serial-1".to_string(),
+    );
 
     let extras = sockudo_protocol::messages::MessageExtras {
         ai: Some(AiExtras {
@@ -146,6 +150,7 @@ fn test_ai_transport_headers_are_borrowed_views() {
     assert_eq!(headers.status(), Some("streaming"));
     assert_eq!(headers.parent(), Some("msg-0"));
     assert_eq!(headers.fork_of(), Some("msg-old"));
+    assert_eq!(headers.step_start_serial(), Some("serial-1"));
     assert_eq!(
         extras
             .ai_codec_headers()
@@ -353,7 +358,7 @@ fn test_ai_transport_identity_keys_reject_empty_except_native_unknown_owners() {
         ("event-id", false),
         ("step-id", false),
         (AI_HEADER_STEP_CLIENT_ID, true),
-        ("start-serial", false),
+        (AI_HEADER_STEP_START_SERIAL, false),
         ("msg-regenerate", false),
         ("model", false),
     ];
@@ -369,6 +374,27 @@ fn test_ai_transport_identity_keys_reject_empty_except_native_unknown_owners() {
 
         assert_eq!(extras.validate_ai_headers().is_ok(), allowed, "key={key}");
     }
+}
+
+#[test]
+fn test_ai_transport_rejects_obsolete_start_serial_header() {
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([(
+                "start-serial".to_string(),
+                "serial-1".to_string(),
+            )])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+
+    let error = extras.validate_ai_headers().unwrap_err();
+    assert_eq!(error.code, AI_ERROR_INVALID_TRANSPORT_HEADER);
+    assert_eq!(
+        error.message,
+        "unknown extras.ai.transport key 'start-serial'"
+    );
 }
 
 #[test]

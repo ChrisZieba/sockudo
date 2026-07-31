@@ -33,7 +33,7 @@ pub const AI_HEADER_CODEC_MESSAGE_ID: &str = "codec-message-id";
 pub const AI_HEADER_INVOCATION_ID: &str = "invocation-id";
 pub const AI_HEADER_EVENT_ID: &str = "event-id";
 pub const AI_HEADER_STEP_ID: &str = "step-id";
-pub const AI_HEADER_START_SERIAL: &str = "start-serial";
+pub const AI_HEADER_STEP_START_SERIAL: &str = "step-start-serial";
 pub const AI_HEADER_STEP_REASON: &str = "step-reason";
 pub const AI_HEADER_STEP_CLIENT_ID: &str = "step-client-id";
 pub const AI_HEADER_MSG_REGENERATE: &str = "msg-regenerate";
@@ -332,8 +332,8 @@ impl<'a> AiTransportHeaders<'a> {
     }
 
     #[inline]
-    pub fn start_serial(&self) -> Option<&'a str> {
-        self.get(AI_HEADER_START_SERIAL)
+    pub fn step_start_serial(&self) -> Option<&'a str> {
+        self.get(AI_HEADER_STEP_START_SERIAL)
     }
 
     #[inline]
@@ -592,7 +592,7 @@ fn validate_transport_key_domain(key: &str, value: &str) -> Result<(), AiHeaderV
         | AI_HEADER_INVOCATION_ID
         | AI_HEADER_EVENT_ID
         | AI_HEADER_STEP_ID
-        | AI_HEADER_START_SERIAL
+        | AI_HEADER_STEP_START_SERIAL
         | AI_HEADER_MSG_REGENERATE
         | "error-code"
         | "model" => {
