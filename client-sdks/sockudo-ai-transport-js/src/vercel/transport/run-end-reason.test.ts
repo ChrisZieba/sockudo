@@ -15,9 +15,9 @@ describe("vercelRunEndReason", () => {
   });
 
   it("completes for other finish reasons", async () => {
-    await expect(
-      vercelRunEndReason({ reason: "complete" }, Promise.resolve("stop")),
-    ).resolves.toBe("complete");
+    await expect(vercelRunEndReason({ reason: "complete" }, Promise.resolve("stop"))).resolves.toBe(
+      "complete",
+    );
   });
 
   it("maps abort-shaped finish rejection to cancelled", async () => {

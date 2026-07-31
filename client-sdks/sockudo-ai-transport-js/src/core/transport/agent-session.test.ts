@@ -25,18 +25,18 @@ import type {
   ReducerMeta,
   UserMessage,
 } from "../codec/index.js";
-import { createAgentSession } from "./agent-transport.js";
+import { createAgentSession } from "./agent-session.js";
 
 describe("server transport", () => {
   it("starts from a buffered input event and publishes turn-start once", async () => {
     const { channel, published } = setupChannel();
-    const transport = createAgentSession({
+    const session = createAgentSession({
       channel,
       codec: testCodec(),
       inputEventLookupTimeoutMs: 10,
     });
     channel.inject(input("turn-1", "inv-1", "input-1", "client-1", 1));
-    const turn = transport.createRun({
+    const turn = session.createRun({
       runId: "turn-1",
       clientId: "client-1",
       invocationId: "inv-1",
@@ -52,12 +52,12 @@ describe("server transport", () => {
 
   it("times out input lookup without publishing turn-start", async () => {
     const { channel, published } = setupChannel();
-    const transport = createAgentSession({
+    const session = createAgentSession({
       channel,
       codec: testCodec(),
       inputEventLookupTimeoutMs: 1,
     });
-    const turn = transport.createRun({
+    const turn = session.createRun({
       runId: "turn-1",
       invocationId: "missing",
       inputEventId: "input-1",

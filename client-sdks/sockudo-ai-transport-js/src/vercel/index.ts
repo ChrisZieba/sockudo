@@ -17,7 +17,7 @@ import {
 } from "./codec/index.js";
 
 /**
- * Client transport options for Vercel UI messages.
+ * Client session options for Vercel UI messages.
  *
  * @defaultValue `api` defaults to `"/api/chat"`.
  */
@@ -33,7 +33,7 @@ export type VercelClientSessionOptions = Omit<
 };
 
 /**
- * Server transport options for Vercel UI messages.
+ * Agent session options for Vercel UI messages.
  */
 export type VercelAgentSessionOptions = Omit<
   AgentSessionOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
@@ -41,7 +41,7 @@ export type VercelAgentSessionOptions = Omit<
 >;
 
 /**
- * Creates a Sockudo client transport pre-bound to {@link UIMessageCodec}.
+ * Creates a Sockudo client session pre-bound to {@link UIMessageCodec}.
  *
  * Async methods reject with `ErrorInfo`; synchronous misuse throws `ErrorInfo`
  * with `InvalidArgument`.
@@ -57,7 +57,7 @@ export function createClientSession(
 }
 
 /**
- * Creates a Sockudo server transport pre-bound to {@link UIMessageCodec}.
+ * Creates a Sockudo agent session pre-bound to {@link UIMessageCodec}.
  *
  * Public methods reject with `ErrorInfo`; synchronous misuse throws
  * `ErrorInfo` with `InvalidArgument`.

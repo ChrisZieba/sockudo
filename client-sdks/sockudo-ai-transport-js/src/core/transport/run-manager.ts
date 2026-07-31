@@ -2,7 +2,7 @@ import { HEADER_INPUT_CLIENT_ID, HEADER_RUN_CLIENT_ID, HEADER_RUN_ID } from "../
 import { ErrorCode, ErrorInfo } from "../../errors.js";
 import type { InboundMessage } from "../../realtime/index.js";
 import type { HeaderMap } from "../../utils.js";
-import type { CancelFilter } from "./client-transport.js";
+import type { CancelFilter } from "./client-session.js";
 
 /** Passed to turn cancel authorization hooks. */
 export interface CancelRequest {

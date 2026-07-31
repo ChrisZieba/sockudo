@@ -392,9 +392,7 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
   }
 
   public getLatestContinuationInvocation(runId: string): string | undefined {
-    return (
-      this.latestContinuationInvocation.get(runId) ?? this.runIndex.get(runId)?.invocationId
-    );
+    return this.latestContinuationInvocation.get(runId) ?? this.runIndex.get(runId)?.invocationId;
   }
 
   public getActiveRunIds(): Map<string, Set<string>> {
@@ -471,9 +469,7 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
       const parentRef = headers[HEADER_PARENT];
       const parentFromHeader = this.resolveReference(parentRef);
       const parentRunId =
-        forkedRunId !== undefined
-          ? this.runIndex.get(forkedRunId)?.parentRunId
-          : parentFromHeader;
+        forkedRunId !== undefined ? this.runIndex.get(forkedRunId)?.parentRunId : parentFromHeader;
       if (parentRunId !== undefined && parentRunId !== runId) {
         metadata.parentRunId = parentRunId;
       } else if (parentRef !== undefined) {

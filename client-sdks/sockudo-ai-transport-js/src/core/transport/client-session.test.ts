@@ -17,15 +17,15 @@ import type { ErrorInfo } from "../../errors.js";
 import { createMockClient, type MockChannel } from "../../realtime/mocks.js";
 import type { SockudoRawMessage } from "../../realtime/adapter.js";
 import type { Codec, DecodedBatch, Decoder, ReducerMeta, UserMessage } from "../codec/index.js";
-import { createClientSession } from "./client-transport.js";
-import type { ClientRun } from "./client-transport.js";
+import { createClientSession } from "./client-session.js";
+import type { ClientRun } from "./client-session.js";
 import type { InvocationIdProvider } from "./invocation.js";
 
 describe("client transport", () => {
   it("publishes input before poking and sends locked invocation fields", async () => {
     const calls: string[] = [];
     const { channel, fetch, ids } = setupCalls(calls);
-    const transport = createClientSession({
+    const session = createClientSession({
       channel,
       codec: testCodec(),
       api: "https://agent.test/run",
@@ -37,7 +37,7 @@ describe("client transport", () => {
       headers: () => ({ Authorization: "secret" }),
     });
 
-    const active = (await transport.view.send({
+    const active = (await session.view.send({
       id: "user-1",
       text: "hello",
     })) as ClientRun<Message>;
@@ -72,7 +72,7 @@ describe("client transport", () => {
       status: 403,
       data: { code: 403, error: "forbidden" },
     });
-    const transport = createClientSession({
+    const session = createClientSession({
       channel,
       codec: testCodec(),
       api: "https://agent.test/run",
@@ -81,10 +81,10 @@ describe("client transport", () => {
       fetch: okFetch(),
     });
 
-    await expect(transport.view.send({ id: "user-1", text: "hello" })).rejects.toMatchObject({
+    await expect(session.view.send({ id: "user-1", text: "hello" })).rejects.toMatchObject({
       code: ErrorCode.InsufficientCapability,
     });
-    expect(transport.view.getMessages()).toEqual([]);
+    expect(session.view.getMessages()).toEqual([]);
   });
 
   it("rejects with a clear error when server feature flags omit ai-transport", () => {
@@ -155,7 +155,7 @@ describe("client transport", () => {
     const client = createMockClient({ clientId: "client-1" });
     const channel = client.getMockChannel("chat");
     const errors: ErrorInfo[] = [];
-    const transport = createClientSession({
+    const session = createClientSession({
       channel,
       codec: testCodec(),
       api: "https://agent.test/run",
@@ -163,15 +163,15 @@ describe("client transport", () => {
       runStartDeadlineMs: 0,
       fetch: vi.fn(() => Promise.resolve(new Response(null, { status: 500 }))),
     });
-    transport.on("error", (error) => errors.push(error));
+    session.on("error", (error) => errors.push(error));
 
-    const active = (await transport.view.send({
+    const active = (await session.view.send({
       id: "user-1",
       text: "hello",
     })) as ClientRun<Message>;
     await Promise.resolve();
 
-    expect(transport.view.getMessages()).toEqual([{ id: "user-1", text: "hello" }]);
+    expect(session.view.getMessages()).toEqual([{ id: "user-1", text: "hello" }]);
     expect(errors).toHaveLength(1);
     await expect(active.stream.getReader().read()).rejects.toMatchObject({
       code: ErrorCode.SessionSendFailed,
@@ -181,7 +181,7 @@ describe("client transport", () => {
   it("waits for matching turn-start and routes output chunks", async () => {
     const client = createMockClient({ clientId: "client-1" });
     const channel = client.getMockChannel("chat");
-    const transport = createClientSession({
+    const session = createClientSession({
       channel,
       codec: testCodec(),
       api: "https://agent.test/run",
@@ -191,7 +191,7 @@ describe("client transport", () => {
       runStartDeadlineMs: 100,
     });
 
-    const pending = transport.view.send({ id: "user-1", text: "hello" });
+    const pending = session.view.send({ id: "user-1", text: "hello" });
     queueMicrotask(() => {
       channel.inject(lifecycle(EVENT_AI_RUN_START, "turn-1", "inv-1", 2));
     });
@@ -207,7 +207,7 @@ describe("client transport", () => {
   it("does not fold future summary actions into reduced state", () => {
     const client = createMockClient({ clientId: "client-1" });
     const channel = client.getMockChannel("chat");
-    const transport = createClientSession({
+    const session = createClientSession({
       channel,
       codec: testCodec(),
       api: "https://agent.test/run",
@@ -217,12 +217,12 @@ describe("client transport", () => {
       runStartDeadlineMs: 0,
     });
     const rawMessages: string[] = [];
-    transport.on("message", (message) => {
+    session.on("message", (message) => {
       rawMessages.push(`${message.name}:${message.action}`);
     });
 
     channel.inject(output("turn-1", "inv-1", "assistant-1", "before", 3));
-    expect(transport.view.getMessages()).toEqual([{ id: "assistant-1", text: "before" }]);
+    expect(session.view.getMessages()).toEqual([{ id: "assistant-1", text: "before" }]);
 
     channel.inject({
       event: "sockudo:message.future",
@@ -244,10 +244,10 @@ describe("client transport", () => {
       },
     });
     expect(rawMessages).toContain(`${EVENT_AI_OUTPUT}:summary`);
-    expect(transport.view.getMessages()).toEqual([{ id: "assistant-1", text: "before" }]);
+    expect(session.view.getMessages()).toEqual([{ id: "assistant-1", text: "before" }]);
 
     channel.inject(output("turn-1", "inv-1", "assistant-2", "after", 4));
-    expect(transport.view.getMessages()).toEqual([
+    expect(session.view.getMessages()).toEqual([
       { id: "assistant-1", text: "before" },
       { id: "assistant-2", text: "after" },
     ]);
@@ -255,7 +255,7 @@ describe("client transport", () => {
 
   it("rejects when turn-start misses the configured deadline", async () => {
     const client = createMockClient({ clientId: "client-1" });
-    const transport = createClientSession({
+    const session = createClientSession({
       channel: client.getMockChannel("chat"),
       codec: testCodec(),
       api: "https://agent.test/run",
@@ -264,7 +264,7 @@ describe("client transport", () => {
       runStartDeadlineMs: 1,
     });
 
-    await expect(transport.view.send({ id: "user-1", text: "hello" })).rejects.toMatchObject({
+    await expect(session.view.send({ id: "user-1", text: "hello" })).rejects.toMatchObject({
       code: ErrorCode.RunStartDeadlineExceeded,
       statusCode: 504,
     });
@@ -273,7 +273,7 @@ describe("client transport", () => {
   it("publishes cancel filters and waitForRun resolves on terminal turn-end", async () => {
     const client = createMockClient({ clientId: "client-1" });
     const channel = client.getMockChannel("chat");
-    const transport = createClientSession({
+    const session = createClientSession({
       channel,
       codec: testCodec(),
       api: "https://agent.test/run",
@@ -289,11 +289,11 @@ describe("client transport", () => {
       return originalPublish(message);
     });
 
-    const active = (await transport.view.send({
+    const active = (await session.view.send({
       id: "user-1",
       text: "hello",
     })) as ClientRun<Message>;
-    const waiting = transport.waitForRun({ own: true });
+    const waiting = session.waitForRun({ own: true });
     await active.cancel();
     channel.inject(lifecycle(EVENT_AI_RUN_END, "turn-1", "inv-1", 3, "cancelled"));
 
@@ -309,7 +309,7 @@ describe("client transport", () => {
   it("stages events locally and drains them into the next send body", async () => {
     const client = createMockClient({ clientId: "client-1" });
     const fetch = okFetch();
-    const transport = createClientSession({
+    const session = createClientSession({
       channel: client.getMockChannel("chat"),
       codec: testCodec(),
       api: "https://agent.test/run",
@@ -319,10 +319,10 @@ describe("client transport", () => {
       messages: [{ id: "assistant-1", text: "old" }],
     });
 
-    transport.stageEvents("assistant-1", [{ id: "assistant-1", text: "new" }]);
-    expect(transport.view.getMessages()).toEqual([{ id: "assistant-1", text: "new" }]);
+    session.stageEvents("assistant-1", [{ id: "assistant-1", text: "new" }]);
+    expect(session.view.getMessages()).toEqual([{ id: "assistant-1", text: "new" }]);
 
-    await transport.view.send({ id: "user-1", text: "next" });
+    await session.view.send({ id: "user-1", text: "next" });
 
     const request = fetch.mock.calls[0]?.[1] as RequestInit;
     expect(requestBodyJson(request)).toMatchObject({

@@ -408,8 +408,8 @@ function inbound(options: {
   messageSerial?: string;
   transport?: Record<string, string>;
 }): InboundMessage {
-  const transport = Object.create(null) as Record<string, string>;
-  Object.assign(transport, options.transport);
+  const session = Object.create(null) as Record<string, string>;
+  Object.assign(session, options.transport);
   return {
     name: options.name,
     data: options.data,
@@ -419,7 +419,7 @@ function inbound(options: {
     timestamp: 0,
     raw: {},
     getTransportHeaders() {
-      return transport;
+      return session;
     },
     getCodecHeaders() {
       return Object.create(null) as HeaderMap;

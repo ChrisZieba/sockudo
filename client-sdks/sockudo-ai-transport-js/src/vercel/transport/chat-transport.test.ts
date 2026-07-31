@@ -312,7 +312,7 @@ function setup(
     return originalPublish(message);
   });
   const fetch = okFetch();
-  const transport = createClientSession({
+  const session = createClientSession({
     channel,
     fetch,
     idProvider: fixedIds(),
@@ -324,7 +324,7 @@ function setup(
     chatOptions.prepareSendMessagesRequest = options.prepareSendMessagesRequest;
   }
   return {
-    chat: createChatTransport(transport, chatOptions),
+    chat: createChatTransport(session, chatOptions),
     channel,
     fetch,
     published,

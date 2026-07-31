@@ -72,13 +72,13 @@ export interface UseClientSessionOptions {
  */
 export interface UseClientSessionResult<TInput, TOutput, TProjection, TMessage> {
     /** Resolved transport or a throwing stub. */
-    transport: ClientSession<TInput, TOutput, TProjection, TMessage>;
+    session: ClientSession<TInput, TOutput, TProjection, TMessage>;
     /**
      * Provider construction or lookup error.
      *
      * @defaultValue `undefined` when a transport resolves or lookup is skipped.
      */
-    transportError?: ErrorInfo;
+    sessionError?: ErrorInfo;
 }
 /**
  * Options for view hooks.
@@ -93,7 +93,7 @@ export interface UseViewOptions<TInput, TMessage> {
      *
      * @defaultValue Context transport.
      */
-    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+    session?: ClientSession<TInput, unknown, unknown, TMessage>;
     /**
      * Explicit view; wins over `transport`.
      *
@@ -163,7 +163,7 @@ export interface UseCreateViewOptions<TInput, TMessage> {
      *
      * @defaultValue Context transport.
      */
-    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+    session?: ClientSession<TInput, unknown, unknown, TMessage>;
     /**
      * Auto-load page size once per owned view instance.
      *
@@ -189,7 +189,7 @@ export interface UseTreeOptions<TInput, TMessage> {
      *
      * @defaultValue Context transport.
      */
-    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+    session?: ClientSession<TInput, unknown, unknown, TMessage>;
 }
 /**
  * Stable tree helper handle.
@@ -216,7 +216,7 @@ export interface UseActiveRunsOptions<TInput, TMessage> {
      *
      * @defaultValue Context transport.
      */
-    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+    session?: ClientSession<TInput, unknown, unknown, TMessage>;
 }
 /**
  * Options for {@link useSockudoMessages}.
@@ -230,7 +230,7 @@ export interface UseSockudoMessagesOptions<TInput, TMessage> {
      *
      * @defaultValue Context transport.
      */
-    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+    session?: ClientSession<TInput, unknown, unknown, TMessage>;
     /**
      * Suppresses subscription and returns a stable empty list.
      *
@@ -270,7 +270,7 @@ export interface SessionHooks<TInput, TOutput, TProjection, TMessage> {
  */
 export declare function createSessionHooks<TInput = unknown, TOutput = unknown, TProjection = unknown, TMessage = unknown>(): SessionHooks<TInput, TOutput, TProjection, TMessage>;
 /**
- * Provides a channel-keyed AI client transport using the outer
+ * Provides a channel-keyed AI client session using the outer
  * `@sockudo/client/react` `SockudoProvider`.
  *
  * @defaultValue No default `channelName`; the prop is required.
@@ -280,7 +280,7 @@ export declare function createSessionHooks<TInput = unknown, TOutput = unknown, 
  */
 export declare function ClientSessionProvider(props: ClientSessionProviderProps<unknown, unknown, unknown, unknown>): ReturnType<typeof createElement>;
 /**
- * Reads the nearest or named AI client transport.
+ * Reads the nearest or named AI client session.
  *
  * @defaultValue Uses the nearest provider when `channelName` is omitted.
  *
@@ -373,16 +373,16 @@ export interface UseClientSessionOptions {
  */
 export interface UseClientSessionResult<TInput, TOutput, TProjection, TMessage> {
     /** Resolved transport ref. */
-    transport: ShallowRef<ClientSession<TInput, TOutput, TProjection, TMessage> | undefined>;
+    session: ShallowRef<ClientSession<TInput, TOutput, TProjection, TMessage> | undefined>;
     /** Provider construction or lookup error ref. */
-    transportError: ShallowRef<ErrorInfo | undefined>;
+    sessionError: ShallowRef<ErrorInfo | undefined>;
 }
 /**
  * Options for Vue view composables.
  */
 export interface UseViewOptions<TInput, TMessage> {
     /** Explicit transport. */
-    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+    session?: ClientSession<TInput, unknown, unknown, TMessage>;
     /** Explicit view; wins over `transport`. */
     view?: View<TInput, TMessage>;
     /** Auto-load page size once per view instance. */
@@ -430,7 +430,7 @@ export interface ViewHandle<TMessage> {
  */
 export interface UseCreateViewOptions<TInput, TMessage> {
     /** Explicit transport. Defaults to context transport. */
-    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+    session?: ClientSession<TInput, unknown, unknown, TMessage>;
     /** Auto-load page size once per owned view instance. */
     limit?: number;
     /** Suppresses view creation. */
@@ -441,7 +441,7 @@ export interface UseCreateViewOptions<TInput, TMessage> {
  */
 export interface UseTreeOptions<TInput, TMessage> {
     /** Explicit transport. Defaults to context transport. */
-    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+    session?: ClientSession<TInput, unknown, unknown, TMessage>;
 }
 /**
  * Stable tree helper handle.
@@ -459,19 +459,19 @@ export interface TreeHandle {
  */
 export interface UseActiveRunsOptions<TInput, TMessage> {
     /** Explicit transport. Defaults to context transport. */
-    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+    session?: ClientSession<TInput, unknown, unknown, TMessage>;
 }
 /**
  * Options for raw Sockudo message subscriptions.
  */
 export interface UseSockudoMessagesOptions<TInput, TMessage> {
     /** Explicit transport. Defaults to context transport. */
-    transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+    session?: ClientSession<TInput, unknown, unknown, TMessage>;
     /** Suppresses subscription and returns a stable empty list. */
     skip?: boolean;
 }
 /**
- * Vue transport scope returned by {@link createSessionScope}.
+ * Vue session scope returned by {@link createSessionScope}.
  */
 export interface SessionScope<TInput, TOutput, TProjection, TMessage> {
     /** Provides a channel-keyed transport registry. */
@@ -490,8 +490,8 @@ export interface SessionScope<TInput, TOutput, TProjection, TMessage> {
     useSockudoMessages(options?: UseSockudoMessagesOptions<TInput, TMessage>): Ref<readonly InboundMessage[]>;
 }
 interface SessionSlot {
-    transport: ShallowRef<ClientSession<unknown, unknown, unknown, unknown> | undefined>;
-    transportError: ShallowRef<ErrorInfo | undefined>;
+    session: ShallowRef<ClientSession<unknown, unknown, unknown, unknown> | undefined>;
+    sessionError: ShallowRef<ErrorInfo | undefined>;
 }
 interface SessionRegistry {
     defaultChannelName?: string;
@@ -502,11 +502,11 @@ interface SessionRegistry {
  */
 export declare function createSessionScope<TInput = unknown, TOutput = unknown, TProjection = unknown, TMessage = unknown>(key?: InjectionKey<SessionRegistry>): SessionScope<TInput, TOutput, TProjection, TMessage>;
 /**
- * Provides a channel-keyed AI client transport using `@sockudo/client/vue`.
+ * Provides a channel-keyed AI client session using `@sockudo/client/vue`.
  */
 export declare function provideSession(options: ClientSessionProviderOptions<unknown, unknown, unknown, unknown>): UseClientSessionResult<unknown, unknown, unknown, unknown>;
 /**
- * Reads the nearest or named Vue client transport.
+ * Reads the nearest or named Vue client session.
  */
 export declare function useClientSession(options?: UseClientSessionOptions): UseClientSessionResult<unknown, unknown, unknown, unknown>;
 /**
@@ -538,7 +538,7 @@ import { ErrorInfo } from "../errors.js";
 import type { InboundMessage } from "../realtime/index.js";
 import { type BranchSelectionIntent, type ClientSession, type ClientSessionOptions, type RunNode, type View } from "../core/transport/index.js";
 /**
- * Svelte transport store options.
+ * Svelte session store options.
  */
 export type SessionStoreOptions<TInput, TOutput, TProjection, TMessage> = ClientSessionOptions<TInput, TOutput, TProjection, TMessage> & {
     /** Closes the transport when the current Svelte component is destroyed.
@@ -559,16 +559,16 @@ export interface GetClientSessionOptions {
     onError?(error: ErrorInfo): void;
 }
 /**
- * Svelte transport state.
+ * Svelte session state.
  */
 export interface ClientSessionState<TInput, TOutput, TProjection, TMessage> {
     /** Resolved transport. */
-    transport?: ClientSession<TInput, TOutput, TProjection, TMessage>;
+    session?: ClientSession<TInput, TOutput, TProjection, TMessage>;
     /** Provider construction or lookup error. */
-    transportError?: ErrorInfo;
+    sessionError?: ErrorInfo;
 }
 /**
- * Svelte transport store.
+ * Svelte session store.
  */
 export interface ClientSessionStore<TInput, TOutput, TProjection, TMessage> extends Readable<ClientSessionState<TInput, TOutput, TProjection, TMessage>> {
     /** Channel registry key. */
@@ -581,7 +581,7 @@ export interface ClientSessionStore<TInput, TOutput, TProjection, TMessage> exte
  */
 export interface ViewStoreOptions<TInput, TMessage> {
     /** Explicit transport. */
-    transport?: ClientSession<TInput, unknown, unknown, TMessage> | Readable<ClientSessionState<TInput, unknown, unknown, TMessage>>;
+    session?: ClientSession<TInput, unknown, unknown, TMessage> | Readable<ClientSessionState<TInput, unknown, unknown, TMessage>>;
     /** Explicit view; wins over `transport`. */
     view?: View<TInput, TMessage>;
     /** Auto-load page size once per view instance. */
@@ -636,31 +636,31 @@ export interface ViewStore<TMessage> extends Readable<ViewState<TMessage>> {
  */
 export interface ActiveRunsStoreOptions<TInput, TMessage> {
     /** Explicit transport. Defaults to context transport. */
-    transport?: ClientSession<TInput, unknown, unknown, TMessage> | Readable<ClientSessionState<TInput, unknown, unknown, TMessage>>;
+    session?: ClientSession<TInput, unknown, unknown, TMessage> | Readable<ClientSessionState<TInput, unknown, unknown, TMessage>>;
 }
 /**
  * Options for raw Sockudo message subscriptions.
  */
 export interface SockudoMessagesStoreOptions<TInput, TMessage> {
     /** Explicit transport. Defaults to context transport. */
-    transport?: ClientSession<TInput, unknown, unknown, TMessage> | Readable<ClientSessionState<TInput, unknown, unknown, TMessage>>;
+    session?: ClientSession<TInput, unknown, unknown, TMessage> | Readable<ClientSessionState<TInput, unknown, unknown, TMessage>>;
     /** Suppresses subscription and returns a stable empty list. */
     skip?: boolean;
 }
 /**
- * Creates a Svelte readable store that owns one client transport.
+ * Creates a Svelte readable store that owns one client session.
  */
 export declare function createSessionStore<TInput = unknown, TOutput = unknown, TProjection = unknown, TMessage = unknown>(options: SessionStoreOptions<TInput, TOutput, TProjection, TMessage>): ClientSessionStore<TInput, TOutput, TProjection, TMessage>;
 /**
- * Sets the Svelte transport context for child components.
+ * Sets the Svelte session context for child components.
  */
 export declare function setSessionContext<TInput, TOutput, TProjection, TMessage>(store: ClientSessionStore<TInput, TOutput, TProjection, TMessage>): ClientSessionStore<TInput, TOutput, TProjection, TMessage>;
 /**
- * Creates, stores, and provides a Svelte transport in one call.
+ * Creates, stores, and provides a Svelte session in one call.
  */
 export declare function provideSession<TInput = unknown, TOutput = unknown, TProjection = unknown, TMessage = unknown>(options: SessionStoreOptions<TInput, TOutput, TProjection, TMessage>): ClientSessionStore<TInput, TOutput, TProjection, TMessage>;
 /**
- * Reads the nearest or named Svelte client transport store.
+ * Reads the nearest or named Svelte client session store.
  */
 export declare function getClientSession<TInput = unknown, TOutput = unknown, TProjection = unknown, TMessage = unknown>(options?: GetClientSessionOptions): Readable<ClientSessionState<TInput, TOutput, TProjection, TMessage>>;
 /**
@@ -672,7 +672,7 @@ export declare function createViewStore<TInput = unknown, TMessage = unknown>(op
  */
 export declare function createOwnedViewStore<TInput = unknown, TMessage = unknown>(options?: Omit<ViewStoreOptions<TInput, TMessage>, "view">): ViewStore<TMessage>;
 /**
- * Creates stable tree callbacks for a Svelte transport.
+ * Creates stable tree callbacks for a Svelte session.
  */
 export declare function createTreeHandle<TInput = unknown, TMessage = unknown>(options?: ActiveRunsStoreOptions<TInput, TMessage>): {
     /** Gets sibling turn nodes without subscribing to tree changes. */
@@ -698,7 +698,7 @@ import { type ClientSession, type ClientSessionOptions, type AgentSession, type 
 export * from "./codec/index.js";
 import { type AI, type VercelInput, type VercelOutput, type VercelProjection } from "./codec/index.js";
 /**
- * Client transport options for Vercel UI messages.
+ * Client session options for Vercel UI messages.
  *
  * @defaultValue `api` defaults to `"/api/chat"`.
  */
@@ -710,18 +710,18 @@ export type VercelClientSessionOptions = Omit<ClientSessionOptions<VercelInput, 
     api?: string;
 };
 /**
- * Server transport options for Vercel UI messages.
+ * Agent session options for Vercel UI messages.
  */
 export type VercelAgentSessionOptions = Omit<AgentSessionOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, "codec">;
 /**
- * Creates a Sockudo client transport pre-bound to {@link UIMessageCodec}.
+ * Creates a Sockudo client session pre-bound to {@link UIMessageCodec}.
  *
  * Async methods reject with `ErrorInfo`; synchronous misuse throws `ErrorInfo`
  * with `InvalidArgument`.
  */
 export declare function createClientSession(options: VercelClientSessionOptions): ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 /**
- * Creates a Sockudo server transport pre-bound to {@link UIMessageCodec}.
+ * Creates a Sockudo agent session pre-bound to {@link UIMessageCodec}.
  *
  * Public methods reject with `ErrorInfo`; synchronous misuse throws
  * `ErrorInfo` with `InvalidArgument`.
@@ -792,7 +792,7 @@ export interface UseChatTransportResult {
     /** Resolved Vercel chat transport or a throwing stub. */
     chatTransport: ChatTransport;
     /** Resolved underlying client transport or a throwing stub. */
-    transport: VercelSession;
+    session: VercelSession;
     /**
      * Chat transport lookup or construction error.
      *
@@ -800,11 +800,11 @@ export interface UseChatTransportResult {
      */
     chatTransportError?: ErrorInfo;
     /**
-     * Underlying client transport lookup or construction error.
+     * Underlying client session lookup or construction error.
      *
      * @defaultValue `undefined` when resolved or skipped.
      */
-    transportError?: ErrorInfo;
+    sessionError?: ErrorInfo;
 }
 /**
  * Options for {@link useMessageSync}.
@@ -866,7 +866,7 @@ export declare function useMessageSync(options: UseMessageSyncOptions): void;
  */
 export declare function mergeMessages(treeMessages: readonly AI.UIMessage[], overlayMessages: readonly AI.UIMessage[]): readonly AI.UIMessage[];
 /**
- * Reads the nearest or named Vercel client transport.
+ * Reads the nearest or named Vercel client session.
  *
  * @defaultValue Uses the nearest provider when `channelName` is omitted.
  */
@@ -915,7 +915,7 @@ import { type ChatTransport, type ChatTransportOptions } from "../transport/inde
 import { type AI, type VercelInput, type VercelOutput, type VercelProjection } from "../codec/index.js";
 type VercelSession = ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 /**
- * Provider options for the Vercel AI SDK Vue transport layer.
+ * Provider options for the Vercel AI SDK Vue session layer.
  */
 export type ChatTransportProviderOptions = Omit<ClientSessionProviderOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, "api" | "codec"> & {
     /** Server endpoint URL for the route handler.
@@ -933,11 +933,11 @@ export interface UseChatTransportResult {
     /** Resolved Vercel chat transport ref. */
     chatTransport: ShallowRef<ChatTransport | undefined>;
     /** Resolved underlying client transport ref. */
-    transport: ShallowRef<VercelSession | undefined>;
+    session: ShallowRef<VercelSession | undefined>;
     /** Chat transport lookup or construction error ref. */
     chatTransportError: ShallowRef<ErrorInfo | undefined>;
     /** Underlying client transport lookup or construction error ref. */
-    transportError: ShallowRef<ErrorInfo | undefined>;
+    sessionError: ShallowRef<ErrorInfo | undefined>;
 }
 /**
  * Provides a Vercel `ChatTransport` and underlying Vercel-typed client
@@ -953,7 +953,7 @@ export declare function useChatTransport(options?: UseClientSessionOptions): Use
  */
 export declare function createSessionScope(): import("../../vue/index.js").SessionScope<VercelInput, AI.UIMessageChunk, VercelProjection, AI.UIMessage>;
 /**
- * Reads the nearest or named Vercel client transport.
+ * Reads the nearest or named Vercel client session.
  */
 export declare function useClientSession(options?: UseClientSessionOptions): UseClientSessionResult<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 /**
@@ -1004,12 +1004,12 @@ export type ChatTransportStoreOptions = Omit<SessionStoreOptions<VercelInput, Ve
 export interface ChatTransportState {
     /** Resolved Vercel chat transport. */
     chatTransport?: ChatTransport;
-    /** Resolved underlying client transport. */
-    transport?: ClientSessionState<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>["transport"];
+    /** Resolved underlying client session. */
+    session?: ClientSessionState<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>["session"];
     /** Chat transport lookup or construction error. */
     chatTransportError?: ErrorInfo;
     /** Underlying client transport lookup or construction error. */
-    transportError?: ErrorInfo;
+    sessionError?: ErrorInfo;
 }
 /**
  * Svelte Vercel chat transport store.
@@ -1033,7 +1033,7 @@ export declare function provideChatTransport(options: ChatTransportStoreOptions)
  */
 export declare function getChatTransport(options?: GetClientSessionOptions): Readable<ChatTransportState>;
 /**
- * Creates a Vercel-typed client transport store.
+ * Creates a Vercel-typed client session store.
  */
 export declare function createClientSessionStore(options: Omit<SessionStoreOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, "codec">): ClientSessionStore<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 /**

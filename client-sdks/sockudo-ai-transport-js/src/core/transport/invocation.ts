@@ -1,5 +1,5 @@
 /**
- * Deterministic identity providers for client transport invocations.
+ * Deterministic identity providers for client session invocations.
  */
 export interface InvocationIdProvider {
   /** Returns the next turn id. */

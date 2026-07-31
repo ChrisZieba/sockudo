@@ -110,12 +110,7 @@ export interface ChatTransport {
   onStreamingChange(cb: (streaming: boolean) => void): () => void;
 }
 
-type VercelClientSession = ClientSession<
-  VercelInput,
-  VercelOutput,
-  VercelProjection,
-  AI.UIMessage
->;
+type VercelClientSession = ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
 interface SendDecision {
   history: readonly AI.UIMessage[];
@@ -132,13 +127,13 @@ const unresolvedToolStates = new Set<AI.DynamicToolState>([
 ]);
 
 /**
- * Creates a Vercel `useChat` transport over a Sockudo client transport.
+ * Creates a Vercel `useChat` transport over a Sockudo client session.
  */
 export function createChatTransport(
-  transport: VercelClientSession,
+  session: VercelClientSession,
   chatOptions: ChatTransportOptions = {},
 ): ChatTransport {
-  return new SockudoChatTransport(transport, chatOptions);
+  return new SockudoChatTransport(session, chatOptions);
 }
 
 /**
@@ -206,7 +201,7 @@ class SockudoChatTransport implements ChatTransport {
   private streamingValue = false;
 
   public constructor(
-    private readonly transport: VercelClientSession,
+    private readonly session: VercelClientSession,
     private readonly options: ChatTransportOptions,
   ) {}
 
@@ -252,7 +247,7 @@ class SockudoChatTransport implements ChatTransport {
   }
 
   public close(options?: CloseOptions): Promise<void> {
-    return this.transport.close(options);
+    return this.session.close(options);
   }
 
   public onStreamingChange(cb: (streaming: boolean) => void): () => void {
@@ -287,7 +282,7 @@ class SockudoChatTransport implements ChatTransport {
       messages: [],
       parent,
       forkOf: target,
-      active: this.transport.view.regenerate(
+      active: this.session.view.regenerate(
         target,
         parent,
         this.sendOptions(options, {
@@ -308,8 +303,8 @@ class SockudoChatTransport implements ChatTransport {
       throw invalid("unable to submit; at least one message is required");
     }
     if (last.role === "assistant") {
-      const treeMessage = messageById(this.transport.view.getMessages(), last.id);
-      const metadata = this.transport.view.getMessageMetadata(last.id);
+      const treeMessage = messageById(this.session.view.getMessages(), last.id);
+      const metadata = this.session.view.getMessageMetadata(last.id);
       if (treeMessage && metadata) {
         const inputs = deriveContinuationInputs(last, treeMessage);
         return {
@@ -317,7 +312,7 @@ class SockudoChatTransport implements ChatTransport {
           messages: [],
           parent: last.id,
           forkOf: last.id,
-          active: this.transport.view.sendInput(
+          active: this.session.view.sendInput(
             inputs,
             this.sendOptions(options, {
               messageId: metadata.codecMessageId,
@@ -352,8 +347,8 @@ class SockudoChatTransport implements ChatTransport {
     });
     const active =
       options.messageId !== undefined
-        ? this.transport.view.edit(options.messageId, last, sendOptions)
-        : this.transport.view.send(last, sendOptions);
+        ? this.session.view.edit(options.messageId, last, sendOptions)
+        : this.session.view.send(last, sendOptions);
     return {
       history,
       messages: [last],

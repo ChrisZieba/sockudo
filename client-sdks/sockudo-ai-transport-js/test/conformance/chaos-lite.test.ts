@@ -37,8 +37,8 @@ import type {
   ReducerMeta,
   UserMessage,
 } from "../../src/core/codec/index.js";
-import { createClientSession } from "../../src/core/transport/client-transport.js";
-import type { ClientRun, ClientSession } from "../../src/core/transport/client-transport.js";
+import { createClientSession } from "../../src/core/transport/client-session.js";
+import type { ClientRun, ClientSession } from "../../src/core/transport/client-session.js";
 import type { InvocationIdProvider } from "../../src/core/transport/invocation.js";
 
 const stages = ["pre-publish", "post-publish-pre-post", "mid-stream", "pre-turn-end"] as const;
@@ -49,13 +49,13 @@ describe("chaos-lite deterministic matrix", () => {
   });
 
   it("drops before input publish and rolls back optimistic state", async () => {
-    const { channel, transport } = setup();
+    const { channel, session } = setup();
     channel.failNextPublish(new Error("socket closed before publish"));
 
-    await expect(transport.view.send({ id: "user-1", text: "hello" })).rejects.toMatchObject({
+    await expect(session.view.send({ id: "user-1", text: "hello" })).rejects.toMatchObject({
       code: ErrorCode.SessionSendFailed,
     });
-    expect(transport.view.getMessages()).toEqual([]);
+    expect(session.view.getMessages()).toEqual([]);
     expect(channel.historySize()).toBe(0);
   });
 
@@ -63,18 +63,18 @@ describe("chaos-lite deterministic matrix", () => {
     const fetch = vi.fn<typeof globalThis.fetch>(() =>
       Promise.reject(new TypeError("socket closed before POST")),
     );
-    const { channel, transport } = setup({ fetch });
+    const { channel, session } = setup({ fetch });
     const errors: ErrorInfo[] = [];
-    transport.on("error", (error) => errors.push(error));
+    session.on("error", (error) => errors.push(error));
 
-    const active = (await transport.view.send(
+    const active = (await session.view.send(
       { id: "user-1", text: "hello" },
       { waitForRunStart: false },
     )) as ClientRun<Message>;
     await Promise.resolve();
 
     expect(channel.historySize()).toBe(1);
-    expect(transport.view.getMessages()).toEqual([{ id: "user-1", text: "hello" }]);
+    expect(session.view.getMessages()).toEqual([{ id: "user-1", text: "hello" }]);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({ code: ErrorCode.SessionSendFailed });
     await expect(active.stream.getReader().read()).rejects.toMatchObject({
@@ -83,8 +83,8 @@ describe("chaos-lite deterministic matrix", () => {
   });
 
   it("drops mid-stream, preserves rendered content, and errors the active stream", async () => {
-    const { channel, transport } = setup();
-    const active = (await transport.view.send(
+    const { channel, session } = setup();
+    const active = (await session.view.send(
       { id: "user-1", text: "hello" },
       { waitForRunStart: false },
     )) as ClientRun<Message>;
@@ -102,15 +102,15 @@ describe("chaos-lite deterministic matrix", () => {
     await expect(reader.read()).rejects.toMatchObject({
       code: ErrorCode.ChannelContinuityLost,
     });
-    expect(transport.view.getMessages()).toContainEqual({
+    expect(session.view.getMessages()).toContainEqual({
       id: "assistant-1",
       text: "one",
     });
   });
 
   it("drops before turn-end and converges through history replay", async () => {
-    const { channel, transport } = setup();
-    const active = (await transport.view.send(
+    const { channel, session } = setup();
+    const active = (await session.view.send(
       { id: "user-1", text: "hello" },
       { waitForRunStart: false },
     )) as ClientRun<Message>;
@@ -123,7 +123,7 @@ describe("chaos-lite deterministic matrix", () => {
       value: { id: "assistant-1", text: "partial" },
     });
 
-    const waiting = transport.waitForRun({ runId: active.runId });
+    const waiting = session.waitForRun({ runId: active.runId });
     channel.inject(lifecycle(EVENT_AI_RUN_END, active, 4, "complete"), {
       deliver: false,
     });
@@ -132,23 +132,23 @@ describe("chaos-lite deterministic matrix", () => {
     await expect(reader.read()).rejects.toMatchObject({
       code: ErrorCode.ChannelContinuityLost,
     });
-    expect(transport.tree.getRunNode(active.runId)?.status).toBe("active");
+    expect(session.tree.getRunNode(active.runId)?.status).toBe("active");
 
-    await transport.view.loadOlder(10);
+    await session.view.loadOlder(10);
     await expect(waiting).resolves.toBeUndefined();
-    expect(transport.tree.getRunNode(active.runId)?.status).toBe("complete");
+    expect(session.tree.getRunNode(active.runId)?.status).toBe("complete");
   });
 
   it("orders turns by server serial, not skewed local timestamps", async () => {
-    const { channel, transport } = setup();
-    await transport.view.send({ id: "user-1", text: "hello" }, { waitForRunStart: false });
+    const { channel, session } = setup();
+    await session.view.send({ id: "user-1", text: "hello" }, { waitForRunStart: false });
 
     channel.inject(lifecycleFromIds("turn-late", "inv-late", 20, 100));
     channel.inject(outputFromIds("turn-late", "inv-late", "assistant-late", 21, 50));
     channel.inject(lifecycleFromIds("turn-early", "inv-early", 10, 10_000));
     channel.inject(outputFromIds("turn-early", "inv-early", "assistant-early", 11, 9_000));
 
-    const assistantMessages = transport.view
+    const assistantMessages = session.view
       .getMessages()
       .filter((message) => message.id.startsWith("assistant-"));
     expect(assistantMessages).toEqual([
@@ -158,8 +158,8 @@ describe("chaos-lite deterministic matrix", () => {
   });
 
   it("fails slow consumers through bounded stream backpressure", async () => {
-    const { channel, transport } = setup({ streamQueueLimit: 1 });
-    const active = (await transport.view.send(
+    const { channel, session } = setup({ streamQueueLimit: 1 });
+    const active = (await session.view.send(
       { id: "user-1", text: "hello" },
       { waitForRunStart: false },
     )) as ClientRun<Message>;
@@ -182,10 +182,10 @@ function setup(
   } = {},
 ): {
   channel: ChaosChannel;
-  transport: ClientSession<Message, Message, Projection, Message>;
+  session: ClientSession<Message, Message, Projection, Message>;
 } {
   const channel = new ChaosChannel("chat");
-  const transport = createClientSession({
+  const session = createClientSession({
     channel,
     codec: testCodec(),
     api: "https://agent.test/run",
@@ -197,7 +197,7 @@ function setup(
       ? { streamQueueLimit: options.streamQueueLimit }
       : {}),
   });
-  return { channel, transport };
+  return { channel, session };
 }
 
 class ChaosChannel implements ChannelLike {

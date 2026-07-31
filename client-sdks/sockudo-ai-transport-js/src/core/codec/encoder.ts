@@ -99,12 +99,12 @@ export function createEncoderCore(
           detail: ack,
         });
       }
-      const transport = mergeHeaderMap(getTransportHeaders(publish.extras), writeOptions.transport);
+      const session = mergeHeaderMap(getTransportHeaders(publish.extras), writeOptions.transport);
       const codec = mergeHeaderMap(getCodecHeaders(publish.extras), writeOptions.codec);
       streams.set(streamId, {
         serial: ack.messageSerial,
         accumulated: payload,
-        persistentTransport: transport,
+        persistentTransport: session,
         persistentCodec: codec,
         pending: [],
         cancelled: false,

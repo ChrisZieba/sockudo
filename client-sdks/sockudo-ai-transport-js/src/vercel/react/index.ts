@@ -101,7 +101,7 @@ export interface UseChatTransportResult {
   /** Resolved Vercel chat transport or a throwing stub. */
   chatTransport: ChatTransport;
   /** Resolved underlying client transport or a throwing stub. */
-  transport: VercelSession;
+  session: VercelSession;
   /**
    * Chat transport lookup or construction error.
    *
@@ -109,11 +109,11 @@ export interface UseChatTransportResult {
    */
   chatTransportError?: ErrorInfo;
   /**
-   * Underlying client transport lookup or construction error.
+   * Underlying client session lookup or construction error.
    *
    * @defaultValue `undefined` when resolved or skipped.
    */
-  transportError?: ErrorInfo;
+  sessionError?: ErrorInfo;
 }
 
 /**
@@ -211,7 +211,7 @@ export function useChatTransport(options: UseChatTransportOptions = {}): UseChat
   if (options.skip === true) {
     return {
       chatTransport: throwingChatTransportStub(),
-      transport: client.transport,
+      session: client.session,
     };
   }
   const slot = resolveChatSlot(registry, options.channelName);
@@ -219,13 +219,13 @@ export function useChatTransport(options: UseChatTransportOptions = {}): UseChat
   const chatError = slot?.error ?? missingChatTransportError(options.channelName);
   const result: UseChatTransportResult = {
     chatTransport: chatTransport ?? throwingChatTransportStub(),
-    transport: client.transport,
+    session: client.session,
   };
   if (!chatTransport) {
     result.chatTransportError = chatError;
   }
-  if (client.transportError !== undefined) {
-    result.transportError = client.transportError;
+  if (client.sessionError !== undefined) {
+    result.sessionError = client.sessionError;
   }
   return result;
 }
@@ -241,15 +241,15 @@ export function useMessageSync(options: UseMessageSyncOptions): void {
   const { setMessages, channelName, skip } = options;
   const setMessagesRef = useRef(setMessages);
   setMessagesRef.current = setMessages;
-  const { chatTransport, transport, chatTransportError, transportError } = useChatTransport({
+  const { chatTransport, session, chatTransportError, sessionError } = useChatTransport({
     ...(channelName !== undefined ? { channelName } : {}),
     ...(skip !== undefined ? { skip } : {}),
   });
   useEffect(() => {
-    if (skip === true || chatTransportError !== undefined || transportError !== undefined) {
+    if (skip === true || chatTransportError !== undefined || sessionError !== undefined) {
       return;
     }
-    const view = transport.view;
+    const view = session.view;
     const sync = (): void => {
       setMessagesRef.current((overlay) => mergeMessages(view.getMessages(), overlay));
     };
@@ -259,7 +259,7 @@ export function useMessageSync(options: UseMessageSyncOptions): void {
       }
     };
     const unsubscribeView = view.on("update", syncIfIdle);
-    const unsubscribeMessages = transport.on("message", () => undefined);
+    const unsubscribeMessages = session.on("message", () => undefined);
     const unsubscribeStreaming = chatTransport.onStreamingChange((streaming) => {
       if (!streaming) {
         sync();
@@ -271,7 +271,7 @@ export function useMessageSync(options: UseMessageSyncOptions): void {
       unsubscribeMessages();
       unsubscribeStreaming();
     };
-  }, [channelName, chatTransport, chatTransportError, skip, transport, transportError]);
+  }, [channelName, chatTransport, chatTransportError, skip, session, sessionError]);
 }
 
 /**
@@ -309,7 +309,7 @@ export function mergeMessages(
 }
 
 /**
- * Reads the nearest or named Vercel client transport.
+ * Reads the nearest or named Vercel client session.
  *
  * @defaultValue Uses the nearest provider when `channelName` is omitted.
  */
@@ -383,18 +383,18 @@ function ChatTransportProviderInner({
   children?: ReactNode;
 }): ReturnType<typeof createElement> {
   const parent = useContext(ChatTransportContext);
-  const { transport, transportError } = useClientSession({ channelName });
+  const { session, sessionError } = useClientSession({ channelName });
   const options = chatOptions ?? emptyChatOptions;
   const slot = useMemo<ChatTransportSlot>(() => {
-    if (transportError !== undefined) {
-      return { error: transportError };
+    if (sessionError !== undefined) {
+      return { error: sessionError };
     }
     try {
-      return { chatTransport: createChatTransport(transport, options) };
+      return { chatTransport: createChatTransport(session, options) };
     } catch (error) {
       return { error: toChatTransportError(error) };
     }
-  }, [transport, options]);
+  }, [session, options]);
   const registry = useMemo<ChatTransportRegistry>(() => {
     const slots = new Map(parent?.slots);
     slots.set(channelName, slot);

@@ -27,8 +27,8 @@ import {
   type BufferedInputEvent,
   type CancelRequest,
   type ManagedRun,
-} from "./turn-manager.js";
-import type { CancelFilter } from "./client-transport.js";
+} from "./run-manager.js";
+import type { CancelFilter } from "./client-session.js";
 
 /** Message node accepted by server-side `addMessages`. */
 export interface MessageNode<TMessage> {
@@ -654,7 +654,7 @@ function mergeExtras(left: unknown, right: unknown): unknown {
     ai: {
       ...leftAi,
       ...rightAi,
-      transport: mergeHeaders(getTransportHeaders(left), getTransportHeaders(right)),
+      session: mergeHeaders(getTransportHeaders(left), getTransportHeaders(right)),
       codec: mergeHeaders(getCodecHeaders(left), getCodecHeaders(right)),
     },
   };

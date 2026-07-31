@@ -59,9 +59,9 @@ export interface UseClientSessionOptions {
  */
 export interface UseClientSessionResult<TInput, TOutput, TProjection, TMessage> {
   /** Resolved transport ref. */
-  transport: ShallowRef<ClientSession<TInput, TOutput, TProjection, TMessage> | undefined>;
+  session: ShallowRef<ClientSession<TInput, TOutput, TProjection, TMessage> | undefined>;
   /** Provider construction or lookup error ref. */
-  transportError: ShallowRef<ErrorInfo | undefined>;
+  sessionError: ShallowRef<ErrorInfo | undefined>;
 }
 
 /**
@@ -69,7 +69,7 @@ export interface UseClientSessionResult<TInput, TOutput, TProjection, TMessage> 
  */
 export interface UseViewOptions<TInput, TMessage> {
   /** Explicit transport. */
-  transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+  session?: ClientSession<TInput, unknown, unknown, TMessage>;
   /** Explicit view; wins over `transport`. */
   view?: View<TInput, TMessage>;
   /** Auto-load page size once per view instance. */
@@ -119,7 +119,7 @@ export interface ViewHandle<TMessage> {
  */
 export interface UseCreateViewOptions<TInput, TMessage> {
   /** Explicit transport. Defaults to context transport. */
-  transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+  session?: ClientSession<TInput, unknown, unknown, TMessage>;
   /** Auto-load page size once per owned view instance. */
   limit?: number;
   /** Suppresses view creation. */
@@ -131,7 +131,7 @@ export interface UseCreateViewOptions<TInput, TMessage> {
  */
 export interface UseTreeOptions<TInput, TMessage> {
   /** Explicit transport. Defaults to context transport. */
-  transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+  session?: ClientSession<TInput, unknown, unknown, TMessage>;
 }
 
 /**
@@ -151,7 +151,7 @@ export interface TreeHandle {
  */
 export interface UseActiveRunsOptions<TInput, TMessage> {
   /** Explicit transport. Defaults to context transport. */
-  transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+  session?: ClientSession<TInput, unknown, unknown, TMessage>;
 }
 
 /**
@@ -159,13 +159,13 @@ export interface UseActiveRunsOptions<TInput, TMessage> {
  */
 export interface UseSockudoMessagesOptions<TInput, TMessage> {
   /** Explicit transport. Defaults to context transport. */
-  transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+  session?: ClientSession<TInput, unknown, unknown, TMessage>;
   /** Suppresses subscription and returns a stable empty list. */
   skip?: boolean;
 }
 
 /**
- * Vue transport scope returned by {@link createSessionScope}.
+ * Vue session scope returned by {@link createSessionScope}.
  */
 export interface SessionScope<TInput, TOutput, TProjection, TMessage> {
   /** Provides a channel-keyed transport registry. */
@@ -193,8 +193,8 @@ export interface SessionScope<TInput, TOutput, TProjection, TMessage> {
 }
 
 interface SessionSlot {
-  transport: ShallowRef<ClientSession<unknown, unknown, unknown, unknown> | undefined>;
-  transportError: ShallowRef<ErrorInfo | undefined>;
+  session: ShallowRef<ClientSession<unknown, unknown, unknown, unknown> | undefined>;
+  sessionError: ShallowRef<ErrorInfo | undefined>;
 }
 
 interface SessionRegistry {
@@ -224,26 +224,24 @@ export function createSessionScope<
     options: ClientSessionProviderOptions<TInput, TOutput, TProjection, TMessage>,
   ): UseClientSessionResult<TInput, TOutput, TProjection, TMessage> {
     const parent = inject(key, undefined);
-    const transport = shallowRef<
-      ClientSession<TInput, TOutput, TProjection, TMessage> | undefined
-    >();
-    const transportError = shallowRef<ErrorInfo | undefined>();
+    const session = shallowRef<ClientSession<TInput, TOutput, TProjection, TMessage> | undefined>();
+    const sessionError = shallowRef<ErrorInfo | undefined>();
     try {
       const client = useSockudoRealtimeClient(options.client);
       const { client: _client, closeOnScopeDispose: _close, ...rest } = options;
       void _client;
       void _close;
-      transport.value = createClientSession({
+      session.value = createClientSession({
         ...rest,
         client,
         channelName: options.channelName,
       });
     } catch (error) {
-      transportError.value = toConstructionError(error);
+      sessionError.value = toConstructionError(error);
     }
     const slot: SessionSlot = {
-      transport,
-      transportError,
+      session,
+      sessionError,
     };
     const slots = new Map(parent?.slots);
     slots.set(options.channelName, slot);
@@ -251,10 +249,10 @@ export function createSessionScope<
     provide(key, defaultChannelName === undefined ? { slots } : { slots, defaultChannelName });
     if (options.closeOnScopeDispose !== false) {
       onScopeDispose(() => {
-        void transport.value?.close();
+        void session.value?.close();
       });
     }
-    return { transport, transportError };
+    return { session, sessionError };
   }
 
   function useClientSession(
@@ -266,24 +264,24 @@ export function createSessionScope<
     );
     if (options.skip === true) {
       return {
-        transport: shallowRef(undefined),
-        transportError: shallowRef(undefined),
+        session: shallowRef(undefined),
+        sessionError: shallowRef(undefined),
       };
     }
     const slot = resolveSlot(registry, options.channelName);
     if (!slot) {
       return {
-        transport: shallowRef(undefined),
-        transportError: missing,
+        session: shallowRef(undefined),
+        sessionError: missing,
       };
     }
     const result = {
-      transport: slot.transport as ShallowRef<
+      session: slot.session as ShallowRef<
         ClientSession<TInput, TOutput, TProjection, TMessage> | undefined
       >,
-      transportError: slot.transportError,
+      sessionError: slot.sessionError,
     };
-    const active = result.transport.value;
+    const active = result.session.value;
     if (active && options.onError) {
       const unsubscribe = active.on("error", (error) => {
         options.onError?.(error);
@@ -298,7 +296,7 @@ export function createSessionScope<
     const sourceView =
       options.skip === true
         ? undefined
-        : (options.view ?? options.transport?.view ?? context.transport.value?.view);
+        : (options.view ?? options.session?.view ?? context.session.value?.view);
     return createViewHandle(sourceView, options.limit);
   }
 
@@ -306,9 +304,8 @@ export function createSessionScope<
     options: UseCreateViewOptions<TInput, TMessage> = {},
   ): ViewHandle<TMessage> {
     const context = useClientSession({ skip: options.skip === true });
-    const transport =
-      options.skip === true ? undefined : (options.transport ?? context.transport.value);
-    const view = transport?.createView();
+    const session = options.skip === true ? undefined : (options.session ?? context.session.value);
+    const view = session?.createView();
     if (view) {
       onScopeDispose(() => {
         view.close();
@@ -319,18 +316,18 @@ export function createSessionScope<
 
   function useTree(options: UseTreeOptions<TInput, TMessage> = {}): TreeHandle {
     const context = useClientSession({
-      skip: options.transport !== undefined,
+      skip: options.session !== undefined,
     });
-    const transport = options.transport ?? context.transport.value;
+    const session = options.session ?? context.session.value;
     return {
       getSiblings(id) {
-        return requireSession(transport).tree.getSiblings(id);
+        return requireSession(session).tree.getSiblings(id);
       },
       hasSiblings(id) {
-        return requireSession(transport).tree.hasSiblings(id);
+        return requireSession(session).tree.hasSiblings(id);
       },
       getNode(id) {
-        return requireSession(transport).tree.getNode(id);
+        return requireSession(session).tree.getNode(id);
       },
     };
   }
@@ -339,19 +336,19 @@ export function createSessionScope<
     options: UseActiveRunsOptions<TInput, TMessage> = {},
   ): ComputedRef<Map<string, Set<string>>> {
     const context = useClientSession({
-      skip: options.transport !== undefined,
+      skip: options.session !== undefined,
     });
-    const transport = options.transport ?? context.transport.value;
+    const session = options.session ?? context.session.value;
     const tick = ref(0);
-    if (transport) {
-      const unsubscribe = transport.tree.on("turn", () => {
+    if (session) {
+      const unsubscribe = session.tree.on("turn", () => {
         tick.value += 1;
       });
       onScopeDispose(unsubscribe);
     }
     return computed(() => {
       void tick.value;
-      return cloneActiveRuns(transport);
+      return cloneActiveRuns(session);
     });
   }
 
@@ -359,13 +356,12 @@ export function createSessionScope<
     options: UseSockudoMessagesOptions<TInput, TMessage> = {},
   ): Ref<readonly InboundMessage[]> {
     const context = useClientSession({
-      skip: options.skip === true || options.transport !== undefined,
+      skip: options.skip === true || options.session !== undefined,
     });
-    const transport =
-      options.skip === true ? undefined : (options.transport ?? context.transport.value);
+    const session = options.skip === true ? undefined : (options.session ?? context.session.value);
     const messages = ref<readonly InboundMessage[]>(stableEmptyRawMessages);
-    if (transport) {
-      const unsubscribe = transport.on("message", (message) => {
+    if (session) {
+      const unsubscribe = session.on("message", (message) => {
         messages.value =
           messages.value === stableEmptyRawMessages ? [message] : [...messages.value, message];
       });
@@ -388,7 +384,7 @@ export function createSessionScope<
 const defaultScope = createSessionScope(defaultSessionKey);
 
 /**
- * Provides a channel-keyed AI client transport using `@sockudo/client/vue`.
+ * Provides a channel-keyed AI client session using `@sockudo/client/vue`.
  */
 export function provideSession(
   options: ClientSessionProviderOptions<unknown, unknown, unknown, unknown>,
@@ -397,7 +393,7 @@ export function provideSession(
 }
 
 /**
- * Reads the nearest or named Vue client transport.
+ * Reads the nearest or named Vue client session.
  */
 export function useClientSession(
   options?: UseClientSessionOptions,
@@ -542,13 +538,13 @@ function resolveSlot(
 }
 
 function cloneActiveRuns(
-  transport: ClientSession<unknown, unknown, unknown, unknown> | undefined,
+  session: ClientSession<unknown, unknown, unknown, unknown> | undefined,
 ): Map<string, Set<string>> {
-  if (!transport) {
+  if (!session) {
     return stableEmptyActiveRuns;
   }
   const clone = new Map<string, Set<string>>();
-  for (const [clientId, turns] of transport.tree.getActiveRunIds()) {
+  for (const [clientId, turns] of session.tree.getActiveRunIds()) {
     clone.set(clientId, new Set(turns));
   }
   return clone;
@@ -587,10 +583,10 @@ function requireView<TInput, TMessage>(
 }
 
 function requireSession(
-  transport: ClientSession<unknown, unknown, unknown, unknown> | undefined,
+  session: ClientSession<unknown, unknown, unknown, unknown> | undefined,
 ): ClientSession<unknown, unknown, unknown, unknown> {
-  if (!transport) {
+  if (!session) {
     throw missingProviderError(undefined);
   }
-  return transport;
+  return session;
 }

@@ -85,7 +85,7 @@ export interface ClientRun<TOutput> {
 }
 
 /**
- * Options for closing a client transport.
+ * Options for closing a client session.
  */
 export interface CloseOptions {
   /** Optional cancel filter to publish before local teardown. */
@@ -93,7 +93,7 @@ export interface CloseOptions {
 }
 
 /**
- * Client transport event map.
+ * Client session event map.
  */
 export interface ClientSessionEvents {
   /** Non-fatal transport error. */
@@ -103,7 +103,7 @@ export interface ClientSessionEvents {
 }
 
 /**
- * Options for creating a client transport.
+ * Options for creating a client session.
  */
 export interface ClientSessionOptions<TInput, TOutput, TProjection, TMessage> {
   /** Realtime client used with `channelName`. */
@@ -184,7 +184,7 @@ export interface ClientSession<TInput, TOutput, TProjection, TMessage> {
 }
 
 /**
- * Creates a Sockudo client transport.
+ * Creates a Sockudo client session.
  *
  * Async public methods reject with {@link ErrorInfo}. Synchronous misuse throws
  * {@link ErrorInfo} with {@link ErrorCode.InvalidArgument} or
@@ -742,11 +742,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
     }
   }
 
-  private handleRunEnd(
-    message: InboundMessage,
-    headers: HeaderMap,
-    type: "suspend" | "end",
-  ): void {
+  private handleRunEnd(message: InboundMessage, headers: HeaderMap, type: "suspend" | "end"): void {
     const runId = headers[HEADER_RUN_ID];
     const invocationId = headers[HEADER_INVOCATION_ID];
     if (

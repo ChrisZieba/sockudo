@@ -24,8 +24,8 @@ import type {
   ReducerMeta,
   UserMessage,
 } from "../src/core/codec/index.js";
-import { createClientSession } from "../src/core/transport/client-transport.js";
-import type { ClientRun } from "../src/core/transport/client-transport.js";
+import { createClientSession } from "../src/core/transport/client-session.js";
+import type { ClientRun } from "../src/core/transport/client-session.js";
 import type { InvocationIdProvider } from "../src/core/transport/invocation.js";
 import { createStreamRouter } from "../src/core/transport/stream-router.js";
 import { createTree } from "../src/core/transport/tree.js";
@@ -178,8 +178,8 @@ describe("P15 throughput and latency budgets", () => {
   it("keeps 16 concurrent 200 tok/s streams below 30% synthetic frame budget", () => {
     const frameBudgetMs = 16.67;
     const tokensPerFrame = 16 * Math.ceil(200 / 60);
-    const { channel, transport } = connectedTransport();
-    transport.view.getMessages();
+    const { channel, session } = connectedTransport();
+    session.view.getMessages();
     injectTurnStarts(channel, 16);
 
     const frameCosts: number[] = [];
@@ -209,11 +209,11 @@ describe("P15 throughput and latency budgets", () => {
   });
 
   it("keeps send() local pipeline p50/p99 under budget with mocked network", async () => {
-    const { transport } = connectedTransport({ runStartDeadlineMs: 0 });
+    const { session } = connectedTransport({ runStartDeadlineMs: 0 });
     const samples: number[] = [];
     for (let index = 0; index < 500; index += 1) {
       const start = performance.now();
-      await transport.view.send(
+      await session.view.send(
         { id: `send-${String(index)}`, text: "hello" },
         { waitForRunStart: false },
       );
@@ -262,10 +262,10 @@ describe("P15 memory and hostile-input bounds", () => {
   it("streams high-volume tokens with flat memory after close when GC is available", async () => {
     const tokenCount = process.env.BENCH_EXTENDED === "1" ? 1_000_000 : 100_000;
     const before = heapUsedAfterGc();
-    const { channel, transport } = connectedTransport({
+    const { channel, session } = connectedTransport({
       streamQueueLimit: tokenCount + 16,
     });
-    const active = (await transport.view.send(
+    const active = (await session.view.send(
       { id: "user-flat", text: "flat" },
       { waitForRunStart: false },
     )) as ClientRun<Message>;
@@ -275,7 +275,7 @@ describe("P15 memory and hostile-input bounds", () => {
     }
     channel.inject(output(0, tokenCount + 3, "", true));
     await cancelStream(active.stream);
-    await transport.close();
+    await session.close();
     const retained = heapUsedAfterGc() - before;
     report.memory = {
       ...(report.memory ?? {}),
@@ -307,13 +307,13 @@ describe("P15 memory and hostile-input bounds", () => {
 
 describe("P15 React/view rerender and reference stability budgets", () => {
   it("keeps streaming view commits scoped and getMessages reference stable", () => {
-    const { channel, transport } = connectedTransport();
+    const { channel, session } = connectedTransport();
     let commits = 0;
     let stableReferenceHits = 0;
-    let previous = transport.view.getMessages();
-    transport.view.on("update", () => {
+    let previous = session.view.getMessages();
+    session.view.on("update", () => {
       commits += 1;
-      const current = transport.view.getMessages();
+      const current = session.view.getMessages();
       if (current === previous) {
         stableReferenceHits += 1;
       }
@@ -323,8 +323,8 @@ describe("P15 React/view rerender and reference stability budgets", () => {
     for (let index = 0; index < 64; index += 1) {
       channel.inject(output(0, index + 2, String(index)));
     }
-    const final = transport.view.getMessages();
-    const second = transport.view.getMessages();
+    const final = session.view.getMessages();
+    const second = session.view.getMessages();
     report.react = {
       streamingCommits: commits,
       getMessagesStableAfterRead: final === second,
@@ -469,12 +469,12 @@ function measureSingleStream(tokens: number): {
   tokensPerSecond: number;
   tokenWireToViewP50Ms: number;
 } {
-  const { channel, transport } = connectedTransport();
-  transport.view.getMessages();
+  const { channel, session } = connectedTransport();
+  session.view.getMessages();
   channel.inject(lifecycle(EVENT_AI_RUN_START, 1, "turn-1", "inv-1"));
   const latencies: number[] = [];
   let lastStart = 0;
-  transport.view.on("message", () => {
+  session.view.on("message", () => {
     latencies.push(performance.now() - lastStart);
   });
   const start = performance.now();
@@ -494,12 +494,12 @@ function connectedTransport(options: {
   streamQueueLimit?: number;
 } = {}): {
   channel: BenchChannel;
-  transport: ReturnType<
+  session: ReturnType<
     typeof createClientSession<Message, Message, Projection, Message>
   >;
 } {
   const channel = new BenchChannel("chat");
-  const transport = createClientSession({
+  const session = createClientSession({
     channel,
     codec,
     api: "https://agent.test/run",
@@ -511,8 +511,8 @@ function connectedTransport(options: {
       ? {}
       : { streamQueueLimit: options.streamQueueLimit }),
   });
-  transport.on("message", () => undefined);
-  return { channel, transport };
+  session.on("message", () => undefined);
+  return { channel, session };
 }
 
 function injectTurnStarts(channel: BenchChannel, count: number): void {
@@ -652,7 +652,7 @@ function output(
     serial,
     extras: {
       ai: {
-        transport: {
+        session: {
           [HEADER_RUN_ID]: `turn-${suffix}`,
           [HEADER_INVOCATION_ID]: `inv-${suffix}`,
           [HEADER_CODEC_MESSAGE_ID]: `assistant-${suffix}`,
@@ -681,7 +681,7 @@ function lifecycle(
     serial,
     extras: {
       ai: {
-        transport: {
+        session: {
           [HEADER_RUN_ID]: runId,
           [HEADER_INVOCATION_ID]: invocationId,
         },

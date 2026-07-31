@@ -130,14 +130,14 @@ describe("header utilities", () => {
       },
     };
 
-    const transport = getTransportHeaders(extras);
+    const session = getTransportHeaders(extras);
     const codec = getCodecHeaders(extras);
 
-    expect(Object.getPrototypeOf(transport)).toBe(null);
+    expect(Object.getPrototypeOf(session)).toBe(null);
     expect(Object.getPrototypeOf(codec)).toBe(null);
-    expect(transport["run-id"]).toBe("turn-1");
-    expect(transport["turn-id"]).toBe("turn-1");
-    expect(transport.ignored).toBeUndefined();
+    expect(session["run-id"]).toBe("turn-1");
+    expect(session["turn-id"]).toBe("turn-1");
+    expect(session.ignored).toBeUndefined();
     expect(codec.unicode).toBe("żółć");
     expect(codec.oversized).toHaveLength(300);
     expect(({} as Record<string, unknown>).pollution).toBeUndefined();

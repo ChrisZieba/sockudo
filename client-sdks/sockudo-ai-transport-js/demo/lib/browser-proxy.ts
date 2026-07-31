@@ -33,7 +33,7 @@ export function createBrowserSockudoClient(
     wssPort: config.port,
     protocolVersion: 2,
     clientId,
-    channelAuthorization: { transport: "ajax", endpoint: "/api/channel-auth" },
+    channelAuthorization: { session: "ajax", endpoint: "/api/channel-auth" },
     versionedMessages: { endpoint: "/api/versioned-messages" },
   } as unknown as ConstructorParameters<typeof Sockudo>[1];
   const raw = new Sockudo(config.appKey, options);
@@ -137,11 +137,11 @@ function normalizeProxyHistoryItem(item: unknown, fallbackSerial: number): Inbou
   const serial = stringValue(message.message_serial ?? message.messageSerial) ?? "";
   const historySerial = serialValue(wrapper.serial ?? message.serial) ?? fallbackSerial;
   const extras = message.extras;
-  const transport = getTransportHeaders(extras);
+  const session = getTransportHeaders(extras);
   return {
     name: stringValue(message.name) ?? stringValue(message.event) ?? "",
     data: parseJsonish(message.data),
-    action: historyAction(message.action, message.data, transport),
+    action: historyAction(message.action, message.data, session),
     messageSerial: serial,
     historySerial,
     timestamp: Number(message.time_ms ?? message.timestamp ?? Date.now()),
@@ -149,7 +149,7 @@ function normalizeProxyHistoryItem(item: unknown, fallbackSerial: number): Inbou
     ...optional("messageId", stringValue(message.message_id ?? message.messageId)),
     ...optional("extras", extras),
     getTransportHeaders() {
-      return transport;
+      return session;
     },
     getCodecHeaders() {
       return getCodecHeaders(extras);
@@ -160,7 +160,7 @@ function normalizeProxyHistoryItem(item: unknown, fallbackSerial: number): Inbou
 function historyAction(
   action: unknown,
   data: unknown,
-  transport: Record<string, string>,
+  session: Record<string, string>,
 ): InboundMessageAction {
   if (
     action === "create" ||
@@ -171,7 +171,7 @@ function historyAction(
   ) {
     return action;
   }
-  return transport.stream === "true" && typeof data === "string" ? "update" : "create";
+  return session.stream === "true" && typeof data === "string" ? "update" : "create";
 }
 
 function mutationPayload(

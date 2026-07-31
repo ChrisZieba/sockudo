@@ -84,13 +84,13 @@ export interface UseClientSessionOptions {
  */
 export interface UseClientSessionResult<TInput, TOutput, TProjection, TMessage> {
   /** Resolved transport or a throwing stub. */
-  transport: ClientSession<TInput, TOutput, TProjection, TMessage>;
+  session: ClientSession<TInput, TOutput, TProjection, TMessage>;
   /**
    * Provider construction or lookup error.
    *
    * @defaultValue `undefined` when a transport resolves or lookup is skipped.
    */
-  transportError?: ErrorInfo;
+  sessionError?: ErrorInfo;
 }
 
 /**
@@ -106,7 +106,7 @@ export interface UseViewOptions<TInput, TMessage> {
    *
    * @defaultValue Context transport.
    */
-  transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+  session?: ClientSession<TInput, unknown, unknown, TMessage>;
   /**
    * Explicit view; wins over `transport`.
    *
@@ -178,7 +178,7 @@ export interface UseCreateViewOptions<TInput, TMessage> {
    *
    * @defaultValue Context transport.
    */
-  transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+  session?: ClientSession<TInput, unknown, unknown, TMessage>;
   /**
    * Auto-load page size once per owned view instance.
    *
@@ -205,7 +205,7 @@ export interface UseTreeOptions<TInput, TMessage> {
    *
    * @defaultValue Context transport.
    */
-  transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+  session?: ClientSession<TInput, unknown, unknown, TMessage>;
 }
 
 /**
@@ -234,7 +234,7 @@ export interface UseActiveRunsOptions<TInput, TMessage> {
    *
    * @defaultValue Context transport.
    */
-  transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+  session?: ClientSession<TInput, unknown, unknown, TMessage>;
 }
 
 /**
@@ -249,7 +249,7 @@ export interface UseSockudoMessagesOptions<TInput, TMessage> {
    *
    * @defaultValue Context transport.
    */
-  transport?: ClientSession<TInput, unknown, unknown, TMessage>;
+  session?: ClientSession<TInput, unknown, unknown, TMessage>;
   /**
    * Suppresses subscription and returns a stable empty list.
    *
@@ -288,7 +288,7 @@ export interface SessionHooks<TInput, TOutput, TProjection, TMessage> {
 }
 
 interface SessionSlot {
-  transport?: ClientSession<unknown, unknown, unknown, unknown>;
+  session?: ClientSession<unknown, unknown, unknown, unknown>;
   error?: ErrorInfo;
 }
 
@@ -332,7 +332,7 @@ export function createSessionHooks<
     const slot = useMemo<SessionSlot>(() => {
       try {
         return {
-          transport: createClientSession({
+          session: createClientSession({
             ...transportOptions,
             client,
             channelName,
@@ -342,7 +342,7 @@ export function createSessionHooks<
         return { error: toConstructionError(error) };
       }
     }, [channelName, client]);
-    useDeferredSessionClose(slot.transport);
+    useDeferredSessionClose(slot.session);
     const registry = useMemo<SessionRegistry>(() => {
       const slots = new Map(parent?.slots);
       if (key !== "") {
@@ -367,37 +367,37 @@ export function createSessionHooks<
           };
     const slot = resolveSlot(registry, options.channelName);
     const skipped = options.skip === true;
-    const transport = skipped ? undefined : slot?.transport;
+    const session = skipped ? undefined : slot?.session;
     const error = skipped ? undefined : (slot?.error ?? missingProviderError(options.channelName));
     useEffect(() => {
-      if (!transport || !callbackRef.current) {
+      if (!session || !callbackRef.current) {
         return;
       }
-      return transport.on("error", (payload) => {
+      return session.on("error", (payload) => {
         callbackRef.current?.(payload);
       });
-    }, [transport]);
-    if (transport) {
+    }, [session]);
+    if (session) {
       return {
-        transport: transport as ClientSession<TInput, TOutput, TProjection, TMessage>,
+        session: session as ClientSession<TInput, TOutput, TProjection, TMessage>,
       };
     }
     const result: UseClientSessionResult<TInput, TOutput, TProjection, TMessage> = {
-      transport: throwingSessionStub(),
+      session: throwingSessionStub(),
     };
     if (error !== undefined) {
-      result.transportError = error;
+      result.sessionError = error;
     }
     return result;
   }
 
   function useView(options: UseViewOptions<TInput, TMessage> = {}): ViewHandle<TMessage> {
     const context = useClientSession(options.skip === undefined ? {} : { skip: options.skip });
-    const contextTransport = context.transportError === undefined ? context.transport : undefined;
+    const contextTransport = context.sessionError === undefined ? context.session : undefined;
     const sourceView =
       options.skip === true
         ? undefined
-        : (options.view ?? options.transport?.view ?? contextTransport?.view);
+        : (options.view ?? options.session?.view ?? contextTransport?.view);
     return useViewHandle(sourceView, options.limit);
   }
 
@@ -405,42 +405,42 @@ export function createSessionHooks<
     options: UseCreateViewOptions<TInput, TMessage> = {},
   ): ViewHandle<TMessage> {
     const context = useClientSession(options.skip === undefined ? {} : { skip: options.skip });
-    const contextTransport = context.transportError === undefined ? context.transport : undefined;
-    const transport = options.skip === true ? undefined : (options.transport ?? contextTransport);
+    const contextTransport = context.sessionError === undefined ? context.session : undefined;
+    const session = options.skip === true ? undefined : (options.session ?? contextTransport);
     const [view, setView] = useState<View<TInput, TMessage> | undefined>();
     useEffect(() => {
-      if (options.skip === true || !transport) {
+      if (options.skip === true || !session) {
         setView(undefined);
         return;
       }
-      const created = transport.createView();
+      const created = session.createView();
       setView(created);
       return () => {
         created.close();
       };
-    }, [options.skip, transport]);
+    }, [options.skip, session]);
     return useViewHandle(view, options.limit);
   }
 
   function useTree(options: UseTreeOptions<TInput, TMessage> = {}): TreeHandle {
     const context = useClientSession({
-      skip: options.transport !== undefined,
+      skip: options.session !== undefined,
     });
-    const contextTransport = context.transportError === undefined ? context.transport : undefined;
-    const transport = options.transport ?? contextTransport;
+    const contextTransport = context.sessionError === undefined ? context.session : undefined;
+    const session = options.session ?? contextTransport;
     return useMemo<TreeHandle>(
       () => ({
         getSiblings(id) {
-          return requireSession(transport).tree.getSiblings(id);
+          return requireSession(session).tree.getSiblings(id);
         },
         hasSiblings(id) {
-          return requireSession(transport).tree.hasSiblings(id);
+          return requireSession(session).tree.hasSiblings(id);
         },
         getNode(id) {
-          return requireSession(transport).tree.getNode(id);
+          return requireSession(session).tree.getNode(id);
         },
       }),
-      [transport],
+      [session],
     );
   }
 
@@ -448,21 +448,21 @@ export function createSessionHooks<
     options: UseActiveRunsOptions<TInput, TMessage> = {},
   ): Map<string, Set<string>> {
     const context = useClientSession({
-      skip: options.transport !== undefined,
+      skip: options.session !== undefined,
     });
-    const contextTransport = context.transportError === undefined ? context.transport : undefined;
-    const transport = options.transport ?? contextTransport;
-    const [active, setActive] = useState(() => cloneActiveRuns(transport));
+    const contextTransport = context.sessionError === undefined ? context.session : undefined;
+    const session = options.session ?? contextTransport;
+    const [active, setActive] = useState(() => cloneActiveRuns(session));
     useEffect(() => {
-      if (!transport) {
+      if (!session) {
         setActive(stableEmptyActiveRuns);
         return;
       }
-      setActive(cloneActiveRuns(transport));
-      return transport.tree.on("turn", () => {
-        setActive(cloneActiveRuns(transport));
+      setActive(cloneActiveRuns(session));
+      return session.tree.on("turn", () => {
+        setActive(cloneActiveRuns(session));
       });
-    }, [transport]);
+    }, [session]);
     return active;
   }
 
@@ -470,23 +470,23 @@ export function createSessionHooks<
     options: UseSockudoMessagesOptions<TInput, TMessage> = {},
   ): readonly InboundMessage[] {
     const context = useClientSession({
-      skip: options.skip === true || options.transport !== undefined,
+      skip: options.skip === true || options.session !== undefined,
     });
-    const contextTransport = context.transportError === undefined ? context.transport : undefined;
-    const transport = options.skip === true ? undefined : (options.transport ?? contextTransport);
+    const contextTransport = context.sessionError === undefined ? context.session : undefined;
+    const session = options.skip === true ? undefined : (options.session ?? contextTransport);
     const [messages, setMessages] = useState<readonly InboundMessage[]>(stableEmptyRawMessages);
     useEffect(() => {
-      if (!transport) {
+      if (!session) {
         setMessages(stableEmptyRawMessages);
         return;
       }
       setMessages(stableEmptyRawMessages);
-      return transport.on("message", (message) => {
+      return session.on("message", (message) => {
         setMessages((current) =>
           current === stableEmptyRawMessages ? [message] : [...current, message],
         );
       });
-    }, [transport]);
+    }, [session]);
     return options.skip === true ? stableEmptyRawMessages : messages;
   }
 
@@ -504,7 +504,7 @@ export function createSessionHooks<
 const defaultHooks = createSessionHooks();
 
 /**
- * Provides a channel-keyed AI client transport using the outer
+ * Provides a channel-keyed AI client session using the outer
  * `@sockudo/client/react` `SockudoProvider`.
  *
  * @defaultValue No default `channelName`; the prop is required.
@@ -519,7 +519,7 @@ export function ClientSessionProvider(
 }
 
 /**
- * Reads the nearest or named AI client transport.
+ * Reads the nearest or named AI client session.
  *
  * @defaultValue Uses the nearest provider when `channelName` is omitted.
  *
@@ -697,30 +697,30 @@ function useViewHandle<TInput, TMessage>(
 }
 
 function useDeferredSessionClose(
-  transport: ClientSession<unknown, unknown, unknown, unknown> | undefined,
+  session: ClientSession<unknown, unknown, unknown, unknown> | undefined,
 ): void {
   useEffect(() => {
-    if (transport) {
-      const pending = pendingSessionCloses.get(transport);
+    if (session) {
+      const pending = pendingSessionCloses.get(session);
       if (pending) {
         pending.cancelled = true;
-        pendingSessionCloses.delete(transport);
+        pendingSessionCloses.delete(session);
       }
     }
     return () => {
-      if (!transport) {
+      if (!session) {
         return;
       }
       const pending = { cancelled: false };
-      pendingSessionCloses.set(transport, pending);
+      pendingSessionCloses.set(session, pending);
       queueMicrotask(() => {
         if (!pending.cancelled) {
-          pendingSessionCloses.delete(transport);
-          void transport.close();
+          pendingSessionCloses.delete(session);
+          void session.close();
         }
       });
     };
-  }, [transport]);
+  }, [session]);
 }
 
 function viewSnapshot<TInput, TMessage>(
@@ -758,13 +758,13 @@ function resolveSlot(
 }
 
 function cloneActiveRuns(
-  transport: ClientSession<unknown, unknown, unknown, unknown> | undefined,
+  session: ClientSession<unknown, unknown, unknown, unknown> | undefined,
 ): Map<string, Set<string>> {
-  if (!transport) {
+  if (!session) {
     return stableEmptyActiveRuns;
   }
   const clone = new Map<string, Set<string>>();
-  for (const [clientId, turns] of transport.tree.getActiveRunIds()) {
+  for (const [clientId, turns] of session.tree.getActiveRunIds()) {
     clone.set(clientId, new Set(turns));
   }
   return clone;
@@ -819,10 +819,10 @@ function requireView<TInput, TMessage>(
 }
 
 function requireSession(
-  transport: ClientSession<unknown, unknown, unknown, unknown> | undefined,
+  session: ClientSession<unknown, unknown, unknown, unknown> | undefined,
 ): ClientSession<unknown, unknown, unknown, unknown> {
-  if (!transport) {
+  if (!session) {
     throw missingProviderError(undefined);
   }
-  return transport;
+  return session;
 }

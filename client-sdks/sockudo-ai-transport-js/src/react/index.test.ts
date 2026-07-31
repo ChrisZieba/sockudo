@@ -80,21 +80,21 @@ describe("React transport hooks", () => {
       { wrapper },
     );
 
-    expect(result.current.nearest.transportError).toBeUndefined();
-    expect(result.current.outer.transportError).toBeUndefined();
-    expect(result.current.nearest.transport).not.toBe(result.current.outer.transport);
+    expect(result.current.nearest.sessionError).toBeUndefined();
+    expect(result.current.outer.sessionError).toBeUndefined();
+    expect(result.current.nearest.session).not.toBe(result.current.outer.session);
   });
 
   it("returns throwing stubs for missing, skipped, and failed providers", () => {
     const missing = renderHook(() => useClientSession());
-    expect(missing.result.current.transportError).toMatchObject({
+    expect(missing.result.current.sessionError).toMatchObject({
       code: ErrorCode.InvalidArgument,
     });
-    expect(() => missing.result.current.transport.view).toThrow(ErrorInfo);
+    expect(() => missing.result.current.session.view).toThrow(ErrorInfo);
 
     const skipped = renderHook(() => useClientSession({ skip: true }));
-    expect(skipped.result.current.transportError).toBeUndefined();
-    expect(() => skipped.result.current.transport.view).toThrow(ErrorInfo);
+    expect(skipped.result.current.sessionError).toBeUndefined();
+    expect(() => skipped.result.current.session.view).toThrow(ErrorInfo);
 
     const wrapper = ({ children }: { children?: ReactNode }) =>
       createElement(
@@ -111,10 +111,10 @@ describe("React transport hooks", () => {
         ),
       );
     const failed = renderHook(() => useClientSession(), { wrapper });
-    expect(failed.result.current.transportError).toMatchObject({
+    expect(failed.result.current.sessionError).toMatchObject({
       code: ErrorCode.InvalidArgument,
     });
-    expect(() => failed.result.current.transport.view).toThrow(ErrorInfo);
+    expect(() => failed.result.current.session.view).toThrow(ErrorInfo);
   });
 
   it("non-client hooks are stable without a provider", () => {
@@ -139,12 +139,7 @@ describe("React transport hooks", () => {
     let captured: ClientSession<Message, Message, Projection, Message> | undefined;
     const client = createMockClient({ clientId: "client-1" });
     function Capture(): null {
-      captured = useClientSession().transport as ClientSession<
-        Message,
-        Message,
-        Projection,
-        Message
-      >;
+      captured = useClientSession().session as ClientSession<Message, Message, Projection, Message>;
       return null;
     }
     const tree = createElement(
@@ -206,11 +201,11 @@ describe("React transport hooks", () => {
   it("useCreateView owns and closes the created view", () => {
     const view = new FakeView<Message>();
     view.hasOlderValue = true;
-    const transport = fakeTransport(view);
+    const session = fakeTransport(view);
 
-    const { result, unmount } = renderHook(() => useCreateView({ transport, limit: 5 }));
+    const { result, unmount } = renderHook(() => useCreateView({ session, limit: 5 }));
 
-    expect(transport.createViewMock.mock.calls).toHaveLength(1);
+    expect(session.createViewMock.mock.calls).toHaveLength(1);
     expect(view.loadOlder.mock.calls).toContainEqual([5]);
     expect(result.current.messages).toEqual([]);
     unmount();
@@ -218,16 +213,16 @@ describe("React transport hooks", () => {
   });
 
   it("useTree exposes stable callbacks without subscribing to tree changes", () => {
-    const transport = createRealTransport();
+    const session = createRealTransport();
     let renders = 0;
     const { result } = renderHook(() => {
       renders += 1;
-      return useTree({ transport });
+      return useTree({ session });
     });
     const firstHandle = result.current;
 
     act(() => {
-      applyRunStart(transport.tree, "turn-1", "client-1");
+      applyRunStart(session.tree, "turn-1", "client-1");
     });
 
     expect(renders).toBe(1);
@@ -259,7 +254,7 @@ describe("React transport hooks", () => {
       },
       { wrapper },
     );
-    result.current.transport.on("message", () => undefined);
+    result.current.session.on("message", () => undefined);
 
     act(() => {
       channel.inject(output("turn-1", "inv-1", "m1", 1));
@@ -269,12 +264,12 @@ describe("React transport hooks", () => {
   });
 
   it("useActiveRuns publishes new map identities on turn changes", () => {
-    const transport = createRealTransport();
-    const { result } = renderHook(() => useActiveRuns({ transport }));
+    const session = createRealTransport();
+    const { result } = renderHook(() => useActiveRuns({ session }));
     const first = result.current;
 
     act(() => {
-      applyRunStart(transport.tree, "turn-1", "client-1");
+      applyRunStart(session.tree, "turn-1", "client-1");
     });
 
     expect(result.current).not.toBe(first);
@@ -284,10 +279,10 @@ describe("React transport hooks", () => {
   it("useSockudoMessages subscribes to the raw normalized firehose", () => {
     const client = createMockClient({ clientId: "client-1" });
     const channel = client.getMockChannel("chat");
-    const transport = createRealTransport(channel);
+    const session = createRealTransport(channel);
     const { result, rerender } = renderHook(
-      ({ current }) => useSockudoMessages({ transport: current }),
-      { initialProps: { current: transport } },
+      ({ current }) => useSockudoMessages({ session: current }),
+      { initialProps: { current: session } },
     );
 
     act(() => {
@@ -329,7 +324,7 @@ describe("React transport hooks", () => {
 
     rerender({ onError: second });
     act(() => {
-      void result.current.transport.view.send({ id: "u1", text: "hello" });
+      void result.current.session.view.send({ id: "u1", text: "hello" });
     });
     act(() => {
       channel.injectContinuityLost("position_expired");
@@ -473,11 +468,7 @@ function asSockudo(client: unknown): Parameters<typeof SockudoProvider>[0]["clie
   return client as Parameters<typeof SockudoProvider>[0]["client"];
 }
 
-function applyRunStart(
-  tree: Tree<Message, Projection>,
-  runId: string,
-  clientId: string,
-): void {
+function applyRunStart(tree: Tree<Message, Projection>, runId: string, clientId: string): void {
   tree.applyRunLifecycle({
     type: "start",
     headers: {

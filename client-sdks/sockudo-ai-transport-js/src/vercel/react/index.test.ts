@@ -73,7 +73,7 @@ describe("Vercel React transport hooks", () => {
     expect(result.current.nearest.chatTransportError).toBeUndefined();
     expect(result.current.outer.chatTransportError).toBeUndefined();
     expect(result.current.view.messages).toEqual([]);
-    expect(result.current.core.transportError).toBeUndefined();
+    expect(result.current.core.sessionError).toBeUndefined();
     expect(result.current.nearest.chatTransport).not.toBe(result.current.outer.chatTransport);
   });
 
@@ -82,15 +82,15 @@ describe("Vercel React transport hooks", () => {
     expect(missing.result.current.chatTransportError).toMatchObject({
       code: ErrorCode.InvalidArgument,
     });
-    expect(missing.result.current.transportError).toMatchObject({
+    expect(missing.result.current.sessionError).toMatchObject({
       code: ErrorCode.InvalidArgument,
     });
     expect(() => missing.result.current.chatTransport.streaming).toThrow(ErrorInfo);
-    expect(() => missing.result.current.transport.view).toThrow(ErrorInfo);
+    expect(() => missing.result.current.session.view).toThrow(ErrorInfo);
 
     const skipped = renderHook(() => useChatTransport({ skip: true }));
     expect(skipped.result.current.chatTransportError).toBeUndefined();
-    expect(skipped.result.current.transportError).toBeUndefined();
+    expect(skipped.result.current.sessionError).toBeUndefined();
     expect(() => skipped.result.current.chatTransport.streaming).toThrow(ErrorInfo);
 
     const wrapper = ({ children }: { children?: ReactNode }) =>
@@ -110,7 +110,7 @@ describe("Vercel React transport hooks", () => {
     expect(failed.result.current.chatTransportError).toMatchObject({
       code: ErrorCode.InvalidArgument,
     });
-    expect(failed.result.current.transportError).toMatchObject({
+    expect(failed.result.current.sessionError).toMatchObject({
       code: ErrorCode.InvalidArgument,
     });
   });
@@ -163,7 +163,7 @@ describe("Vercel React transport hooks", () => {
     expect(result.current.chatTransport.streaming).toBe(true);
 
     act(() => {
-      result.current.transport.stageMessage("a1", assistantText("a1", "tree changed"));
+      result.current.session.stageMessage("a1", assistantText("a1", "tree changed"));
     });
     expect(setMessages).not.toHaveBeenCalled();
 
@@ -269,6 +269,8 @@ describe("Vercel React transport hooks", () => {
         const { chatTransport } = useChatTransport();
         const chat = useChat({
           id: "chat-1",
+          // `transport` is the Vercel AI SDK's own UseChatOptions property, not
+          // this SDK's session handle — it keeps its upstream name.
           transport: chatTransport as unknown as AiSdkChatTransport<AiSdkUIMessage>,
         });
         useMessageSync({

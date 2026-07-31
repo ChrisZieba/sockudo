@@ -43,9 +43,9 @@ describe("Vue transport composables", () => {
 
     app.mount(document.createElement("div"));
 
-    expect(provided?.transportError.value).toBeUndefined();
-    expect(resolved?.transportError.value).toBeUndefined();
-    expect(resolved?.transport.value).toBe(provided?.transport.value);
+    expect(provided?.sessionError.value).toBeUndefined();
+    expect(resolved?.sessionError.value).toBeUndefined();
+    expect(resolved?.session.value).toBe(provided?.session.value);
     expect(view?.messages.value).toEqual([]);
 
     app.unmount();

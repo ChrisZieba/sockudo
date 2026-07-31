@@ -3,7 +3,7 @@ import { EventEmitter, type EventUnsubscribe } from "../../event-emitter.js";
 import type { Codec, Decoder } from "../codec/index.js";
 import type { InboundMessage, PaginatedResult } from "../../realtime/types.js";
 import { decodeHistoryPage, type HistoryReader } from "./decode-history.js";
-import type { SendOptions } from "./client-transport.js";
+import type { SendOptions } from "./client-session.js";
 import type { Tree, TreeMessageEvent, RunEndReason, RunNode } from "./tree.js";
 
 /**

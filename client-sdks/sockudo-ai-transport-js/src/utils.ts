@@ -213,7 +213,10 @@ function readHeaderTier(extras: unknown, tier: "transport" | "codec"): HeaderMap
 }
 
 function addRunHeaderAliases(headers: Record<string, string>): void {
-  if (headers[HEADER_RUN_ID] === undefined && headers[INBOUND_LEGACY_HEADER_TURN_ID] !== undefined) {
+  if (
+    headers[HEADER_RUN_ID] === undefined &&
+    headers[INBOUND_LEGACY_HEADER_TURN_ID] !== undefined
+  ) {
     headers[HEADER_RUN_ID] = headers[INBOUND_LEGACY_HEADER_TURN_ID];
   }
   if (

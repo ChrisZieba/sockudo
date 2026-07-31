@@ -14,7 +14,7 @@ import {
 } from "../core/transport/index.js";
 
 /**
- * Svelte transport store options.
+ * Svelte session store options.
  */
 export type SessionStoreOptions<TInput, TOutput, TProjection, TMessage> = ClientSessionOptions<
   TInput,
@@ -42,17 +42,17 @@ export interface GetClientSessionOptions {
 }
 
 /**
- * Svelte transport state.
+ * Svelte session state.
  */
 export interface ClientSessionState<TInput, TOutput, TProjection, TMessage> {
   /** Resolved transport. */
-  transport?: ClientSession<TInput, TOutput, TProjection, TMessage>;
+  session?: ClientSession<TInput, TOutput, TProjection, TMessage>;
   /** Provider construction or lookup error. */
-  transportError?: ErrorInfo;
+  sessionError?: ErrorInfo;
 }
 
 /**
- * Svelte transport store.
+ * Svelte session store.
  */
 export interface ClientSessionStore<TInput, TOutput, TProjection, TMessage> extends Readable<
   ClientSessionState<TInput, TOutput, TProjection, TMessage>
@@ -68,7 +68,7 @@ export interface ClientSessionStore<TInput, TOutput, TProjection, TMessage> exte
  */
 export interface ViewStoreOptions<TInput, TMessage> {
   /** Explicit transport. */
-  transport?:
+  session?:
     | ClientSession<TInput, unknown, unknown, TMessage>
     | Readable<ClientSessionState<TInput, unknown, unknown, TMessage>>;
   /** Explicit view; wins over `transport`. */
@@ -128,7 +128,7 @@ export interface ViewStore<TMessage> extends Readable<ViewState<TMessage>> {
  */
 export interface ActiveRunsStoreOptions<TInput, TMessage> {
   /** Explicit transport. Defaults to context transport. */
-  transport?:
+  session?:
     | ClientSession<TInput, unknown, unknown, TMessage>
     | Readable<ClientSessionState<TInput, unknown, unknown, TMessage>>;
 }
@@ -138,7 +138,7 @@ export interface ActiveRunsStoreOptions<TInput, TMessage> {
  */
 export interface SockudoMessagesStoreOptions<TInput, TMessage> {
   /** Explicit transport. Defaults to context transport. */
-  transport?:
+  session?:
     | ClientSession<TInput, unknown, unknown, TMessage>
     | Readable<ClientSessionState<TInput, unknown, unknown, TMessage>>;
   /** Suppresses subscription and returns a stable empty list. */
@@ -158,7 +158,7 @@ const stableEmptyActiveRuns = new Map<string, Set<string>>();
 const autoLoadedViews = new WeakSet<View<unknown, unknown>>();
 
 /**
- * Creates a Svelte readable store that owns one client transport.
+ * Creates a Svelte readable store that owns one client session.
  */
 export function createSessionStore<
   TInput = unknown,
@@ -169,17 +169,17 @@ export function createSessionStore<
   options: SessionStoreOptions<TInput, TOutput, TProjection, TMessage>,
 ): ClientSessionStore<TInput, TOutput, TProjection, TMessage> {
   const state = writable<ClientSessionState<TInput, TOutput, TProjection, TMessage>>({});
-  let transport: ClientSession<TInput, TOutput, TProjection, TMessage> | undefined;
+  let session: ClientSession<TInput, TOutput, TProjection, TMessage> | undefined;
   try {
-    transport = createClientSession(options);
-    state.set({ transport });
+    session = createClientSession(options);
+    state.set({ session });
   } catch (error) {
-    state.set({ transportError: toConstructionError(error) });
+    state.set({ sessionError: toConstructionError(error) });
   }
   const store: ClientSessionStore<TInput, TOutput, TProjection, TMessage> = {
     subscribe: state.subscribe,
     close() {
-      return transport?.close() ?? Promise.resolve();
+      return session?.close() ?? Promise.resolve();
     },
     ...(options.channelName !== undefined ? { channelName: options.channelName } : {}),
   };
@@ -192,7 +192,7 @@ export function createSessionStore<
 }
 
 /**
- * Sets the Svelte transport context for child components.
+ * Sets the Svelte session context for child components.
  */
 export function setSessionContext<TInput, TOutput, TProjection, TMessage>(
   store: ClientSessionStore<TInput, TOutput, TProjection, TMessage>,
@@ -213,7 +213,7 @@ export function setSessionContext<TInput, TOutput, TProjection, TMessage>(
 }
 
 /**
- * Creates, stores, and provides a Svelte transport in one call.
+ * Creates, stores, and provides a Svelte session in one call.
  */
 export function provideSession<
   TInput = unknown,
@@ -227,7 +227,7 @@ export function provideSession<
 }
 
 /**
- * Reads the nearest or named Svelte client transport store.
+ * Reads the nearest or named Svelte client session store.
  */
 export function getClientSession<
   TInput = unknown,
@@ -245,13 +245,13 @@ export function getClientSession<
   const store = key === undefined ? undefined : registry?.slots.get(key);
   if (!store) {
     return readable({
-      transportError: missingProviderError(options.channelName),
+      sessionError: missingProviderError(options.channelName),
     });
   }
   const typed = store as ClientSessionStore<TInput, TOutput, TProjection, TMessage>;
   if (options.onError) {
     const state = get(typed);
-    const unsubscribe = state.transport?.on("error", (error) => {
+    const unsubscribe = state.session?.on("error", (error) => {
       options.onError?.(error);
     });
     if (unsubscribe) {
@@ -267,8 +267,8 @@ export function getClientSession<
 export function createViewStore<TInput = unknown, TMessage = unknown>(
   options: ViewStoreOptions<TInput, TMessage> = {},
 ): ViewStore<TMessage> {
-  const transport = resolveSession(options.transport);
-  const view = options.skip === true ? undefined : (options.view ?? transport?.view);
+  const session = resolveSession(options.session);
+  const view = options.skip === true ? undefined : (options.view ?? session?.view);
   return createViewStoreFromView(view, options.limit, false);
 }
 
@@ -278,13 +278,13 @@ export function createViewStore<TInput = unknown, TMessage = unknown>(
 export function createOwnedViewStore<TInput = unknown, TMessage = unknown>(
   options: Omit<ViewStoreOptions<TInput, TMessage>, "view"> = {},
 ): ViewStore<TMessage> {
-  const transport = resolveSession(options.transport);
-  const view = options.skip === true ? undefined : transport?.createView();
+  const session = resolveSession(options.session);
+  const view = options.skip === true ? undefined : session?.createView();
   return createViewStoreFromView(view, options.limit, true);
 }
 
 /**
- * Creates stable tree callbacks for a Svelte transport.
+ * Creates stable tree callbacks for a Svelte session.
  */
 export function createTreeHandle<TInput = unknown, TMessage = unknown>(
   options: ActiveRunsStoreOptions<TInput, TMessage> = {},
@@ -296,16 +296,16 @@ export function createTreeHandle<TInput = unknown, TMessage = unknown>(
   /** Gets a turn node without subscribing to tree changes. */
   getNode(id: string): RunNode<unknown> | undefined;
 } {
-  const transport = resolveSession(options.transport);
+  const session = resolveSession(options.session);
   return {
     getSiblings(id) {
-      return requireSession(transport).tree.getSiblings(id);
+      return requireSession(session).tree.getSiblings(id);
     },
     hasSiblings(id) {
-      return requireSession(transport).tree.hasSiblings(id);
+      return requireSession(session).tree.hasSiblings(id);
     },
     getNode(id) {
-      return requireSession(transport).tree.getNode(id);
+      return requireSession(session).tree.getNode(id);
     },
   };
 }
@@ -316,15 +316,15 @@ export function createTreeHandle<TInput = unknown, TMessage = unknown>(
 export function createActiveRunsStore<TInput = unknown, TMessage = unknown>(
   options: ActiveRunsStoreOptions<TInput, TMessage> = {},
 ): Readable<Map<string, Set<string>>> {
-  const transport = resolveSession(options.transport);
-  return readable(cloneActiveRuns(transport), (set) => {
-    if (!transport) {
+  const session = resolveSession(options.session);
+  return readable(cloneActiveRuns(session), (set) => {
+    if (!session) {
       set(stableEmptyActiveRuns);
       return undefined;
     }
-    set(cloneActiveRuns(transport));
-    return transport.tree.on("turn", () => {
-      set(cloneActiveRuns(transport));
+    set(cloneActiveRuns(session));
+    return session.tree.on("turn", () => {
+      set(cloneActiveRuns(session));
     });
   });
 }
@@ -335,14 +335,14 @@ export function createActiveRunsStore<TInput = unknown, TMessage = unknown>(
 export function createSockudoMessagesStore<TInput = unknown, TMessage = unknown>(
   options: SockudoMessagesStoreOptions<TInput, TMessage> = {},
 ): Readable<readonly InboundMessage[]> {
-  const transport = options.skip === true ? undefined : resolveSession(options.transport);
+  const session = options.skip === true ? undefined : resolveSession(options.session);
   return readable(stableEmptyRawMessages, (set) => {
-    if (!transport) {
+    if (!session) {
       set(stableEmptyRawMessages);
       return undefined;
     }
     let messages = stableEmptyRawMessages;
-    return transport.on("message", (message) => {
+    return session.on("message", (message) => {
       messages = messages === stableEmptyRawMessages ? [message] : [...messages, message];
       set(messages);
     });
@@ -421,9 +421,9 @@ function resolveSession<TInput, TMessage>(
     | undefined,
 ): ClientSession<TInput, unknown, unknown, TMessage> | undefined {
   if (source !== undefined) {
-    return isReadable(source) ? get(source).transport : source;
+    return isReadable(source) ? get(source).session : source;
   }
-  return get(getClientSession<TInput, unknown, unknown, TMessage>()).transport;
+  return get(getClientSession<TInput, unknown, unknown, TMessage>()).session;
 }
 
 function readRegistry(): SessionRegistry | undefined {
@@ -455,13 +455,13 @@ function viewSnapshot<TInput, TMessage>(
 }
 
 function cloneActiveRuns(
-  transport: ClientSession<unknown, unknown, unknown, unknown> | undefined,
+  session: ClientSession<unknown, unknown, unknown, unknown> | undefined,
 ): Map<string, Set<string>> {
-  if (!transport) {
+  if (!session) {
     return stableEmptyActiveRuns;
   }
   const clone = new Map<string, Set<string>>();
-  for (const [clientId, turns] of transport.tree.getActiveRunIds()) {
+  for (const [clientId, turns] of session.tree.getActiveRunIds()) {
     clone.set(clientId, new Set(turns));
   }
   return clone;
@@ -500,12 +500,12 @@ function requireView<TInput, TMessage>(
 }
 
 function requireSession(
-  transport: ClientSession<unknown, unknown, unknown, unknown> | undefined,
+  session: ClientSession<unknown, unknown, unknown, unknown> | undefined,
 ): ClientSession<unknown, unknown, unknown, unknown> {
-  if (!transport) {
+  if (!session) {
     throw missingProviderError(undefined);
   }
-  return transport;
+  return session;
 }
 
 function isReadable<T>(value: unknown): value is Readable<T> {

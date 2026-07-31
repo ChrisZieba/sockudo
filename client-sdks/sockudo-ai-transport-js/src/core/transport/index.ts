@@ -12,7 +12,7 @@ export {
   type StreamResponseOptions,
   type StreamResult,
   type AgentRun,
-} from "./agent-transport.js";
+} from "./agent-session.js";
 export {
   createClientSession,
   type ClientRun,
@@ -22,7 +22,7 @@ export {
   type ClientSessionOptions,
   type CloseOptions,
   type SendOptions,
-} from "./client-transport.js";
+} from "./client-session.js";
 export {
   decodeHistoryPage,
   loadHistoryIntoTree,

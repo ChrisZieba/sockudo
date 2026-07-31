@@ -16,11 +16,11 @@ export default defineEventHandler(async (event) => {
   }
   const clientId = optionalString(body.clientId);
   // @docs-snippet usechat-route
-  const transport = createAgentSession({
+  const session = createAgentSession({
     client: realtimeClient(),
     channelName,
   });
-  const turn = transport.createRun({
+  const turn = session.createRun({
     runId,
     invocationId,
     inputEventId,
@@ -34,7 +34,7 @@ export default defineEventHandler(async (event) => {
   });
   // @docs-snippet-end
   const work = runTurn(turn, body, config.model).finally(() => {
-    transport.close();
+    session.close();
   });
   event.waitUntil?.(work);
   void work;

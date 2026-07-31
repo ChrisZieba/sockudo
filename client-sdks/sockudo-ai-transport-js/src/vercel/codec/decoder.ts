@@ -112,12 +112,12 @@ function decodeInput(message: InboundMessage): DecodedEvent<VercelInput>[] {
     ];
   }
   if (type === "regenerate") {
-    const transport = message.getTransportHeaders();
+    const session = message.getTransportHeaders();
     return [
       decoded(
         {
-          target: transport[HEADER_MSG_REGENERATE] ?? transport[HEADER_FORK_OF] ?? "",
-          parent: transport[HEADER_PARENT] ?? "",
+          target: session[HEADER_MSG_REGENERATE] ?? session[HEADER_FORK_OF] ?? "",
+          parent: session[HEADER_PARENT] ?? "",
         },
         message,
       ),

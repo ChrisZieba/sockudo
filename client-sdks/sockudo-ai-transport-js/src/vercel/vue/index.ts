@@ -42,7 +42,7 @@ import {
 type VercelSession = ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
 /**
- * Provider options for the Vercel AI SDK Vue transport layer.
+ * Provider options for the Vercel AI SDK Vue session layer.
  */
 export type ChatTransportProviderOptions = Omit<
   ClientSessionProviderOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
@@ -64,11 +64,11 @@ export interface UseChatTransportResult {
   /** Resolved Vercel chat transport ref. */
   chatTransport: ShallowRef<ChatTransport | undefined>;
   /** Resolved underlying client transport ref. */
-  transport: ShallowRef<VercelSession | undefined>;
+  session: ShallowRef<VercelSession | undefined>;
   /** Chat transport lookup or construction error ref. */
   chatTransportError: ShallowRef<ErrorInfo | undefined>;
   /** Underlying client transport lookup or construction error ref. */
-  transportError: ShallowRef<ErrorInfo | undefined>;
+  sessionError: ShallowRef<ErrorInfo | undefined>;
 }
 
 interface ChatTransportSlot {
@@ -107,14 +107,14 @@ export function provideChatTransport(
   });
   const chatTransport = shallowRef<ChatTransport | undefined>();
   const chatTransportError = shallowRef<ErrorInfo | undefined>();
-  if (client.transport.value) {
+  if (client.session.value) {
     try {
-      chatTransport.value = createChatTransport(client.transport.value, chatOptions);
+      chatTransport.value = createChatTransport(client.session.value, chatOptions);
     } catch (error) {
       chatTransportError.value = toChatTransportError(error);
     }
   } else {
-    chatTransportError.value = client.transportError.value;
+    chatTransportError.value = client.sessionError.value;
   }
   const slots = new Map(parent?.slots);
   slots.set(options.channelName, {
@@ -131,9 +131,9 @@ export function provideChatTransport(
   });
   return {
     chatTransport,
-    transport: client.transport,
+    session: client.session,
     chatTransportError,
-    transportError: client.transportError,
+    sessionError: client.sessionError,
   };
 }
 
@@ -145,9 +145,9 @@ export function useChatTransport(options: UseClientSessionOptions = {}): UseChat
   if (options.skip === true) {
     return {
       chatTransport: shallowRef(undefined),
-      transport: client.transport,
+      session: client.session,
       chatTransportError: shallowRef(undefined),
-      transportError: client.transportError,
+      sessionError: client.sessionError,
     };
   }
   const registry = inject(chatTransportKey, undefined);
@@ -157,9 +157,9 @@ export function useChatTransport(options: UseClientSessionOptions = {}): UseChat
   );
   return {
     chatTransport: slot?.chatTransport ?? shallowRef(undefined),
-    transport: client.transport,
+    session: client.session,
     chatTransportError: slot?.chatTransport.value === undefined ? chatTransportError : slot.error,
-    transportError: client.transportError,
+    sessionError: client.sessionError,
   };
 }
 
@@ -171,7 +171,7 @@ export function createSessionScope() {
 }
 
 /**
- * Reads the nearest or named Vercel client transport.
+ * Reads the nearest or named Vercel client session.
  */
 export function useClientSession(
   options?: UseClientSessionOptions,
