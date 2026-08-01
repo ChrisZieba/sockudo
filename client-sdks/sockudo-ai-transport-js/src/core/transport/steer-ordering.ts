@@ -91,8 +91,8 @@ export function reorderUnrespondedSteers<TMessage extends OrderableMessage>(
  * produced no output, therefore stay unresponded and get moved to the tail on
  * the next prompt build.
  */
-export function unrespondedSteerIds<TMessage extends OrderableMessage>(
-  messages: readonly TMessage[],
+export function unrespondedSteerIds(
+  messages: readonly OrderableMessage[],
   steerIds: readonly string[],
 ): readonly string[] {
   if (steerIds.length === 0) {

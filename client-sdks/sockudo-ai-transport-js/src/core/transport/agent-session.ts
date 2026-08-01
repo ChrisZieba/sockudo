@@ -622,7 +622,7 @@ class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRu
         );
         // The ack's message serial is this attempt's identity, so it must be
         // captured before any output is stamped.
-        startSerial = ack?.messageSerial;
+        startSerial = ack.messageSerial;
       },
       streamResponse: async (
         stream: ReadableStream<TOutput>,

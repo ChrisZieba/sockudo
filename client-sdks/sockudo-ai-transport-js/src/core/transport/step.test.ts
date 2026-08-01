@@ -8,7 +8,7 @@ import {
   HEADER_STEP_REASON,
   HEADER_STEP_START_SERIAL,
 } from "../../constants.js";
-import type { DecodedEvent, Reducer, ReducerMeta } from "../codec/index.js";
+import type { DecodedEvent, Reducer } from "../codec/index.js";
 import { createTree, type Tree } from "./tree.js";
 
 interface Message {
@@ -20,7 +20,7 @@ interface Message {
 function reducer(): Reducer<Message, Message[]> {
   return {
     init: (): Message[] => [],
-    fold: (projection: Message[], event: Message, _meta: ReducerMeta): Message[] => {
+    fold: (projection: Message[], event: Message): Message[] => {
       projection.push(event);
       return projection;
     },

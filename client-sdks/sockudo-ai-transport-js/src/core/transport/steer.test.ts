@@ -165,13 +165,13 @@ describe("RunSteerTracker", () => {
     const tracker = new RunSteerTracker();
     const total = MAX_STEER_IDS_PER_STAMP + 5;
     for (let index = 0; index < total; index += 1) {
-      tracker.add(`steer-${index}`);
+      tracker.add(`steer-${String(index)}`);
     }
     tracker.drain();
 
     const ids = tracker.stampIds;
     expect(ids).toHaveLength(MAX_STEER_IDS_PER_STAMP);
-    expect(ids.at(-1)).toBe(`steer-${total - 1}`);
+    expect(ids.at(-1)).toBe(`steer-${String(total - 1)}`);
     expect(ids).not.toContain("steer-0");
   });
 

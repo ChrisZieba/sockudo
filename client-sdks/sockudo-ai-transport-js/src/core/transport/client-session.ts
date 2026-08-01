@@ -804,7 +804,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
       });
       // Sockudo has four serial spaces; the durable history serial is the one that
       // confirms the publish landed.
-      return { serial: ack?.historySerial };
+      return { serial: ack.historySerial };
     })().catch((error: unknown) => {
       throw mapPublishFailure(error, {
         code: ErrorCode.SessionSendFailed,
