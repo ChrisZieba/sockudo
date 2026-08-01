@@ -203,7 +203,14 @@ real Ably message projection, including extras and headers.
 
 Realtime attach negotiates channel modes as typed flags. `params.modes` takes
 precedence over the protocol mode flags, unknown parameters are not reflected,
-and an attach without explicit modes receives the supported Ably default set.
+and an attach without explicit modes starts from the supported Ably default set.
+The requested/default modes are intersected with the authenticated token's
+channel capabilities. Unsupported modes are omitted from `ATTACHED` rather than
+rejecting an otherwise authorized attachment; an attachment fails with `40160`
+only when the intersection is empty. This mode intersection never widens
+authority: annotation operations and object publishing still require their
+explicit capabilities, object subscription follows Ably's `subscribe` or
+`object-subscribe` rule, and an operation outside the granted modes is rejected.
 String, boolean, and finite numeric attach parameters are normalized at the
 JSON/MsgPack protocol boundary; binary, null, array, object, and non-finite
 values are rejected instead of widening runtime parameter handling.

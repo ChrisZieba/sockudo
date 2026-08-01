@@ -13,6 +13,8 @@ pub(super) enum AblyCapabilityCheck {
     AnnotationSubscribe,
     AnnotationDeleteOwn,
     AnnotationDeleteAny,
+    ObjectSubscribe,
+    ObjectPublish,
     AnyChannelAccess,
 }
 
@@ -28,6 +30,8 @@ impl AblyCapabilityCheck {
             Self::AnnotationSubscribe => "annotation subscribe",
             Self::AnnotationDeleteOwn => "annotation delete own",
             Self::AnnotationDeleteAny => "annotation delete any",
+            Self::ObjectSubscribe => "object subscribe",
+            Self::ObjectPublish => "object publish",
             Self::AnyChannelAccess => "channel access",
         }
     }
@@ -65,6 +69,10 @@ pub(super) fn ensure_ably_capability(
         AblyCapabilityCheck::AnnotationDeleteAny => {
             capabilities.allows_annotation_delete_any(channel)
         }
+        AblyCapabilityCheck::ObjectSubscribe => {
+            capabilities.allows_subscribe(channel) || capabilities.allows_object_subscribe(channel)
+        }
+        AblyCapabilityCheck::ObjectPublish => capabilities.allows_object_publish(channel),
         AblyCapabilityCheck::AnyChannelAccess => {
             capabilities.allows_publish(channel)
                 || capabilities.allows_subscribe(channel)
@@ -77,6 +85,8 @@ pub(super) fn ensure_ably_capability(
                 || capabilities.allows_annotation_publish(channel)
                 || capabilities.allows_annotation_delete_own(channel)
                 || capabilities.allows_annotation_delete_any(channel)
+                || capabilities.allows_object_subscribe(channel)
+                || capabilities.allows_object_publish(channel)
                 || capabilities.allows_message_mutation_own(
                     sockudo_core::versioned_message_auth::MutationKind::Append,
                     channel,
@@ -169,6 +179,11 @@ pub(super) fn ensure_ably_channel_capability_parts(
         AblyCapabilityCheck::AnnotationDeleteAny => {
             matches(capabilities.annotation_delete_any.as_deref())
         }
+        AblyCapabilityCheck::ObjectSubscribe => {
+            matches(capabilities.subscribe.as_deref())
+                || matches(capabilities.object_subscribe.as_deref())
+        }
+        AblyCapabilityCheck::ObjectPublish => matches(capabilities.object_publish.as_deref()),
         AblyCapabilityCheck::AnyChannelAccess => [
             capabilities.publish.as_deref(),
             capabilities.subscribe.as_deref(),
@@ -178,6 +193,8 @@ pub(super) fn ensure_ably_channel_capability_parts(
             capabilities.annotation_publish.as_deref(),
             capabilities.annotation_delete_own.as_deref(),
             capabilities.annotation_delete_any.as_deref(),
+            capabilities.object_subscribe.as_deref(),
+            capabilities.object_publish.as_deref(),
             capabilities.message_update_own.as_deref(),
             capabilities.message_update_any.as_deref(),
             capabilities.message_delete_own.as_deref(),
@@ -189,6 +206,40 @@ pub(super) fn ensure_ably_channel_capability_parts(
         .any(matches),
     };
     if allowed { Ok(()) } else { result }
+}
+
+pub(super) fn intersect_ably_channel_modes(
+    capabilities: Option<&ConnectionCapabilities>,
+    channel: &AblyChannelName,
+    requested_mode_flags: u64,
+) -> u64 {
+    let mut granted = 0;
+    for (mode_flags, check) in [
+        (ABLY_MODE_PUBLISH, AblyCapabilityCheck::Publish),
+        (
+            ABLY_MODE_SUBSCRIBE | ABLY_MODE_PRESENCE_SUBSCRIBE,
+            AblyCapabilityCheck::Subscribe,
+        ),
+        (ABLY_MODE_PRESENCE, AblyCapabilityCheck::Presence),
+        (
+            ABLY_MODE_ANNOTATION_PUBLISH,
+            AblyCapabilityCheck::AnnotationMutate,
+        ),
+        (
+            ABLY_MODE_ANNOTATION_SUBSCRIBE,
+            AblyCapabilityCheck::AnnotationSubscribe,
+        ),
+        (
+            ABLY_MODE_OBJECT_SUBSCRIBE,
+            AblyCapabilityCheck::ObjectSubscribe,
+        ),
+        (ABLY_MODE_OBJECT_PUBLISH, AblyCapabilityCheck::ObjectPublish),
+    ] {
+        if ensure_ably_channel_capability(capabilities, channel, check).is_ok() {
+            granted |= mode_flags;
+        }
+    }
+    requested_mode_flags & granted
 }
 
 pub(super) fn ensure_ably_channel_capability_app_error(
@@ -574,6 +625,8 @@ pub(super) fn restricted_ably_capabilities() -> ConnectionCapabilities {
         annotation_publish: Some(Vec::new()),
         annotation_delete_own: Some(Vec::new()),
         annotation_delete_any: Some(Vec::new()),
+        object_subscribe: Some(Vec::new()),
+        object_publish: Some(Vec::new()),
         message_update_own: Some(Vec::new()),
         message_update_any: Some(Vec::new()),
         message_delete_own: Some(Vec::new()),
@@ -651,8 +704,15 @@ pub(super) fn add_ably_capability_operation(
             add_capability_pattern(&mut capabilities.push_subscribe, resource);
             Ok(())
         }
-        "object-subscribe" | "object-publish" | "stats" | "channel-metadata"
-        | "privileged-headers" => Ok(()),
+        "object-subscribe" => {
+            add_capability_pattern(&mut capabilities.object_subscribe, resource);
+            Ok(())
+        }
+        "object-publish" => {
+            add_capability_pattern(&mut capabilities.object_publish, resource);
+            Ok(())
+        }
+        "stats" | "channel-metadata" | "privileged-headers" => Ok(()),
         other => Err(AppError::InvalidInput(format!(
             "Unsupported Ably token capability operation '{other}'"
         ))),
@@ -671,6 +731,8 @@ pub(super) fn add_all_supported_ably_capabilities(
     add_capability_pattern(&mut capabilities.annotation_publish, resource);
     add_capability_pattern(&mut capabilities.annotation_delete_own, resource);
     add_capability_pattern(&mut capabilities.annotation_delete_any, resource);
+    add_capability_pattern(&mut capabilities.object_subscribe, resource);
+    add_capability_pattern(&mut capabilities.object_publish, resource);
     add_capability_pattern(&mut capabilities.message_update_own, resource);
     add_capability_pattern(&mut capabilities.message_update_any, resource);
     add_capability_pattern(&mut capabilities.message_delete_own, resource);

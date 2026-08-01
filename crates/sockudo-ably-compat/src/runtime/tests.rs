@@ -838,12 +838,81 @@ fn attach_options_accept_only_vcdiff_delta_mode() {
 }
 
 #[test]
+fn attach_modes_are_intersected_with_token_capabilities() {
+    let capabilities = ably_capability_value_to_sockudo(&serde_json::json!({
+        "ai:*": [
+            "publish",
+            "subscribe",
+            "presence",
+            "history",
+            "object-subscribe",
+            "object-publish"
+        ]
+    }))
+    .expect("valid capability");
+    let channel = AblyChannelName::parse("ai:session".to_string()).expect("valid channel");
+    let requested = ABLY_DEFAULT_MODE_FLAGS
+        | ABLY_MODE_OBJECT_SUBSCRIBE
+        | ABLY_MODE_OBJECT_PUBLISH
+        | ABLY_MODE_ANNOTATION_SUBSCRIBE;
+
+    let granted = intersect_ably_channel_modes(Some(&capabilities), &channel, requested);
+
+    assert_eq!(
+        granted,
+        ABLY_MODE_PUBLISH
+            | ABLY_MODE_SUBSCRIBE
+            | ABLY_MODE_PRESENCE
+            | ABLY_MODE_PRESENCE_SUBSCRIBE
+            | ABLY_MODE_OBJECT_SUBSCRIBE
+            | ABLY_MODE_OBJECT_PUBLISH
+    );
+    assert_eq!(granted & ABLY_MODE_ANNOTATION_PUBLISH, 0);
+    assert_eq!(granted & ABLY_MODE_ANNOTATION_SUBSCRIBE, 0);
+    assert!(
+        ensure_ably_channel_capability(
+            Some(&capabilities),
+            &channel,
+            AblyCapabilityCheck::AnnotationPublish,
+        )
+        .is_err(),
+        "mode negotiation must not widen the token's annotation authority"
+    );
+}
+
+#[test]
+fn attach_mode_intersection_normalizes_echoed_modes_parameter() {
+    let capabilities = ably_capability_value_to_sockudo(&serde_json::json!({
+        "ai:*": ["publish", "subscribe"]
+    }))
+    .expect("valid capability");
+    let channel = AblyChannelName::parse("ai:session".to_string()).expect("valid channel");
+    let mut options = AblyAttachOptions::from_wire(
+        None,
+        Some(HashMap::from([(
+            "modes".to_string(),
+            "publish,subscribe,annotation_publish".to_string(),
+        )])),
+    );
+
+    let granted = intersect_ably_channel_modes(Some(&capabilities), &channel, options.mode_flags);
+    options.retain_mode_flags(granted);
+
+    assert_eq!(options.mode_flags, ABLY_MODE_PUBLISH | ABLY_MODE_SUBSCRIBE);
+    assert_eq!(
+        options.params.get("modes").map(String::as_str),
+        Some("publish,subscribe")
+    );
+}
+
+#[test]
 fn attached_channel_modes_deny_only_explicitly_missing_operations() {
     let modes = HashMap::from([(
         "channel".to_string(),
         AblyConnectionAttachment {
             channel: AblyChannelName::parse("channel".to_string()).unwrap(),
             params: HashMap::new(),
+            requested_mode_flags: ABLY_MODE_SUBSCRIBE,
             mode_flags: ABLY_MODE_SUBSCRIBE,
             explicit_modes: true,
             filter: None,
@@ -1798,6 +1867,58 @@ async fn duplicate_remote_delivery_position_reaches_local_ably_subscriber_once()
     assert_eq!(hub.metrics.snapshot().fanout, 1);
     assert_eq!(hub.metrics.snapshot().data_encoded, 1);
     assert_eq!(hub.metrics.snapshot().duplicate_suppression, 1);
+}
+
+#[tokio::test]
+async fn subscriber_mode_update_stops_delivery_after_auth_downgrade() {
+    let hub = AblyCompatHub::default();
+    let (sender, mut receiver) = AblyOutbound::channel(
+        AblyFormat::Json,
+        OutboundLimits::default(),
+        Arc::clone(&hub.metrics),
+    );
+    let channel = AblyChannelName::parse("auth-downgrade".to_string()).unwrap();
+    hub.attach_clean(
+        "app",
+        &channel,
+        AblyAttachment {
+            connection_id: "subscriber-connection",
+            session_id: "subscriber-session",
+            sender,
+            filter: None,
+            params: HashMap::new(),
+            mode_flags: ABLY_MODE_SUBSCRIBE | ABLY_MODE_PUBLISH,
+            echo: true,
+            presence: Vec::new(),
+        },
+        None,
+        Vec::new(),
+    );
+    receiver.recv().await.expect("ATTACHED frame");
+
+    hub.update_subscriber_mode_flags("app", &channel, "subscriber-session", ABLY_MODE_PUBLISH);
+    hub.broadcast(
+        "app",
+        channel.base(),
+        AblyProtocolMessage {
+            action: ACTION_MESSAGE,
+            channel: Some(channel.base().to_string()),
+            messages: Some(vec![AblyMessage {
+                id: Some("message-after-downgrade".to_string()),
+                ..AblyMessage::default()
+            }]),
+            ..empty_protocol_message(ACTION_MESSAGE)
+        },
+        None,
+        None,
+    );
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), receiver.recv())
+            .await
+            .is_err(),
+        "a token downgrade must take effect in the live subscriber"
+    );
 }
 
 #[tokio::test]
@@ -3396,6 +3517,8 @@ fn ably_token_capability_maps_to_sockudo_capabilities() {
         sockudo_core::versioned_message_auth::MutationKind::Delete,
         "mutable:one"
     ));
+    assert!(capabilities.allows_object_subscribe("object:one"));
+    assert!(!capabilities.allows_object_publish("object:one"));
     assert!(
         ensure_ably_capability(
             Some(&capabilities),

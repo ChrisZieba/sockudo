@@ -643,6 +643,7 @@ struct AblyAttachment<'a> {
 struct AblyConnectionAttachment {
     channel: AblyChannelName,
     params: HashMap<String, String>,
+    requested_mode_flags: u64,
     mode_flags: u64,
     explicit_modes: bool,
     filter: Option<Arc<AblyMessageFilter>>,
@@ -690,10 +691,12 @@ struct AblyAttachOptions {
     params: HashMap<String, String>,
     mode_flags: u64,
     explicit_modes: bool,
+    attach_resume: bool,
 }
 
 impl AblyAttachOptions {
     fn from_wire(flags: Option<u64>, params: Option<HashMap<String, String>>) -> Self {
+        let attach_resume = flags.is_some_and(|flags| flags & FLAG_ATTACH_RESUME != 0);
         let mut recognized = HashMap::new();
         for (key, value) in params.unwrap_or_default() {
             if key == "delta" {
@@ -729,6 +732,17 @@ impl AblyAttachOptions {
             params: recognized,
             mode_flags,
             explicit_modes,
+            attach_resume,
+        }
+    }
+
+    fn retain_mode_flags(&mut self, granted_mode_flags: u64) {
+        self.mode_flags &= granted_mode_flags;
+        if self.params.contains_key("modes") {
+            self.params.insert(
+                "modes".to_string(),
+                ably_mode_names(self.mode_flags).join(","),
+            );
         }
     }
 }
@@ -806,6 +820,22 @@ fn ably_mode_flag(mode: &str) -> Option<u64> {
         "object_publish" => Some(ABLY_MODE_OBJECT_PUBLISH),
         _ => None,
     }
+}
+
+fn ably_mode_names(flags: u64) -> Vec<&'static str> {
+    [
+        (ABLY_MODE_PRESENCE, "presence"),
+        (ABLY_MODE_PUBLISH, "publish"),
+        (ABLY_MODE_SUBSCRIBE, "subscribe"),
+        (ABLY_MODE_PRESENCE_SUBSCRIBE, "presence_subscribe"),
+        (ABLY_MODE_ANNOTATION_PUBLISH, "annotation_publish"),
+        (ABLY_MODE_ANNOTATION_SUBSCRIBE, "annotation_subscribe"),
+        (ABLY_MODE_OBJECT_SUBSCRIBE, "object_subscribe"),
+        (ABLY_MODE_OBJECT_PUBLISH, "object_publish"),
+    ]
+    .into_iter()
+    .filter_map(|(mode, name)| (flags & mode != 0).then_some(name))
+    .collect()
 }
 
 fn attached_channel_mode_denies(
@@ -2683,6 +2713,25 @@ impl AblyCompatHub {
             self.stats.record(observation).await?;
         }
         Ok(())
+    }
+
+    fn update_subscriber_mode_flags(
+        &self,
+        app_id: &str,
+        channel: &AblyChannelName,
+        session_id: &str,
+        mode_flags: u64,
+    ) {
+        let Some(state) = self.channels.get(&channel_key(app_id, channel.base())) else {
+            return;
+        };
+        let mut state = lock_channel_state(state.value());
+        if let Some(subscriber) = state
+            .subscribers
+            .get_mut(&subscriber_key(session_id, channel.requested()))
+        {
+            subscriber.mode_flags = mode_flags;
+        }
     }
 
     fn until_attach_position(

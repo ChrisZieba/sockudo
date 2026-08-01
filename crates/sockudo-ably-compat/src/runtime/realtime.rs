@@ -952,20 +952,39 @@ pub(super) async fn handle_ably_auth_update(
         });
     }
 
-    let downgraded = attached_channels
+    let mode_updates = attached_channels
         .iter()
-        .filter(|(requested, attachment)| {
-            ensure_ably_channel_capability_parts(
+        .map(|(requested, attachment)| {
+            let granted = intersect_ably_channel_modes(
                 next.capabilities.as_ref(),
-                requested,
-                attachment.channel.base(),
-                AblyCapabilityCheck::Subscribe,
-            )
-            .is_err()
+                &attachment.channel,
+                attachment.requested_mode_flags,
+            );
+            (requested.clone(), granted)
         })
-        .map(|(requested, _)| requested.clone())
         .collect::<Vec<_>>();
-    for channel in downgraded {
+    for (channel, granted_mode_flags) in mode_updates {
+        if granted_mode_flags != 0 {
+            let Some(attachment) = attached_channels.get_mut(&channel) else {
+                continue;
+            };
+            if attachment.mode_flags != granted_mode_flags {
+                attachment.mode_flags = granted_mode_flags;
+                if attachment.params.contains_key("modes") {
+                    attachment.params.insert(
+                        "modes".to_string(),
+                        ably_mode_names(granted_mode_flags).join(","),
+                    );
+                }
+                hub.update_subscriber_mode_flags(
+                    &app.id,
+                    &attachment.channel,
+                    session_id,
+                    granted_mode_flags,
+                );
+            }
+            continue;
+        }
         if let Ok(parsed) = AblyChannelName::parse(channel.clone())
             && let Err(error) = hub.unsubscribe(&app.id, &parsed, session_id).await
         {
@@ -1103,20 +1122,6 @@ pub(super) async fn handle_ably_protocol_message(
                 inbound.channel_serial =
                     previous.and_then(|attachment| attachment.attach_position.clone());
             }
-            if let Err(error) = ensure_ably_channel_capability(
-                capabilities,
-                &channel,
-                AblyCapabilityCheck::Subscribe,
-            ) {
-                send_channel_error(
-                    sender,
-                    channel.requested(),
-                    error.status,
-                    error.code,
-                    error.message,
-                );
-                return Ok(AblyProtocolControl::Continue);
-            }
             let filter = match previous
                 .filter(|attachment| attachment.channel == channel)
                 .and_then(|attachment| attachment.filter.clone())
@@ -1134,35 +1139,22 @@ pub(super) async fn handle_ably_protocol_message(
                     return Ok(AblyProtocolControl::Continue);
                 }
             };
-            let attach_options =
+            let mut attach_options =
                 AblyAttachOptions::from_wire(inbound.flags, inbound.params.clone());
-            for (mode, check) in [
-                (ABLY_MODE_PUBLISH, AblyCapabilityCheck::Publish),
-                (ABLY_MODE_PRESENCE, AblyCapabilityCheck::Presence),
-                (
-                    ABLY_MODE_ANNOTATION_PUBLISH,
-                    AblyCapabilityCheck::AnnotationMutate,
-                ),
-                (
-                    ABLY_MODE_ANNOTATION_SUBSCRIBE,
-                    AblyCapabilityCheck::AnnotationSubscribe,
-                ),
-            ] {
-                if attach_options.explicit_modes
-                    && attach_options.mode_flags & mode != 0
-                    && let Err(error) =
-                        ensure_ably_channel_capability(capabilities, &channel, check)
-                {
-                    send_channel_error(
-                        sender,
-                        channel.requested(),
-                        error.status,
-                        error.code,
-                        error.message,
-                    );
-                    return Ok(AblyProtocolControl::Continue);
-                }
+            let requested_mode_flags = attach_options.mode_flags;
+            let granted_mode_flags =
+                intersect_ably_channel_modes(capabilities, &channel, requested_mode_flags);
+            if granted_mode_flags == 0 {
+                send_channel_error(
+                    sender,
+                    channel.requested(),
+                    StatusCode::FORBIDDEN,
+                    40160,
+                    "Ably token has no capability matching the requested channel modes",
+                );
+                return Ok(AblyProtocolControl::Continue);
             }
+            attach_options.retain_mode_flags(granted_mode_flags);
             let has_presence = previous.is_some_and(|attachment| attachment.has_presence)
                 || !PresenceService::new(Arc::clone(handler))
                     .snapshot(&app.id, channel.base())
@@ -1171,6 +1163,7 @@ pub(super) async fn handle_ably_protocol_message(
             let attachment_state = AblyConnectionAttachment {
                 channel: channel.clone(),
                 params: attach_options.params.clone(),
+                requested_mode_flags,
                 mode_flags: attach_options.mode_flags,
                 explicit_modes: attach_options.explicit_modes,
                 filter: filter.clone(),
@@ -1201,8 +1194,7 @@ pub(super) async fn handle_ably_protocol_message(
                 &channel,
                 filter,
                 inbound.channel_serial,
-                inbound.flags,
-                inbound.params,
+                attach_options,
             );
             if tokio::time::timeout(Duration::from_millis(hub.config.attach_timeout_ms), attach)
                 .await
@@ -1843,11 +1835,9 @@ pub(super) async fn handle_ably_attach(
     channel: &AblyChannelName,
     filter: Option<Arc<AblyMessageFilter>>,
     channel_serial: Option<String>,
-    flags: Option<u64>,
-    params: Option<HashMap<String, String>>,
+    options: AblyAttachOptions,
 ) {
-    let attach_resume = flags.is_some_and(|flags| flags & FLAG_ATTACH_RESUME != 0);
-    let options = AblyAttachOptions::from_wire(flags, params);
+    let attach_resume = options.attach_resume;
     let rewind_requested =
         options.params.contains_key("rewind") || options.params.contains_key("rewindCount");
     let rewind = resolve_ably_rewind(&options.params, attach_resume);

@@ -335,7 +335,14 @@ Capability tokens are V2-only JWTs signed with HS256. Header `kid` identifies th
 - Standard `exp`, `iat`, optional `nbf`.
 - Required `jti` for revocation.
 
-Operations: `publish`, `subscribe`, `history`, `presence`. Pattern rules are exact match, namespace wildcard `ns:*`, and global `*`; matching is case-sensitive. HMAC app-key auth remains supported and trusted. Token auth is additive and never weakens existing private/presence HMAC rules.
+Operations: `publish`, `subscribe`, `history`, `presence`, the explicit annotation operations
+(`annotation-publish`, `annotation-subscribe`, `annotation-delete-own`,
+`annotation-delete-any`), own/any message update, delete, and append operations, and
+`push-admin`/`push-subscribe`. Underscore and hyphen spellings are accepted for the extended
+operations. Pattern rules are exact match, namespace wildcard `ns:*`, and global `*`; matching
+is case-sensitive. HMAC app-key auth remains supported and trusted. Token auth is additive and
+never weakens existing private/presence HMAC rules. The capability claim may be a JSON object or
+a string containing that object.
 
 Enforcement matrix:
 
