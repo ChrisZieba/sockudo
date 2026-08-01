@@ -37,5 +37,5 @@ waiver; there are no waivers for `0.1.0`.
 | Vercel Vue API surface                                 | etc/api-snapshot.d.ts                       | ✅     |
 | Vercel Svelte API surface                              | etc/api-snapshot.d.ts                       | ✅     |
 | Direct provider adapters                               | src/providers/index.test.ts                 | ✅     |
-| Steering: mid-run input and consumed outcomes                | src/core/transport/steer.test.ts            | ✅     |
-| Step lifecycle: attempts and retry supersession              | src/core/transport/step.test.ts             | ✅     |
+| Steering: mid-run input and consumed outcomes          | src/core/transport/steer.test.ts            | ✅     |
+| Step lifecycle: attempts and retry supersession        | src/core/transport/step.test.ts             | ✅     |

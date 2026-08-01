@@ -72,8 +72,8 @@ import { createChatTransportStore } from "@sockudo/ai-transport/vercel/svelte";
 
 ## Quickstart: Core SDK
 
-The core path uses `ClientSessionProvider`, `useView`, `send`, `edit`, `regenerate`, and multiple branch
-views without Vercel `useChat`.
+The core path uses `ClientSessionProvider`, `useView`, `send`, `edit`, `regenerate`, and multiple
+branch views without Vercel `useChat`.
 
 ```tsx
 import { ClientSessionProvider, useView } from "@sockudo/ai-transport/react";
