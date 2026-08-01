@@ -23,8 +23,10 @@ export default class ConnectionManager extends EventsDispatcher {
     errorCallbacks: ErrorCallbacks;
     handshakeCallbacks: HandshakeCallbacks;
     connectionCallbacks: ConnectionCallbacks;
+    private reconnectAttempts;
     constructor(key: string, options: ConnectionManagerOptions);
     connect(): void;
+    private connectWithState;
     send(data: any): boolean;
     send_event(name: string, data: any, channel?: string): boolean;
     disconnect(): void;
@@ -34,6 +36,7 @@ export default class ConnectionManager extends EventsDispatcher {
     private disconnectInternally;
     private updateStrategy;
     private retryIn;
+    private reconnectDelay;
     private clearRetryTimer;
     private setUnavailableTimer;
     private clearUnavailableTimer;

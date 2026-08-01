@@ -64,6 +64,8 @@ client.Bind("connected", (_, _) =>
     Console.WriteLine($"socket id: {client.SocketId}"));
 client.Bind("connecting", (_, _) =>
     Console.WriteLine("connecting"));
+client.Bind("reconnecting", (_, _) =>
+    Console.WriteLine("reconnecting"));
 client.Bind("error", (error, _) =>
     Console.Error.WriteLine(error));
 
@@ -81,6 +83,12 @@ client.Unbind("state_change", stateToken);
 await client.UnsubscribeAsync("public-updates");
 await client.DisconnectAsync();
 ```
+
+Unexpected disconnects use quadratic backoff (0s, 1s, 4s, 9s) capped at 120
+seconds and emit `ConnectionState.Reconnecting`. Set `MaxReconnectAttempts`
+(default `6`, `null` for unlimited) and `MaxReconnectGapInSeconds` in
+`SockudoOptions`. Protocol retry and TLS-upgrade close codes reconnect
+immediately.
 
 ## Auth
 

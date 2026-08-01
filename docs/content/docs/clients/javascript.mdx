@@ -100,6 +100,21 @@ client.disconnect();
 Framework hooks clean up their own bindings when components unmount. When using
 the core client directly, lifecycle cleanup is your responsibility.
 
+Unexpected disconnects emit `reconnecting` and use quadratic backoff (0s, 1s,
+4s, 9s) capped at 120 seconds. Configure `maxReconnectAttempts` (default `6`,
+`null` for unlimited) and `maxReconnectGapInSeconds`; protocol retry and
+TLS-upgrade close codes remain immediate.
+
+```ts
+const client = new Sockudo("app-key", {
+  cluster: "local",
+  maxReconnectAttempts: 10,
+  maxReconnectGapInSeconds: 60,
+});
+
+client.connection.bind("reconnecting", () => console.log("reconnecting"));
+```
+
 ## Binary wire formats
 
 Protocol V2 can negotiate JSON, MessagePack, or Protobuf with `wireFormat`.

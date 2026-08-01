@@ -103,6 +103,28 @@ Protocol V2 also supports `wireFormat: "messagepack"` and
 binary values. The MessagePack representation is the additive tagged variant
 `["binary", <bin>]`; existing wire variants remain unchanged.
 
+## Reconnection
+
+Unexpected disconnects emit the distinct `reconnecting` state and retry with a
+bounded quadratic delay: 0s, 1s, 4s, 9s, up to 120s. Protocol retry and
+TLS-upgrade close codes reconnect immediately. The default retry limit is six;
+set `maxReconnectAttempts: null` for unlimited retries.
+
+```ts
+const client = new Sockudo("app-key", {
+  cluster: "local",
+  maxReconnectAttempts: 10,
+  maxReconnectGapInSeconds: 60,
+});
+
+client.connection.bind("reconnecting", () => {
+  console.log("reconnecting");
+});
+```
+
+The attempt counter resets after a successful connection and on explicit
+`connect()` or `disconnect()` calls.
+
 ## Features
 
 Protocol V2 subscriptions can combine event names, tag filters, and a bounded

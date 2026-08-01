@@ -235,6 +235,7 @@ export interface ChannelLike {
 export type ConnectionState =
   | "initialized"
   | "connecting"
+  | "reconnecting"
   | "connected"
   | "disconnected"
   | "unavailable"

@@ -414,20 +414,30 @@ await client.User.SignInAsync();
 ### Connection State Events
 
 ```csharp
-client.Connection.StateChanged += (sender, change) =>
+var client = new SockudoClient(
+    "app-key",
+    new SockudoOptions(
+        Cluster: "local",
+        MaxReconnectAttempts: 10,
+        MaxReconnectGapInSeconds: 60
+    )
+);
+
+client.Bind("state_change", (value, _) =>
+{
+    var change = (StateChange)value!;
     Console.WriteLine($"connection: {change.Previous} -> {change.Current}");
-
-client.Connection.Connected += (sender, data) =>
-    Console.WriteLine($"connected, socket id: {data.SocketId}");
-
-client.Connection.Disconnected += (sender, _) =>
-    Console.WriteLine("disconnected");
-
-client.Connection.Reconnecting += (sender, _) =>
-    Console.WriteLine("reconnecting...");
+});
+client.Bind("reconnecting", (_, _) => Console.WriteLine("reconnecting..."));
 
 await client.ConnectAsync();
 ```
+
+Unexpected disconnects retry with a quadratic delay of 0s, 1s, 4s, 9s, up to
+120s by default. Protocol retry and TLS-upgrade close codes reconnect
+immediately. The default limit is six attempts; set `MaxReconnectAttempts` to
+`null` for unlimited retries. The counter resets after a successful connection
+and on explicit connect or disconnect calls.
 
 ### Protocol V2
 

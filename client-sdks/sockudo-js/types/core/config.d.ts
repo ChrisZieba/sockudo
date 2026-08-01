@@ -13,6 +13,8 @@ export interface Config {
     pongTimeout: number;
     statsHost: string;
     unavailableTimeout: number;
+    maxReconnectAttempts: number | null;
+    maxReconnectGapInSeconds: number;
     useTLS: boolean;
     wsHost: string;
     wsPath: string;

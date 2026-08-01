@@ -86,6 +86,8 @@ class SockudoOptions {
     this.wireFormat = SockudoWireFormat.json,
     this.appendMode = SockudoAppendMode.delta,
     this.appendRollupWindow,
+    this.maxReconnectAttempts = 6,
+    this.maxReconnectGapInSeconds = 120.0,
     this.channelAuthorization = const ChannelAuthorizationOptions(),
     this.userAuthentication = const UserAuthenticationOptions(),
     this.presenceHistory,
@@ -121,6 +123,8 @@ class SockudoOptions {
   final SockudoWireFormat wireFormat;
   final SockudoAppendMode appendMode;
   final int? appendRollupWindow;
+  final int? maxReconnectAttempts;
+  final double maxReconnectGapInSeconds;
   final ChannelAuthorizationOptions channelAuthorization;
   final UserAuthenticationOptions userAuthentication;
   final PresenceHistoryOptions? presenceHistory;
@@ -184,6 +188,7 @@ class SockudoClient {
   SockudoTransport? _currentTransport;
   bool _attemptedFallback = false;
   bool _manuallyDisconnected = false;
+  int _reconnectAttempts = 0;
   Future<void>? _authRefreshFuture;
   Timer? _authRefreshTimer;
   int _openAttempt = 0;
@@ -270,6 +275,7 @@ class SockudoClient {
     }
     _manuallyDisconnected = false;
     _attemptedFallback = false;
+    _reconnectAttempts = 0;
     _updateState(ConnectionState.connecting);
     _openWebSocket(transports.first);
     _setUnavailableTimer();
@@ -277,6 +283,7 @@ class SockudoClient {
 
   void disconnect() {
     _manuallyDisconnected = true;
+    _reconnectAttempts = 0;
     _openAttempt += 1;
     _cancelAuthRefreshTimer();
     _invalidateTimers();
@@ -548,6 +555,7 @@ class SockudoClient {
           throw const SockudoException('Invalid handshake');
         }
         socketId = newSocketId;
+        _reconnectAttempts = 0;
         _clearUnavailableTimer();
         _updateState(
           ConnectionState.connected,
@@ -779,19 +787,20 @@ class SockudoClient {
       channel._disconnect();
     }
 
-    switch (_closeAction(code)) {
+    final action = _closeAction(code);
+    switch (action) {
       case _CloseAction.tlsOnly:
         _config.useTls = true;
-        _scheduleRetry(Duration.zero);
+        _scheduleRetry(_reconnectDelay(action));
       case _CloseAction.backoff:
-        _scheduleRetry(const Duration(seconds: 1));
+        _scheduleRetry(_reconnectDelay(action));
       case _CloseAction.retry:
-        _scheduleRetry(Duration.zero);
+        _scheduleRetry(_reconnectDelay(action));
       case _CloseAction.refused:
         _updateState(ConnectionState.disconnected);
       case null:
         if (!_manuallyDisconnected) {
-          _scheduleRetry(const Duration(seconds: 1));
+          _scheduleRetry(_reconnectDelay(null));
         }
     }
 
@@ -821,6 +830,20 @@ class SockudoClient {
       return _CloseAction.retry;
     }
     return _CloseAction.refused;
+  }
+
+  Duration _reconnectDelay(_CloseAction? action) {
+    if (action == _CloseAction.retry || action == _CloseAction.tlsOnly) {
+      return Duration.zero;
+    }
+    final attempts = _reconnectAttempts.toDouble();
+    final intervalSeconds = attempts * attempts;
+    final cappedSeconds = intervalSeconds < _config.maxReconnectGapInSeconds
+        ? intervalSeconds
+        : _config.maxReconnectGapInSeconds;
+    return Duration(
+      microseconds: (cappedSeconds * Duration.microsecondsPerSecond).round(),
+    );
   }
 
   Uri _socketUri(SockudoTransport transport, {String? token}) {
@@ -906,12 +929,18 @@ class SockudoClient {
     if (_manuallyDisconnected) {
       return;
     }
+    final maxAttempts = _config.maxReconnectAttempts;
+    if (maxAttempts != null && _reconnectAttempts >= maxAttempts) {
+      _updateState(ConnectionState.disconnected);
+      return;
+    }
+    _reconnectAttempts += 1;
     _retryTimer?.cancel();
     _retryTimer = Timer(after, () {
       _socketSubscription?.cancel();
       _socketSubscription = null;
       _webSocket = null;
-      _updateState(ConnectionState.connecting);
+      _updateState(ConnectionState.reconnecting);
       final transports = _transportSequence();
       if (_currentTransport == SockudoTransport.ws &&
           !_attemptedFallback &&
@@ -1659,6 +1688,8 @@ class ResolvedConfiguration {
       httpPath = options.httpPath,
       pongTimeout = options.pongTimeout,
       unavailableTimeout = options.unavailableTimeout,
+      maxReconnectAttempts = options.maxReconnectAttempts,
+      maxReconnectGapInSeconds = options.maxReconnectGapInSeconds,
       enableStats = options.enableStats,
       statsHost = options.statsHost,
       timelineParams = options.timelineParams,
@@ -1680,6 +1711,8 @@ class ResolvedConfiguration {
   final String httpPath;
   final Duration pongTimeout;
   final Duration unavailableTimeout;
+  final int? maxReconnectAttempts;
+  final double maxReconnectGapInSeconds;
   final bool enableStats;
   final String statsHost;
   final Map<String, AuthValue> timelineParams;

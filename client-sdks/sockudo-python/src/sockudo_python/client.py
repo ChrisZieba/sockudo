@@ -68,10 +68,18 @@ _TOKEN_REFRESH_CODES = {40142, 40160}
 class ConnectionState(str, Enum):
     INITIALIZED = "initialized"
     CONNECTING = "connecting"
+    RECONNECTING = "reconnecting"
     CONNECTED = "connected"
     DISCONNECTED = "disconnected"
     UNAVAILABLE = "unavailable"
     FAILED = "failed"
+
+
+class _CloseAction(str, Enum):
+    TLS_ONLY = "tls_only"
+    REFUSED = "refused"
+    BACKOFF = "backoff"
+    RETRY = "retry"
 
 
 class SockudoTransport(str, Enum):
@@ -488,6 +496,8 @@ class SockudoOptions:
     wire_format: SockudoWireFormat = SockudoWireFormat.JSON
     append_mode: AppendMode = AppendMode.DELTA
     append_rollup_window: Optional[int] = None
+    max_reconnect_attempts: Optional[int] = 6
+    max_reconnect_gap_in_seconds: float = 120.0
     token: Optional[str] = None
     auth_callback: Optional[TokenAuthCallback] = None
     auth_refresh_leeway_seconds: float = 30.0
@@ -1926,6 +1936,8 @@ class _ResolvedConfiguration:
         self.http_path = options.http_path
         self.pong_timeout = options.pong_timeout
         self.unavailable_timeout = options.unavailable_timeout
+        self.max_reconnect_attempts = options.max_reconnect_attempts
+        self.max_reconnect_gap_in_seconds = options.max_reconnect_gap_in_seconds
         self.enabled_transports = options.enabled_transports
         self.disabled_transports = options.disabled_transports
         self.channel_options = options.channel_authorization
@@ -2497,6 +2509,7 @@ class SockudoClient:
         self._manually_disconnected = False
         self._current_transport: Optional[SockudoTransport] = None
         self._attempted_fallback = False
+        self._reconnect_attempts = 0
         self._auth_token: Optional[str] = options.token
         (
             self._auth_token_expires_at,
@@ -2570,12 +2583,14 @@ class SockudoClient:
             return
         self._manually_disconnected = False
         self._attempted_fallback = False
+        self._reconnect_attempts = 0
         self._update_state(ConnectionState.CONNECTING)
         await self._open_websocket(transports[0])
         self._set_unavailable_timer()
 
     async def disconnect(self) -> None:
         self._manually_disconnected = True
+        self._reconnect_attempts = 0
         self._cancel_timers()
         if self.socket is not None:
             await self.socket.close()
@@ -2644,6 +2659,8 @@ class SockudoClient:
                 self.socket_id = payload.get("socket_id")
                 if not isinstance(self.socket_id, str):
                     raise SockudoException("Invalid handshake")
+                self._reconnect_attempts = 0
+                self._clear_unavailable_timer()
                 self._update_state(
                     ConnectionState.CONNECTED, {"socket_id": self.socket_id}
                 )
@@ -2785,20 +2802,41 @@ class SockudoClient:
         self._cancel_auth_refresh_task()
         for channel in self.channels.values():
             channel.disconnect()
-        if not self._manually_disconnected:
-            await self._schedule_retry(1.0)
+        action = self._close_action(code)
+        if action is _CloseAction.TLS_ONLY:
+            self.config.use_tls = True
+            await self._schedule_retry(self._reconnect_delay(action))
+        elif action is _CloseAction.BACKOFF:
+            await self._schedule_retry(self._reconnect_delay(action))
+        elif action is _CloseAction.RETRY:
+            await self._schedule_retry(self._reconnect_delay(action))
+        elif action is _CloseAction.REFUSED:
+            self._update_state(ConnectionState.DISCONNECTED)
+        elif not self._manually_disconnected:
+            await self._schedule_retry(self._reconnect_delay(None))
         if reason:
             self.dispatcher.emit("error", reason)
+
+    def _reconnect_delay(self, action: Optional[_CloseAction]) -> float:
+        if action in {_CloseAction.RETRY, _CloseAction.TLS_ONLY}:
+            return 0.0
+        interval_seconds = float(self._reconnect_attempts**2)
+        return min(interval_seconds, self.config.max_reconnect_gap_in_seconds)
 
     async def _schedule_retry(self, after_seconds: float) -> None:
         if self._manually_disconnected:
             return
+        max_attempts = self.config.max_reconnect_attempts
+        if max_attempts is not None and self._reconnect_attempts >= max_attempts:
+            self._update_state(ConnectionState.DISCONNECTED)
+            return
+        self._reconnect_attempts += 1
         if self._retry_task:
             self._retry_task.cancel()
 
         async def _retry() -> None:
             await asyncio.sleep(after_seconds)
-            self._update_state(ConnectionState.CONNECTING)
+            self._update_state(ConnectionState.RECONNECTING)
             transports = self._transport_sequence()
             if (
                 self._current_transport is SockudoTransport.WS
@@ -2815,6 +2853,20 @@ class SockudoClient:
             self._set_unavailable_timer()
 
         self._retry_task = asyncio.create_task(_retry())
+
+    @staticmethod
+    def _close_action(code: int) -> Optional[_CloseAction]:
+        if code < 4000:
+            return _CloseAction.BACKOFF if 1002 <= code <= 1004 else None
+        if code == 4000:
+            return _CloseAction.TLS_ONLY
+        if code < 4100:
+            return _CloseAction.REFUSED
+        if code < 4200:
+            return _CloseAction.BACKOFF
+        if code < 4300:
+            return _CloseAction.RETRY
+        return _CloseAction.REFUSED
 
     def _socket_url(self, transport: SockudoTransport) -> str:
         scheme = "wss" if transport is SockudoTransport.WSS else "ws"

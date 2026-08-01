@@ -90,6 +90,12 @@ as live. Unsubscribe and unbind when an Android lifecycle owner no longer needs
 updates; disconnect on explicit sign-out. A temporary network loss should be
 left to the SDK's reconnect path.
 
+Unexpected disconnects emit `ConnectionState.RECONNECTING` and use quadratic
+backoff (0s, 1s, 4s, 9s) capped at 120 seconds. Configure
+`maxReconnectAttempts` (default `6`, `null` for unlimited) and
+`maxReconnectGapInSeconds`; protocol retry and TLS-upgrade close codes remain
+immediate.
+
 ## Auth
 
 ```kotlin

@@ -89,6 +89,8 @@ public sealed class SockudoClient : IAsyncDisposable
     private bool _manuallyDisconnected;
     private SockudoTransport? _currentTransport;
     private bool _attemptedFallback;
+    private bool _useTls;
+    private int _reconnectAttempts;
     private string? _authToken;
 
     public SockudoClient(string key, SockudoOptions options, HttpClient? httpClient = null)
@@ -104,6 +106,7 @@ public sealed class SockudoClient : IAsyncDisposable
 
         Key = key;
         Options = options;
+        _useTls = options.ForceTls is not false;
         _httpClient = httpClient ?? new HttpClient();
         _prefix = new ProtocolPrefix(options.ProtocolVersion);
         _deduplicator = options.MessageDeduplication ? new MessageDeduplicator(options.MessageDeduplicationCapacity) : null;
@@ -234,6 +237,7 @@ public sealed class SockudoClient : IAsyncDisposable
 
             _manuallyDisconnected = false;
             _attemptedFallback = false;
+            _reconnectAttempts = 0;
             UpdateState(ConnectionState.Connecting);
             await OpenWebSocketAsync(transports[0], cancellationToken).ConfigureAwait(false);
             SetUnavailableTimer();
@@ -247,6 +251,7 @@ public sealed class SockudoClient : IAsyncDisposable
     public async Task DisconnectAsync(CancellationToken cancellationToken = default)
     {
         _manuallyDisconnected = true;
+        _reconnectAttempts = 0;
         CancelTimers();
 
         var socket = _socket;
@@ -537,7 +542,15 @@ public sealed class SockudoClient : IAsyncDisposable
             _dispatcher.Emit("error", exception);
         }
 
-        await HandleSocketClosedAsync().ConfigureAwait(false);
+        int? closeCode = null;
+        try
+        {
+            closeCode = socket.CloseStatus is null ? null : (int)socket.CloseStatus.Value;
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        await HandleSocketClosedAsync(closeCode).ConfigureAwait(false);
     }
 
     private static async Task<(byte[] Payload, WebSocketMessageType Type)> ReceiveMessageAsync(ClientWebSocket socket, CancellationToken cancellationToken)
@@ -589,6 +602,8 @@ public sealed class SockudoClient : IAsyncDisposable
             {
                 var payloadData = @event.Data as Dictionary<string, object?> ?? new Dictionary<string, object?>(StringComparer.Ordinal);
                 SocketId = payloadData.Get("socket_id") as string ?? throw new SockudoException("Invalid handshake");
+                _reconnectAttempts = 0;
+                ClearUnavailableTimer();
                 UpdateState(ConnectionState.Connected, new Dictionary<string, object?> { ["socket_id"] = SocketId });
 
                 foreach (var channel in _channels.Values)
@@ -745,7 +760,7 @@ public sealed class SockudoClient : IAsyncDisposable
         }
     }
 
-    private async Task HandleSocketClosedAsync()
+    private async Task HandleSocketClosedAsync(int? code)
     {
         _socket?.Dispose();
         _socket = null;
@@ -761,14 +776,51 @@ public sealed class SockudoClient : IAsyncDisposable
 
         User.Cleanup();
 
-        if (!_manuallyDisconnected)
+        var action = CloseActionFor(code);
+        switch (action)
         {
-            await ScheduleRetryAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+            case CloseAction.TlsOnly:
+                _useTls = true;
+                await ScheduleRetryAsync(ReconnectDelay(action)).ConfigureAwait(false);
+                break;
+            case CloseAction.Backoff:
+            case CloseAction.Retry:
+                await ScheduleRetryAsync(ReconnectDelay(action)).ConfigureAwait(false);
+                break;
+            case CloseAction.Refused:
+                UpdateState(ConnectionState.Disconnected);
+                break;
+            case null when !_manuallyDisconnected:
+                await ScheduleRetryAsync(ReconnectDelay(null)).ConfigureAwait(false);
+                break;
         }
     }
 
-    private async Task ScheduleRetryAsync(TimeSpan delay)
+    private TimeSpan ReconnectDelay(CloseAction? action)
     {
+        if (action is CloseAction.Retry or CloseAction.TlsOnly)
+        {
+            return TimeSpan.Zero;
+        }
+
+        var intervalSeconds = (double)_reconnectAttempts * _reconnectAttempts;
+        return TimeSpan.FromSeconds(Math.Min(intervalSeconds, Options.MaxReconnectGapInSeconds));
+    }
+
+    private Task ScheduleRetryAsync(TimeSpan delay)
+    {
+        if (_manuallyDisconnected)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (Options.MaxReconnectAttempts is int maxAttempts && _reconnectAttempts >= maxAttempts)
+        {
+            UpdateState(ConnectionState.Disconnected);
+            return Task.CompletedTask;
+        }
+        _reconnectAttempts += 1;
+
         _retryLoop?.DisposeSafe();
         _retryLoop = Task.Run(async () =>
         {
@@ -780,13 +832,13 @@ public sealed class SockudoClient : IAsyncDisposable
                     return;
                 }
 
-                UpdateState(ConnectionState.Connecting);
+                UpdateState(ConnectionState.Reconnecting);
                 var transports = TransportSequence();
                 var nextTransport = _currentTransport == SockudoTransport.Ws &&
                                     !_attemptedFallback &&
                                     transports.Contains(SockudoTransport.Wss)
                     ? SockudoTransport.Wss
-                    : (transports.FirstOrDefault());
+                    : (transports.Count > 0 ? transports[0] : SockudoTransport.Wss);
                 _attemptedFallback = nextTransport == SockudoTransport.Wss && _currentTransport == SockudoTransport.Ws;
                 await OpenWebSocketAsync(nextTransport, CancellationToken.None).ConfigureAwait(false);
                 SetUnavailableTimer();
@@ -796,13 +848,43 @@ public sealed class SockudoClient : IAsyncDisposable
                 _dispatcher.Emit("error", exception);
             }
         });
+        return Task.CompletedTask;
+    }
+
+    private static CloseAction? CloseActionFor(int? code)
+    {
+        if (code is null)
+        {
+            return null;
+        }
+        if (code < 4000)
+        {
+            return code is >= 1002 and <= 1004 ? CloseAction.Backoff : null;
+        }
+        if (code == 4000)
+        {
+            return CloseAction.TlsOnly;
+        }
+        if (code < 4100)
+        {
+            return CloseAction.Refused;
+        }
+        if (code < 4200)
+        {
+            return CloseAction.Backoff;
+        }
+        if (code < 4300)
+        {
+            return CloseAction.Retry;
+        }
+        return CloseAction.Refused;
     }
 
     private List<SockudoTransport> TransportSequence()
     {
-        var transports = (Options.ForceTls is false
-            ? new[] { SockudoTransport.Ws, SockudoTransport.Wss }
-            : new[] { SockudoTransport.Wss }).ToList();
+        var transports = (_useTls
+            ? new[] { SockudoTransport.Wss }
+            : new[] { SockudoTransport.Ws, SockudoTransport.Wss }).ToList();
 
         if (Options.EnabledTransports is not null)
         {
@@ -887,6 +969,14 @@ public sealed class SockudoClient : IAsyncDisposable
         ClearUnavailableTimer();
         _retryLoop?.DisposeSafe();
         _retryLoop = null;
+    }
+
+    private enum CloseAction
+    {
+        TlsOnly,
+        Refused,
+        Backoff,
+        Retry,
     }
 
     private static string StripDeltaMetadata(string rawMessage) => rawMessage;

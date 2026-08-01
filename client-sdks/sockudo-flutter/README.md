@@ -348,6 +348,29 @@ final page = await push.listChannelSubscriptions(
 print(page['next_cursor']);
 ```
 
+### Reconnection
+
+Unexpected disconnects emit `ConnectionState.reconnecting` and retry with a
+bounded quadratic delay of 0s, 1s, 4s, 9s, up to 120s. Protocol retry and
+TLS-upgrade close codes reconnect immediately. The default limit is six
+attempts; `null` enables unlimited retries.
+
+```dart
+final client = SockudoClient(
+  'app-key',
+  const SockudoOptions(
+    cluster: 'local',
+    maxReconnectAttempts: 10,
+    maxReconnectGapInSeconds: 60,
+  ),
+);
+
+client.bind('reconnecting', (_, _) => print('reconnecting'));
+```
+
+The attempt counter resets after a successful connection and on explicit
+`connect()` or `disconnect()` calls.
+
 ### Encrypted Channels
 
 `private-encrypted-*` channels use the `sharedSecret` returned by your auth endpoint or custom handler. Payload decryption is handled automatically.

@@ -2,6 +2,13 @@ import { defineConfig } from "vitest/config";
 import path from "node:path";
 
 export default defineConfig({
+  define: {
+    RUNTIME: JSON.stringify("node"),
+    VERSION: JSON.stringify("2.1.0"),
+    CDN_HTTP: JSON.stringify("//js.pusher.com/"),
+    CDN_HTTPS: JSON.stringify("//js.pusher.com/"),
+    DEPENDENCY_SUFFIX: JSON.stringify(""),
+  },
   resolve: {
     alias: {
       runtime: path.resolve(__dirname, "src/runtimes/node/runtime.ts"),

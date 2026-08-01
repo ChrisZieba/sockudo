@@ -319,6 +319,30 @@ runBlocking {
 }
 ```
 
+### Reconnection
+
+Unexpected disconnects emit `ConnectionState.RECONNECTING` and retry with a
+bounded quadratic delay of 0s, 1s, 4s, 9s, up to 120s. Protocol retry and
+TLS-upgrade close codes reconnect immediately. The default limit is six
+attempts; `null` enables unlimited retries.
+
+```kotlin
+val client =
+    SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster = "local",
+            maxReconnectAttempts = 10,
+            maxReconnectGapInSeconds = 60.0,
+        ),
+    )
+
+client.bind("reconnecting") { _, _ -> println("reconnecting") }
+```
+
+The attempt counter resets after a successful connection and on explicit
+`connect()` or `disconnect()` calls.
+
 ### Encrypted Channels
 
 `private-encrypted-*` channels use the `shared_secret` returned by your auth handler. Payload decryption is handled automatically.

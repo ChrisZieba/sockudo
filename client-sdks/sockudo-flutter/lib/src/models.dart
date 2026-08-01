@@ -34,6 +34,7 @@ const Set<int> allowedAppendRollupWindows = <int>{0, 20, 40, 100, 500};
 enum ConnectionState {
   initialized,
   connecting,
+  reconnecting,
   connected,
   disconnected,
   unavailable,

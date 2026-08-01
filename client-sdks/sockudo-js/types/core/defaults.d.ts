@@ -16,6 +16,8 @@ export interface DefaultConfig {
     activityTimeout: number;
     pongTimeout: number;
     unavailableTimeout: number;
+    maxReconnectAttempts: number;
+    maxReconnectGapInSeconds: number;
     userAuthentication: UserAuthenticationOptions;
     channelAuthorization: ChannelAuthorizationOptions;
     cdn_http?: string;
