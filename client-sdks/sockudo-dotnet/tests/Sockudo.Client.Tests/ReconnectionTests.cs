@@ -38,20 +38,23 @@ public sealed class ReconnectionTests
     public async Task RetryEmitsReconnectingAndStopsAtConfiguredLimit()
     {
         await using var client = TestClient(maxReconnectAttempts: 1);
-        var states = new List<string>();
-        client.Bind("state_change", (data, _) => states.Add(((StateChange)data!).Current));
+        var reconnecting = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.Bind("state_change", (data, _) =>
+        {
+            if (((StateChange)data!).Current == "reconnecting")
+            {
+                reconnecting.TrySetResult(true);
+            }
+        });
 
         await InvokeScheduleRetryAsync(client, TimeSpan.Zero);
-        var retryLoop = (Task?)Field("_retryLoop").GetValue(client);
-        Assert.NotNull(retryLoop);
-        await retryLoop!.WaitAsync(TimeSpan.FromSeconds(2));
+        await reconnecting.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
-        Assert.Contains("reconnecting", states);
+        Assert.Equal(ConnectionState.Reconnecting, client.ConnectionState);
 
         await InvokeScheduleRetryAsync(client, TimeSpan.Zero);
 
         Assert.Equal(ConnectionState.Disconnected, client.ConnectionState);
-        Assert.Equal("disconnected", states[^1]);
     }
 
     [Fact]

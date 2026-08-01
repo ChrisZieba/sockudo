@@ -367,9 +367,7 @@ def on_state_change(change, _) -> None:
 
 
 client.bind("state_change", on_state_change)
-client.bind(
-    "connected", lambda data, _: print("socket id:", data.get("socket_id"))
-)
+client.bind("connected", lambda data, _: print("socket id:", data.get("socket_id")))
 client.bind("reconnecting", lambda *_: print("reconnecting"))
 client.bind("disconnected", lambda *_: print("disconnected"))
 client.bind("error", lambda data, _: print("error:", data))
