@@ -26,6 +26,10 @@ pub struct ConnectionCapabilities {
     pub annotation_delete_own: Option<Vec<String>>,
     #[serde(rename = "annotation-delete-any", alias = "annotation_delete_any")]
     pub annotation_delete_any: Option<Vec<String>>,
+    #[serde(rename = "object-subscribe", alias = "object_subscribe")]
+    pub object_subscribe: Option<Vec<String>>,
+    #[serde(rename = "object-publish", alias = "object_publish")]
+    pub object_publish: Option<Vec<String>>,
     pub message_update_own: Option<Vec<String>>,
     pub message_update_any: Option<Vec<String>>,
     pub message_delete_own: Option<Vec<String>>,
@@ -89,6 +93,18 @@ impl ConnectionCapabilities {
 
     pub fn allows_annotation_delete_any(&self, channel: &str) -> bool {
         self.annotation_delete_any
+            .as_deref()
+            .is_some_and(|patterns| Self::matches_any(patterns, channel))
+    }
+
+    pub fn allows_object_subscribe(&self, channel: &str) -> bool {
+        self.object_subscribe
+            .as_deref()
+            .is_some_and(|patterns| Self::matches_any(patterns, channel))
+    }
+
+    pub fn allows_object_publish(&self, channel: &str) -> bool {
+        self.object_publish
             .as_deref()
             .is_some_and(|patterns| Self::matches_any(patterns, channel))
     }
@@ -167,5 +183,19 @@ mod tests {
         assert!(!capabilities.allows_push_admin("pushenabled:client"));
         assert!(capabilities.allows_push_subscribe("pushenabled:client"));
         assert!(!capabilities.allows_push_subscribe("private:client"));
+    }
+
+    #[test]
+    fn object_capabilities_are_explicit_and_channel_scoped() {
+        let capabilities = ConnectionCapabilities {
+            object_subscribe: Some(vec!["objects:*".to_string()]),
+            object_publish: Some(vec!["objects:editable".to_string()]),
+            ..Default::default()
+        };
+
+        assert!(capabilities.allows_object_subscribe("objects:read-only"));
+        assert!(!capabilities.allows_object_subscribe("chat:room"));
+        assert!(capabilities.allows_object_publish("objects:editable"));
+        assert!(!capabilities.allows_object_publish("objects:read-only"));
     }
 }

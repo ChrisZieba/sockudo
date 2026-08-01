@@ -23,13 +23,24 @@ Claims are:
 ```json
 {
   "x-sockudo-client-id": "user-42",
-  "x-sockudo-capability": "{\"subscribe\":[\"private-ai:user-42:*\"],\"publish\":[\"private-ai:user-42:*\"],\"history\":[\"private-ai:user-42:*\"],\"message_append_own\":[\"private-ai:user-42:*\"]}",
+  "x-sockudo-capability": {
+    "private-ai:user-42:*": [
+      "subscribe",
+      "publish",
+      "history",
+      "message_append_own"
+    ]
+  },
   "iat": 1764835200,
   "nbf": 1764835200,
   "exp": 1764838800,
   "jti": "tok_01J..."
 }
 ```
+
+`x-sockudo-capability` accepts either the JSON object shown above or its stringified form. Each
+object key is a channel pattern and its value is the list of operations granted on matching
+channels.
 
 Limits from code: token at most 8 KiB, `client_id` at most 128 bytes, `jti` at most 128 bytes,
 lifetime at most 24 hours, and 30 seconds clock skew.
@@ -71,7 +82,7 @@ struct Claims {
     #[serde(rename = "x-sockudo-client-id")]
     client_id: String,
     #[serde(rename = "x-sockudo-capability")]
-    capability: String,
+    capability: BTreeMap<String, Vec<String>>,
     iat: i64,
     nbf: i64,
     exp: i64,
@@ -92,7 +103,7 @@ fn issue_sockudo_token(
         &header,
         &Claims {
             client_id: client_id.to_owned(),
-            capability: serde_json::to_string(&capabilities).expect("capabilities serialize"),
+            capability: capabilities,
             iat: now,
             nbf: now,
             exp: now + 3600,
@@ -130,14 +141,20 @@ Patterns accept exact channel names, `*`, and wildcard matching as implemented b
 
 ```json
 {
-  "subscribe": ["private-ai:user-42:*"],
-  "publish": ["private-ai:user-42:*"],
-  "history": ["private-ai:user-42:*"],
-  "presence": ["presence-ai:user-42:*"],
-  "message_append_own": ["private-ai:user-42:*"],
-  "message_update_own": ["private-ai:user-42:*"],
-  "annotation-subscribe": ["private-ai:user-42:*"]
+  "private-ai:user-42:*": [
+    "subscribe",
+    "publish",
+    "history",
+    "message_append_own",
+    "message_update_own",
+    "annotation-subscribe"
+  ],
+  "presence-ai:user-42:*": ["subscribe", "presence"]
 }
 ```
+
+Annotation publish, subscribe, and delete operations remain independent from ordinary
+`publish`/`subscribe`. Message mutation operations accept their documented underscore spelling
+and equivalent hyphenated spelling. Push capability names accept both spellings as well.
 
 Agent/server workers should use trusted app-key HTTP or a deliberately scoped server-issued token.

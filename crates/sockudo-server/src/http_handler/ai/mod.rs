@@ -320,10 +320,12 @@ pub(super) async fn validate_ai_http_publish(
     }
 
     if let Some(extras) = extras {
-        extras.validate_ai_headers().map_err(|error| {
-            record_ai_rejection(handler, &app.id, error.code);
-            ai_validation_app_error(error)
-        })?;
+        extras
+            .validate_ai_headers_with(handler.server_options().ai_transport.header_limits())
+            .map_err(|error| {
+                record_ai_rejection(handler, &app.id, error.code);
+                ai_validation_app_error(error)
+            })?;
         let probe = PusherMessage {
             event: Some(event_name.to_string()),
             channel: Some(channel.to_string()),

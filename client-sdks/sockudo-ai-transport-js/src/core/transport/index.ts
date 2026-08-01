@@ -1,28 +1,30 @@
 export {
-  createServerTransport,
+  createAgentSession,
   type AddMessageOptions,
   type AddMessagesResult,
   type CancelRequest,
   type EventsNode,
   type LoadConversationOptions,
   type MessageNode,
-  type NewTurnOptions,
-  type ServerTransport,
-  type ServerTransportOptions,
+  type CreateRunOptions,
+  type RunStep,
+  type StepOptions,
+  type AgentSession,
+  type AgentSessionOptions,
   type StreamResponseOptions,
   type StreamResult,
-  type Turn,
-} from "./agent-transport.js";
+  type AgentRun,
+} from "./agent-session.js";
 export {
-  createClientTransport,
-  type ActiveTurn,
+  createClientSession,
+  type ClientRun,
   type CancelFilter,
-  type ClientTransport,
-  type ClientTransportEvents,
-  type ClientTransportOptions,
+  type ClientSession,
+  type ClientSessionEvents,
+  type ClientSessionOptions,
   type CloseOptions,
   type SendOptions,
-} from "./client-transport.js";
+} from "./client-session.js";
 export {
   decodeHistoryPage,
   loadHistoryIntoTree,
@@ -38,17 +40,20 @@ export {
   type StreamRouterOptions,
 } from "./stream-router.js";
 export {
-  createConversationTree,
+  createTree,
   treeRoutingRoles,
-  type ConversationTree,
-  type ConversationTreeEvents,
-  type ConversationTreeOptions,
+  type Tree,
+  type TreeEvents,
+  type TreeOptions,
   type TreeMessageEvent,
   type TreeSerial,
-  type TurnEndReason,
-  type TurnLifecycleEvent,
-  type TurnNode,
-  type TurnStatus,
+  type RunEndReason,
+  type StepEndReason,
+  type StepInfo,
+  type StepLifecycleEvent,
+  type RunLifecycleEvent,
+  type RunNode,
+  type RunStatus,
 } from "./tree.js";
 export {
   createView,
@@ -59,3 +64,12 @@ export {
   type ViewOptions,
   type ViewSendExecutor,
 } from "./view.js";
+
+export { readSteerStamp, SteerCoordinator, type SteerOutcome, type SteerResult } from "./steer.js";
+export { MAX_STEER_IDS_PER_STAMP, RunSteerTracker } from "./run-steer-tracker.js";
+export {
+  reorderUnrespondedSteers,
+  unrespondedSteerIds,
+  type OrderableMessage,
+  type SteerOrderingOptions,
+} from "./steer-ordering.js";

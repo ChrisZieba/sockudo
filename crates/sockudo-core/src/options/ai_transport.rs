@@ -1,5 +1,8 @@
 use super::*;
 use serde::{Deserialize, Serialize};
+use sockudo_protocol::messages::{
+    AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES, AI_TRANSPORT_VALUE_MAX_BYTES, AiHeaderLimits,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -9,10 +12,28 @@ pub struct AiTransportConfig {
     pub max_accumulated_message_bytes: usize,
     pub max_appends_per_message: usize,
     pub max_open_streaming_messages_per_channel: usize,
+    /// Ceiling for a single `extras.ai.transport` value, in bytes.
+    pub max_transport_value_bytes: usize,
+    /// Ceiling for `steer-codec-message-ids`, in bytes.
+    ///
+    /// Separate from the scalar budget because the value is a JSON array whose
+    /// length grows with the number of steers an agent drained in one step
+    /// attempt. Raising this only helps if the publishing SDK's own per-stamp id
+    /// cap is raised with it — they are two halves of the same limit.
+    pub max_steer_codec_message_ids_bytes: usize,
     pub rollup: AiTransportRollupConfig,
 }
 
 impl AiTransportConfig {
+    /// Ceilings for AI header validation, as configured.
+    #[inline]
+    pub fn header_limits(&self) -> AiHeaderLimits {
+        AiHeaderLimits {
+            transport_value_max_bytes: self.max_transport_value_bytes,
+            steer_codec_message_ids_max_bytes: self.max_steer_codec_message_ids_bytes,
+        }
+    }
+
     #[inline]
     pub fn matches_channel(&self, channel: &str) -> bool {
         self.enabled
@@ -31,6 +52,19 @@ impl AiTransportConfig {
     ) -> Result<(), String> {
         if !self.enabled {
             return Ok(());
+        }
+
+        // Only reject values *below* the protocol floor: raising a ceiling is
+        // permissive, lowering it silently rejects traffic that used to pass.
+        if self.max_transport_value_bytes < AI_TRANSPORT_VALUE_MAX_BYTES {
+            return Err(format!(
+                "ai_transport.max_transport_value_bytes must be at least {AI_TRANSPORT_VALUE_MAX_BYTES}"
+            ));
+        }
+        if self.max_steer_codec_message_ids_bytes < AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES {
+            return Err(format!(
+                "ai_transport.max_steer_codec_message_ids_bytes must be at least {AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES}"
+            ));
         }
 
         if !history.enabled {
@@ -70,6 +104,10 @@ impl Default for AiTransportConfig {
             max_accumulated_message_bytes: 1024 * 1024,
             max_appends_per_message: 4096,
             max_open_streaming_messages_per_channel: 1024,
+            // Reproduce the protocol ceilings exactly: a default that lowered
+            // either one would start rejecting traffic that previously passed.
+            max_transport_value_bytes: AI_TRANSPORT_VALUE_MAX_BYTES,
+            max_steer_codec_message_ids_bytes: AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES,
             rollup: AiTransportRollupConfig::default(),
         }
     }

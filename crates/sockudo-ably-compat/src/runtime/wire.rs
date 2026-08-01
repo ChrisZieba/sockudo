@@ -1,6 +1,7 @@
 //! REST and realtime wire decoding, encoding, message projection, and errors.
 
 use super::*;
+use sockudo_protocol::messages::AiHeaderLimits;
 
 pub(super) fn ably_rest_request_format(headers: &HeaderMap) -> AblyFormat {
     if header_contains(headers, header::CONTENT_TYPE, "msgpack") {
@@ -481,6 +482,7 @@ pub(super) fn ably_extras_to_message_extras(
 pub(super) fn validate_ably_publish_message(
     message: &AblyMessage,
     allow_connection_key: bool,
+    limits: AiHeaderLimits,
 ) -> Result<(), AppError> {
     if message.connection_id.is_some() {
         return Err(AppError::InvalidInput(
@@ -516,7 +518,7 @@ pub(super) fn validate_ably_publish_message(
         ));
     }
     if let Some(extras) = ably_extras_to_message_extras(message.extras.clone())?
-        && let Err(error) = extras.validate_ai_headers()
+        && let Err(error) = extras.validate_ai_headers_with(limits)
     {
         return Err(AppError::InvalidInput(error.message));
     }

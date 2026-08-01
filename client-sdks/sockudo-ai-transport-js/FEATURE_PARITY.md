@@ -17,7 +17,7 @@ waiver; there are no waivers for `0.1.0`.
 | History/replay paging and branch materialization       | test/conformance/golden-replay.test.ts      | ✅     |
 | Branching edit/regenerate/sibling navigation           | test/conformance/golden-replay.test.ts      | ✅     |
 | Interruption cancel-then-send/send-alongside           | src/core/transport/client-transport.test.ts | ✅     |
-| Concurrent turns and waitForTurn routing               | test/conformance/golden-replay.test.ts      | ✅     |
+| Concurrent turns and waitForRun routing                | test/conformance/golden-replay.test.ts      | ✅     |
 | Tool calling server/client continuation                | src/vercel/transport/chat-transport.test.ts | ✅     |
 | Human-in-the-loop suspended continuation               | test/conformance/golden-replay.test.ts      | ✅     |
 | Optimistic update POST failure and race reconciliation | src/core/transport/client-transport.test.ts | ✅     |
@@ -37,3 +37,5 @@ waiver; there are no waivers for `0.1.0`.
 | Vercel Vue API surface                                 | etc/api-snapshot.d.ts                       | ✅     |
 | Vercel Svelte API surface                              | etc/api-snapshot.d.ts                       | ✅     |
 | Direct provider adapters                               | src/providers/index.test.ts                 | ✅     |
+| Steering: mid-run input and consumed outcomes          | src/core/transport/steer.test.ts            | ✅     |
+| Step lifecycle: attempts and retry supersession        | src/core/transport/step.test.ts             | ✅     |

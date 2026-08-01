@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const MAX_CAPABILITY_TOKEN_BYTES: usize = 8 * 1024;
 pub const MAX_CAPABILITY_PATTERNS: usize = 100;
 pub const MAX_CLIENT_ID_BYTES: usize = 128;
+pub const MAX_JTI_BYTES: usize = 128;
 pub const MAX_TOKEN_LIFETIME_SECONDS: i64 = 24 * 60 * 60;
 pub const TOKEN_CLOCK_SKEW_SECONDS: i64 = 30;
 
@@ -23,7 +24,7 @@ pub struct TokenAuthContext {
 #[derive(Debug, Deserialize)]
 struct CapabilityTokenClaims {
     #[serde(rename = "x-sockudo-capability")]
-    capability: String,
+    capability: serde_json::Value,
     #[serde(rename = "x-sockudo-client-id")]
     client_id: String,
     iat: i64,
@@ -72,8 +73,8 @@ fn validate_claims(claims: CapabilityTokenClaims, now: i64) -> Result<TokenAuthC
             "x-sockudo-client-id must be 1..=128 bytes".to_string(),
         ));
     }
-    if claims.jti.is_empty() {
-        return Err(Error::Auth("jti is required".to_string()));
+    if claims.jti.is_empty() || claims.jti.len() > MAX_JTI_BYTES {
+        return Err(Error::Auth("jti must be 1..=128 bytes".to_string()));
     }
     if claims.iat > now + TOKEN_CLOCK_SKEW_SECONDS {
         return Err(Error::Auth(
@@ -96,7 +97,7 @@ fn validate_claims(claims: CapabilityTokenClaims, now: i64) -> Result<TokenAuthC
         ));
     }
 
-    let capabilities = parse_capability_map(&claims.capability)?;
+    let capabilities = parse_capability_claim(&claims.capability)?;
     Ok(TokenAuthContext {
         client_id: claims.client_id,
         capabilities,
@@ -109,6 +110,30 @@ fn parse_capability_map(input: &str) -> Result<ConnectionCapabilities> {
     let grants: AHashMap<String, Vec<String>> = sonic_rs::from_str(input).map_err(|_| {
         Error::Auth("x-sockudo-capability must be a JSON object string".to_string())
     })?;
+    parse_capability_grants(grants)
+}
+
+fn parse_capability_claim(claim: &serde_json::Value) -> Result<ConnectionCapabilities> {
+    match claim {
+        serde_json::Value::String(raw) => parse_capability_map(raw),
+        serde_json::Value::Object(_) => {
+            let grants = serde_json::from_value::<AHashMap<String, Vec<String>>>(claim.clone())
+                .map_err(|_| {
+                    Error::Auth(
+                        "x-sockudo-capability must map channel patterns to operations".to_string(),
+                    )
+                })?;
+            parse_capability_grants(grants)
+        }
+        _ => Err(Error::Auth(
+            "x-sockudo-capability must be a JSON object or object string".to_string(),
+        )),
+    }
+}
+
+fn parse_capability_grants(
+    grants: AHashMap<String, Vec<String>>,
+) -> Result<ConnectionCapabilities> {
     if grants.len() > MAX_CAPABILITY_PATTERNS {
         return Err(Error::Auth(
             "x-sockudo-capability exceeds 100 patterns".to_string(),
@@ -131,18 +156,46 @@ fn parse_capability_map(input: &str) -> Result<ConnectionCapabilities> {
         }
         for operation in operations {
             match operation.as_str() {
-                "subscribe" => capabilities
-                    .subscribe
-                    .as_mut()
-                    .unwrap()
-                    .push(pattern.clone()),
-                "publish" => capabilities.publish.as_mut().unwrap().push(pattern.clone()),
-                "history" => capabilities.history.as_mut().unwrap().push(pattern.clone()),
-                "presence" => capabilities
-                    .presence
-                    .as_mut()
-                    .unwrap()
-                    .push(pattern.clone()),
+                "subscribe" => add_capability_pattern(&mut capabilities.subscribe, &pattern),
+                "publish" => add_capability_pattern(&mut capabilities.publish, &pattern),
+                "history" => add_capability_pattern(&mut capabilities.history, &pattern),
+                "presence" => add_capability_pattern(&mut capabilities.presence, &pattern),
+                "annotation-subscribe" | "annotation_subscribe" => {
+                    add_capability_pattern(&mut capabilities.annotation_subscribe, &pattern)
+                }
+                "annotation-publish" | "annotation_publish" => {
+                    add_capability_pattern(&mut capabilities.annotation_publish, &pattern)
+                }
+                "annotation-delete-own" | "annotation_delete_own" => {
+                    add_capability_pattern(&mut capabilities.annotation_delete_own, &pattern)
+                }
+                "annotation-delete-any" | "annotation_delete_any" => {
+                    add_capability_pattern(&mut capabilities.annotation_delete_any, &pattern)
+                }
+                "message-update-own" | "message_update_own" => {
+                    add_capability_pattern(&mut capabilities.message_update_own, &pattern)
+                }
+                "message-update-any" | "message_update_any" => {
+                    add_capability_pattern(&mut capabilities.message_update_any, &pattern)
+                }
+                "message-delete-own" | "message_delete_own" => {
+                    add_capability_pattern(&mut capabilities.message_delete_own, &pattern)
+                }
+                "message-delete-any" | "message_delete_any" => {
+                    add_capability_pattern(&mut capabilities.message_delete_any, &pattern)
+                }
+                "message-append-own" | "message_append_own" => {
+                    add_capability_pattern(&mut capabilities.message_append_own, &pattern)
+                }
+                "message-append-any" | "message_append_any" => {
+                    add_capability_pattern(&mut capabilities.message_append_any, &pattern)
+                }
+                "push-admin" | "push_admin" => {
+                    add_capability_pattern(&mut capabilities.push_admin, &pattern)
+                }
+                "push-subscribe" | "push_subscribe" => {
+                    add_capability_pattern(&mut capabilities.push_subscribe, &pattern)
+                }
                 _ => {
                     return Err(Error::Auth(format!(
                         "unsupported capability operation '{operation}'"
@@ -153,6 +206,12 @@ fn parse_capability_map(input: &str) -> Result<ConnectionCapabilities> {
     }
 
     Ok(capabilities)
+}
+
+fn add_capability_pattern(patterns: &mut Option<Vec<String>>, pattern: &str) {
+    patterns
+        .get_or_insert_with(Vec::new)
+        .push(pattern.to_string());
 }
 
 fn now_seconds() -> Result<i64> {
@@ -236,6 +295,60 @@ mod tests {
     }
 
     #[test]
+    fn accepts_object_capability_claim_with_explicit_extended_operations() {
+        let now = now_seconds().unwrap();
+        let mut header = Header::new(Algorithm::HS256);
+        header.kid = Some("app-key".to_string());
+        let token = encode(
+            &header,
+            &serde_json::json!({
+                "x-sockudo-capability": {
+                    "private-ai:*": [
+                        "publish",
+                        "subscribe",
+                        "history",
+                        "annotation-publish",
+                        "annotation-subscribe",
+                        "message_append_own"
+                    ]
+                },
+                "x-sockudo-client-id": "client-1",
+                "iat": now,
+                "exp": now + 3600,
+                "jti": "jti-object-claim"
+            }),
+            &EncodingKey::from_secret(b"app-secret"),
+        )
+        .unwrap();
+
+        let context = validate_capability_token(&token, &app()).unwrap();
+
+        assert!(context.capabilities.allows_publish("private-ai:session"));
+        assert!(
+            context
+                .capabilities
+                .allows_annotation_publish("private-ai:session")
+        );
+        assert!(
+            context
+                .capabilities
+                .allows_annotation_subscribe("private-ai:session")
+        );
+        assert!(context.capabilities.allows_message_mutation_own(
+            crate::versioned_message_auth::MutationKind::Append,
+            "private-ai:session"
+        ));
+    }
+
+    #[test]
+    fn annotation_capabilities_are_not_implied_by_publish_and_subscribe() {
+        let capabilities = parse_capability_map(r#"{"ai:*":["publish","subscribe"]}"#).unwrap();
+
+        assert!(!capabilities.allows_annotation_publish("ai:session"));
+        assert!(!capabilities.allows_annotation_subscribe("ai:session"));
+    }
+
+    #[test]
     fn rejects_wrong_kid() {
         let now = now_seconds().unwrap();
         let token = token_with(
@@ -280,6 +393,23 @@ mod tests {
         let token = token_with(
             TestClaims {
                 jti: "",
+                ..claims(now, r#"{"*":["subscribe"]}"#)
+            },
+            Algorithm::HS256,
+            "app-key",
+            "app-secret",
+        );
+
+        assert!(validate_capability_token(&token, &app()).is_err());
+    }
+
+    #[test]
+    fn rejects_jti_over_128_bytes() {
+        let now = now_seconds().unwrap();
+        let long_jti = "x".repeat(MAX_JTI_BYTES + 1);
+        let token = token_with(
+            TestClaims {
+                jti: &long_jti,
                 ..claims(now, r#"{"*":["subscribe"]}"#)
             },
             Algorithm::HS256,

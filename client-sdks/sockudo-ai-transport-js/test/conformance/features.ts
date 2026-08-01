@@ -51,7 +51,7 @@ export const FEATURE_RECEIPTS: readonly FeatureReceipt[] = [
     status: "✅",
   },
   {
-    feature: "Concurrent turns and waitForTurn routing",
+    feature: "Concurrent turns and waitForRun routing",
     specFile: "test/conformance/golden-replay.test.ts",
     status: "✅",
   },
@@ -123,6 +123,16 @@ export const FEATURE_RECEIPTS: readonly FeatureReceipt[] = [
   {
     feature: "Vercel React API surface",
     specFile: "etc/api-snapshot.d.ts",
+    status: "✅",
+  },
+  {
+    feature: "Steering: mid-run input and consumed outcomes",
+    specFile: "src/core/transport/steer.test.ts",
+    status: "✅",
+  },
+  {
+    feature: "Step lifecycle: attempts and retry supersession",
+    specFile: "src/core/transport/step.test.ts",
     status: "✅",
   },
 ];

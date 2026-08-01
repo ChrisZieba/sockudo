@@ -13,25 +13,27 @@ export enum ErrorCode {
   /** Encoder recovery failed after a stream append failure. */
   EncoderRecoveryFailed = 104000,
   /** Channel subscription failed. */
-  TransportSubscriptionError = 104001,
+  SessionSubscriptionError = 104001,
   /** Cancellation listener failed. */
   CancelListenerError = 104002,
   /** Invalid run lifecycle operation. */
-  TurnLifecycleError = 104003,
-  /** Transport was used after close. */
-  TransportClosed = 104004,
+  RunLifecycleError = 104003,
+  /** Session was used after close. */
+  SessionClosed = 104004,
   /** Send or acknowledgement failed. */
-  TransportSendFailed = 104005,
+  SessionSendFailed = 104005,
   /** Channel continuity was lost and history backfill is required. */
   ChannelContinuityLost = 104006,
   /** Channel is not ready. */
   ChannelNotReady = 104007,
   /** Stream failed. */
   StreamError = 104008,
-  /** Turn start did not arrive before the configured deadline. */
-  TurnStartDeadlineExceeded = 104009,
+  /** Run start did not arrive before the configured deadline. */
+  RunStartDeadlineExceeded = 104009,
   /** Input event was not found. */
   InputEventNotFound = 104010,
+  /** Channel history could not be fetched after bounded retries. */
+  HistoryFetchFailed = 104011,
 }
 
 /**

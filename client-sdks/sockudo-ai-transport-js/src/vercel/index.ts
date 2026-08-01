@@ -1,11 +1,11 @@
 export { version } from "../version.js";
 import {
-  createClientTransport as createCoreClientTransport,
-  createServerTransport as createCoreServerTransport,
-  type ClientTransport,
-  type ClientTransportOptions,
-  type ServerTransport,
-  type ServerTransportOptions,
+  createClientSession as createCoreClientSession,
+  createAgentSession as createCoreAgentSession,
+  type ClientSession,
+  type ClientSessionOptions,
+  type AgentSession,
+  type AgentSessionOptions,
 } from "../core/transport/index.js";
 export * from "./codec/index.js";
 import {
@@ -17,12 +17,12 @@ import {
 } from "./codec/index.js";
 
 /**
- * Client transport options for Vercel UI messages.
+ * Client session options for Vercel UI messages.
  *
  * @defaultValue `api` defaults to `"/api/chat"`.
  */
-export type VercelClientTransportOptions = Omit<
-  ClientTransportOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
+export type VercelClientSessionOptions = Omit<
+  ClientSessionOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
   "api" | "codec"
 > & {
   /** Server endpoint URL for the HTTP poke.
@@ -33,23 +33,23 @@ export type VercelClientTransportOptions = Omit<
 };
 
 /**
- * Server transport options for Vercel UI messages.
+ * Agent session options for Vercel UI messages.
  */
-export type VercelServerTransportOptions = Omit<
-  ServerTransportOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
+export type VercelAgentSessionOptions = Omit<
+  AgentSessionOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
   "codec"
 >;
 
 /**
- * Creates a Sockudo client transport pre-bound to {@link UIMessageCodec}.
+ * Creates a Sockudo client session pre-bound to {@link UIMessageCodec}.
  *
  * Async methods reject with `ErrorInfo`; synchronous misuse throws `ErrorInfo`
  * with `InvalidArgument`.
  */
-export function createClientTransport(
-  options: VercelClientTransportOptions,
-): ClientTransport<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> {
-  return createCoreClientTransport({
+export function createClientSession(
+  options: VercelClientSessionOptions,
+): ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> {
+  return createCoreClientSession({
     ...options,
     api: options.api ?? "/api/chat",
     codec: UIMessageCodec,
@@ -57,15 +57,15 @@ export function createClientTransport(
 }
 
 /**
- * Creates a Sockudo server transport pre-bound to {@link UIMessageCodec}.
+ * Creates a Sockudo agent session pre-bound to {@link UIMessageCodec}.
  *
  * Public methods reject with `ErrorInfo`; synchronous misuse throws
  * `ErrorInfo` with `InvalidArgument`.
  */
-export function createServerTransport(
-  options: VercelServerTransportOptions,
-): ServerTransport<VercelOutput, VercelProjection, AI.UIMessage> {
-  return createCoreServerTransport({
+export function createAgentSession(
+  options: VercelAgentSessionOptions,
+): AgentSession<VercelOutput, VercelProjection, AI.UIMessage> {
+  return createCoreAgentSession({
     ...options,
     codec: UIMessageCodec,
   });

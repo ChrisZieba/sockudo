@@ -1,4 +1,4 @@
-import type { StreamResult, TurnEndReason } from "../../core/transport/index.js";
+import type { StreamResult, RunEndReason } from "../../core/transport/index.js";
 
 /**
  * Finish reason values returned by Vercel AI SDK stream helpers.
@@ -15,10 +15,10 @@ export type VercelFinishReason = string | undefined;
  * abort-shaped rejections to `cancelled`, and map all other rejections to
  * `error`.
  */
-export async function vercelTurnEndReason(
+export async function vercelRunEndReason(
   pipeResult: StreamResult,
   finishReason: Promise<VercelFinishReason>,
-): Promise<TurnEndReason> {
+): Promise<RunEndReason> {
   if (pipeResult.reason !== "complete") {
     finishReason.catch(() => undefined);
     return pipeResult.reason;

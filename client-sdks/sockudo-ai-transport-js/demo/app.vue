@@ -2,7 +2,7 @@
 import { useChat } from "@ai-sdk/vue";
 import {
   provideChatTransport,
-  useActiveTurns,
+  useActiveRuns,
   useCreateView,
   useSockudoMessages,
   useTree,
@@ -61,12 +61,12 @@ const transportProvider = provideChatTransport({
 });
 // @docs-snippet-end
 
-if (!transportProvider.chatTransport.value || !transportProvider.transport.value) {
+if (!transportProvider.chatTransport.value || !transportProvider.session.value) {
   throw createError({
     statusCode: 500,
     statusMessage:
       transportProvider.chatTransportError.value?.message ??
-      transportProvider.transportError.value?.message ??
+      transportProvider.sessionError.value?.message ??
       "Sockudo AI Transport failed to initialize",
   });
 }
@@ -97,13 +97,13 @@ const chat = useChat<UIMessage>({
   },
 });
 
-const transport = transportProvider.transport.value;
+const session = transportProvider.session.value;
 // @docs-snippet core-branch-views
-const primaryView = useView({ transport });
-const compareView = useCreateView({ transport });
-const rawMessages = useSockudoMessages({ transport });
-const activeTurns = useActiveTurns({ transport });
-const tree = useTree({ transport });
+const primaryView = useView({ session });
+const compareView = useCreateView({ session });
+const rawMessages = useSockudoMessages({ session });
+const activeRuns = useActiveRuns({ session });
+const tree = useTree({ session });
 const channel = realtime.channels.get(channelName, {
   params: { rewind: { count: 100 } },
 });
@@ -187,15 +187,15 @@ const conversationMessages = computed<UIMessage[]>(() =>
 const compareMessages = computed(() => safeArray(compareView.messages.value));
 const status = computed(() => chat.status.value);
 const rawRecent = computed(() => safeArray(rawMessages.value).slice(-24).reverse());
-const activeTurnCount = computed(() =>
-  Array.from((activeTurns.value ?? new Map()).values()).reduce(
+const activeRunCount = computed(() =>
+  Array.from((activeRuns.value ?? new Map()).values()).reduce(
     (count, turns) => count + turns.size,
     0,
   ),
 );
-const activeTurnRows = computed(() =>
-  Array.from((activeTurns.value ?? new Map()).entries()).flatMap(([owner, turns]) =>
-    Array.from(turns).map((turnId) => ({ owner, turnId })),
+const activeRunRows = computed(() =>
+  Array.from((activeRuns.value ?? new Map()).entries()).flatMap(([owner, runs]) =>
+    Array.from(runs).map((runId) => ({ owner, runId })),
   ),
 );
 const lastAssistantId = computed(() => {
@@ -259,7 +259,7 @@ const capabilityRows = computed(() => [
     name: "Cancellation",
     detail: "Stop publishes a scoped AI cancel event and aborts the local stream",
     active:
-      activeTurnCount.value > 0 || timeline.value.some((event) => event.text.includes("cancel")),
+      activeRunCount.value > 0 || timeline.value.some((event) => event.text.includes("cancel")),
   },
 ]);
 
@@ -626,20 +626,20 @@ function assistantFromRawTransport(promptText: string): UIMessage | undefined {
     getTransportHeaders?: () => Record<string, string>;
     getCodecHeaders?: () => Record<string, string>;
   }>;
-  let turnId: string | undefined;
+  let runId: string | undefined;
   for (let index = raw.length - 1; index >= 0; index -= 1) {
     const message = raw[index];
     const transport = message?.getTransportHeaders?.() ?? {};
     if (
       message?.name === "ai-input" &&
       dataText(message.data).includes(promptText) &&
-      transport["turn-id"]
+      (transport["run-id"] ?? transport["turn-id"])
     ) {
-      turnId = transport["turn-id"];
+      runId = transport["run-id"] ?? transport["turn-id"];
       break;
     }
   }
-  if (!turnId) {
+  if (!runId) {
     return undefined;
   }
   for (let index = raw.length - 1; index >= 0; index -= 1) {
@@ -648,13 +648,13 @@ function assistantFromRawTransport(promptText: string): UIMessage | undefined {
     const codec = message?.getCodecHeaders?.() ?? {};
     if (
       message?.name === "ai-output" &&
-      transport["turn-id"] === turnId &&
+      (transport["run-id"] ?? transport["turn-id"]) === runId &&
       codec.type?.startsWith("text-") &&
       typeof message.data === "string" &&
       message.data.trim().length > 0
     ) {
       return {
-        id: codec["message-id"] ?? `raw-assistant-${turnId}`,
+        id: codec["message-id"] ?? `raw-assistant-${runId}`,
         role: "assistant",
         parts: [{ type: "text", text: message.data.trimStart() }],
       };
@@ -692,7 +692,7 @@ async function readHistoryFallback(
   if (!target) {
     return undefined;
   }
-  const text = findHistoryAssistantText(items, target.turnId);
+  const text = findHistoryAssistantText(items, target.runId);
   if (!text) {
     return undefined;
   }
@@ -709,7 +709,7 @@ async function readHistoryFallback(
 function findHistoryPrompt(
   items: readonly unknown[],
   promptText?: string,
-): { prompt: string; turnId: string } | undefined {
+): { prompt: string; runId: string } | undefined {
   for (const item of items) {
     const message = historyMessage(item);
     const transport = historyTransport(message);
@@ -720,14 +720,14 @@ function findHistoryPrompt(
     if (!prompt || (promptText && prompt !== promptText) || !transport["turn-id"]) {
       continue;
     }
-    return { prompt, turnId: transport["turn-id"] };
+    return { prompt, runId: transport["run-id"] ?? transport["turn-id"] };
   }
   return undefined;
 }
 
 function findHistoryAssistantText(
   items: readonly unknown[],
-  turnId: string,
+  runId: string,
 ): { messageId: string; text: string } | undefined {
   for (const item of items) {
     const message = historyMessage(item);
@@ -735,13 +735,13 @@ function findHistoryAssistantText(
     const codec = historyCodec(message);
     if (
       (message.name === "ai-output" || message.event === "ai-output") &&
-      transport["turn-id"] === turnId &&
+      (transport["run-id"] ?? transport["turn-id"]) === runId &&
       codec.type?.startsWith("text-") &&
       typeof message.data === "string" &&
       message.data.trim().length > 0
     ) {
       return {
-        messageId: codec["message-id"] ?? `history-assistant-${turnId}`,
+        messageId: codec["message-id"] ?? `history-assistant-${runId}`,
         text: message.data.trimStart(),
       };
     }
@@ -902,7 +902,7 @@ function safeArray<T>(value: readonly T[] | undefined): T[] {
         </div>
         <div>
           <span>Status</span>
-          <strong>{{ status }} / {{ activeTurnCount }} active</strong>
+          <strong>{{ status }} / {{ activeRunCount }} active</strong>
         </div>
       </div>
     </section>
@@ -1082,7 +1082,7 @@ function safeArray<T>(value: readonly T[] | undefined): T[] {
           </div>
           <div class="tree-meta">
             <span>Selected node</span>
-            <code>{{ selectedNode?.turnId ?? selectedMessageId ?? "none" }}</code>
+            <code>{{ selectedNode?.runId ?? selectedMessageId ?? "none" }}</code>
             <span>Siblings</span>
             <strong>{{ selectedSiblings.length }}</strong>
           </div>
@@ -1091,12 +1091,12 @@ function safeArray<T>(value: readonly T[] | undefined): T[] {
         <div class="panel">
           <div class="panel-title">
             <span>Active Turns</span>
-            <strong>{{ activeTurnCount }}</strong>
+            <strong>{{ activeRunCount }}</strong>
           </div>
           <ul class="turn-list">
-            <li v-for="turn in activeTurnRows" :key="turn.turnId">
-              <code>{{ turn.turnId }}</code>
-              <span>{{ turn.owner }}</span>
+            <li v-for="run in activeRunRows" :key="run.runId">
+              <code>{{ run.runId }}</code>
+              <span>{{ run.owner }}</span>
             </li>
           </ul>
         </div>

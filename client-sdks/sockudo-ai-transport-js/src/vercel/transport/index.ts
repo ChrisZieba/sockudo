@@ -8,4 +8,4 @@ export {
   type PreparedSendMessagesRequest,
   type SendMessagesRequestContext,
 } from "./chat-transport.js";
-export { vercelTurnEndReason, type VercelFinishReason } from "./run-end-reason.js";
+export { vercelRunEndReason, type VercelFinishReason } from "./run-end-reason.js";

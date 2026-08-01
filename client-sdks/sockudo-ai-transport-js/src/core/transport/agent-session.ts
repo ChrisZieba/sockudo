@@ -1,0 +1,894 @@
+import {
+  EVENT_AI_CANCEL,
+  EVENT_AI_INPUT,
+  EVENT_AI_RUN_END,
+  EVENT_AI_RUN_START,
+  EVENT_AI_RUN_SUSPEND,
+  EVENT_AI_STEP_END,
+  EVENT_AI_STEP_START,
+  HEADER_CODEC_MESSAGE_ID,
+  HEADER_MSG_REGENERATE,
+  HEADER_RUN_REASON,
+  HEADER_STEP_CLIENT_ID,
+  HEADER_STEP_ID,
+  HEADER_STEP_REASON,
+  HEADER_STEP_START_SERIAL,
+} from "../../constants.js";
+import { ErrorCode, ErrorInfo, toErrorInfo } from "../../errors.js";
+import { LogLevel, makeLogger, type Logger } from "../../logger.js";
+import type { ChannelLike, ClientLike, InboundMessage, MessageAck } from "../../realtime/index.js";
+import {
+  buildTransportHeaders,
+  getCodecHeaders,
+  getTransportHeaders,
+  mergeHeaders,
+  type HeaderMap,
+} from "../../utils.js";
+import type { Codec, DecodedEvent, Encoder, EncoderOptions, WriteOptions } from "../codec/index.js";
+import type { RunEndReason, StepEndReason } from "./tree.js";
+import { createDefaultInvocationIdProvider, type InvocationIdProvider } from "./invocation.js";
+import { pipeStream, type ResolveWriteOptions, type StreamResult } from "./pipe-stream.js";
+import { RunSteerTracker } from "./run-steer-tracker.js";
+import {
+  RunManager,
+  type BufferedInputEvent,
+  type CancelRequest,
+  type ManagedRun,
+} from "./run-manager.js";
+import type { CancelFilter } from "./client-session.js";
+
+/** Message node accepted by server-side `addMessages`. */
+export interface MessageNode<TMessage> {
+  /** Node discriminator. */
+  kind?: "message";
+  /** Domain message. */
+  message: TMessage;
+  /** Codec message id override for optimistic reconciliation. */
+  msgId?: string;
+  /** Parent codec message id. */
+  parentId?: string;
+  /** Fork source codec message id. */
+  forkOf?: string;
+  /** Header overrides. */
+  headers?: HeaderMap;
+}
+
+/** Events targeting an existing codec message. */
+export interface EventsNode<TOutput> {
+  /** Node discriminator. */
+  kind?: "event";
+  /** Target codec message id. */
+  msgId: string;
+  /** Events to apply. */
+  events: readonly TOutput[];
+}
+
+/** Options for `addMessages`. */
+export interface AddMessageOptions {
+  /** Verified client id for attribution. */
+  clientId?: string;
+}
+
+/** Result of `addMessages`. */
+export interface AddMessagesResult {
+  /** Published codec message ids in order. */
+  msgIds: string[];
+}
+
+/** Options for `streamResponse`. */
+export interface StreamResponseOptions<TOutput> {
+  /** Parent codec message id. */
+  parent?: string;
+  /** Fork source codec message id. */
+  forkOf?: string;
+  /** Per-output write option resolver. */
+  resolveWriteOptions?: ResolveWriteOptions<TOutput>;
+  /**
+   * Step stamp applied to every output of this stream. Set by
+   * {@link RunStep.streamResponse}; not intended for direct use.
+   */
+  stepHeaders?: HeaderMap;
+}
+
+/** Options for `loadConversation`. */
+export interface LoadConversationOptions {
+  /** History page size.
+   *
+   * @defaultValue `200`
+   */
+  pageLimit?: number;
+  /** Maximum materialized messages.
+   *
+   * @defaultValue `2000`
+   */
+  maxMessages?: number;
+}
+
+/** Options for {@link AgentRun.createStep}. */
+export interface StepOptions {
+  /**
+   * Stable step identity. Reuse it to publish a retry: the attempt with the
+   * highest `step-start-serial` becomes canonical and supersedes the rest.
+   *
+   * @defaultValue A generated id.
+   */
+  stepId?: string;
+  /** Verified client id owning this step. */
+  stepClientId?: string;
+}
+
+/**
+ * A re-attemptable unit of execution inside a run.
+ *
+ * Outputs published while the step is open are stamped with its `step-id` and
+ * `step-start-serial`, so a client can discard output from a superseded attempt
+ * instead of folding a failed attempt's partial content.
+ */
+export interface RunStep<TOutput> {
+  /** Stable step identity across attempts. */
+  readonly stepId: string;
+  /** Serial of this attempt's `ai-step-start`, once started. */
+  readonly startSerial: string | undefined;
+  /** Publishes `ai-step-start`, opening this attempt. */
+  start(): Promise<void>;
+  /** Streams outputs stamped with this attempt. */
+  streamResponse(
+    stream: ReadableStream<TOutput>,
+    options?: StreamResponseOptions<TOutput>,
+  ): Promise<StreamResult>;
+  /** Publishes `ai-step-end`, closing this attempt. */
+  end(reason?: StepEndReason): Promise<void>;
+}
+
+/** Server-side run construction options. */
+export interface CreateRunOptions<TOutput> {
+  /** Run identity. */
+  runId?: string;
+  /** Owner client id. */
+  clientId?: string;
+  /** Parent codec message id. */
+  parent?: string;
+  /** Fork source codec message id. */
+  forkOf?: string;
+  /** Hook invoked before encoder writes. */
+  onMessage?: EncoderOptions["onMessage"];
+  /** Hook invoked when a stream aborts. */
+  onAbort?(write: (event: TOutput) => Promise<void>): void | Promise<void>;
+  /** Cancel authorization hook. */
+  onCancel?(request: CancelRequest): Promise<boolean> | boolean;
+  /** AgentRun-scoped non-fatal error hook. */
+  onError?(error: ErrorInfo): void;
+  /**
+   * Notified when a steer arrives for this run. Optional: the run tracks
+   * steers regardless, so an agent that only calls `hasInput()` needs no hook.
+   */
+  onSteer?(codecMessageId: string): void;
+  /** External abort signal. */
+  signal?: AbortSignal;
+  /** Invocation id for input-event lookup. */
+  invocationId?: string;
+  /** Input event id for input-event lookup. */
+  inputEventId?: string;
+}
+
+/** Server-side run. The legacy type name is kept for source compatibility. */
+export interface AgentRun<TOutput, TProjection, TMessage> {
+  /** Run identity. */
+  readonly runId: string;
+  /** Abort signal scoped to this turn. */
+  readonly abortSignal: AbortSignal;
+  /** Lightweight view over loaded messages. */
+  readonly view: { readonly messages: readonly TMessage[] };
+  /** Loaded messages alias. */
+  readonly messages: readonly TMessage[];
+  /** Publishes run start after optional input lookup. */
+  start(): Promise<void>;
+  /** Publishes discrete messages. */
+  addMessages(
+    nodes: readonly MessageNode<TMessage>[],
+    options?: AddMessageOptions,
+  ): Promise<AddMessagesResult>;
+  /** Streams response outputs. */
+  streamResponse(
+    stream: ReadableStream<TOutput>,
+    options?: StreamResponseOptions<TOutput>,
+  ): Promise<StreamResult>;
+  /** Publishes cross-turn events. */
+  addEvents(nodes: readonly EventsNode<TOutput>[]): Promise<void>;
+  /** Loads this turn projection from history and observed input. */
+  loadProjection(): Promise<TProjection>;
+  /** Loads conversation messages. */
+  loadConversation(options?: LoadConversationOptions): Promise<TMessage[]>;
+  /** Publishes run end or run suspend. */
+  end(reason: RunEndReason): Promise<void>;
+  /**
+   * Opens a re-attemptable step within this run.
+   *
+   * Pass the same `stepId` again to publish a retry; the newer attempt
+   * supersedes the older one on the client.
+   */
+  createStep(options?: StepOptions): RunStep<TOutput>;
+  /**
+   * Claims any steer input that arrived since the last call.
+   *
+   * Call this at a step boundary, before running the next inference: whatever
+   * it drains is stamped onto that step attempt's outputs as
+   * `steer-codec-message-ids`, which is how the client settles steer outcomes.
+   * Returns true when input was claimed, so an agent loop can decide to take
+   * another iteration instead of ending the run.
+   */
+  hasInput(): boolean;
+}
+
+/** Server transport options. */
+export interface AgentSessionOptions<TInput, TOutput, TProjection, TMessage> {
+  /** Realtime client used with `channelName`. */
+  client?: ClientLike;
+  /** Realtime channel. */
+  channel?: ChannelLike;
+  /** Channel name used when `client` is supplied. */
+  channelName?: string;
+  /** Domain codec. */
+  codec: Codec<TInput, TOutput, TProjection, TMessage>;
+  /** Logger.
+   *
+   * @defaultValue Silent SDK logger.
+   */
+  logger?: Logger;
+  /** Transport-level error hook. */
+  onError?(error: ErrorInfo): void;
+  /** Input event lookup timeout in milliseconds.
+   *
+   * @defaultValue `30000`
+   */
+  inputEventLookupTimeoutMs?: number;
+  /** Input event buffer cap.
+   *
+   * @defaultValue `200`
+   */
+  inputEventBufferLimit?: number;
+  /** Subscribe rewind window.
+   *
+   * @defaultValue `"2m"`
+   */
+  rewindWindow?: string;
+  /** Deterministic id provider for generated assistant message ids.
+   *
+   * @defaultValue Uses `crypto.randomUUID()` through the default invocation id provider.
+   */
+  idProvider?: InvocationIdProvider;
+}
+
+/** Server-side transport. */
+export interface AgentSession<TOutput, TProjection, TMessage> {
+  /** Creates and registers a turn synchronously. */
+  createRun(options: CreateRunOptions<TOutput>): AgentRun<TOutput, TProjection, TMessage>;
+  /** Unsubscribes, aborts turns, and clears state. */
+  close(): void;
+}
+
+/** Creates a server/agent transport. */
+export function createAgentSession<TInput, TOutput, TProjection, TMessage>(
+  options: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>,
+): AgentSession<TOutput, TProjection, TMessage> {
+  return new DefaultAgentSession(options);
+}
+
+class DefaultAgentSession<TInput, TOutput, TProjection, TMessage> implements AgentSession<
+  TOutput,
+  TProjection,
+  TMessage
+> {
+  private readonly channel: ChannelLike;
+  private readonly manager: RunManager;
+  private readonly logger: Logger;
+  private readonly inputLookupTimeoutMs: number;
+  private readonly idProvider: InvocationIdProvider;
+  private readonly unsubscribe: () => void;
+  private readonly channelUnsubscribes: (() => void)[];
+  private closed = false;
+
+  public constructor(
+    private readonly options: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>,
+  ) {
+    this.channel =
+      options.channel ??
+      options.client?.channels.get(
+        requireChannelName(options),
+        channelOptions(options.rewindWindow ?? "2m"),
+      ) ??
+      missingChannel();
+    this.manager = new RunManager(
+      options.inputEventBufferLimit === undefined
+        ? {}
+        : { inputEventBufferLimit: options.inputEventBufferLimit },
+    );
+    this.logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
+      component: "AgentSession",
+    });
+    this.inputLookupTimeoutMs = options.inputEventLookupTimeoutMs ?? 30_000;
+    this.idProvider = options.idProvider ?? createDefaultInvocationIdProvider();
+    this.unsubscribe = this.channel.subscribe((message) => {
+      this.handleMessage(message);
+    });
+    this.channelUnsubscribes = [
+      this.channel.on("continuity_lost", (error) => options.onError?.(error)),
+      this.channel.on("failed", (error) => options.onError?.(error)),
+    ];
+  }
+
+  public createRun(options: CreateRunOptions<TOutput>): AgentRun<TOutput, TProjection, TMessage> {
+    if (this.closed) {
+      throw new ErrorInfo({
+        code: ErrorCode.SessionClosed,
+        statusCode: 400,
+        message: "unable to create turn; transport is closed",
+      });
+    }
+    const turn = new DefaultAgentRun<TInput, TOutput, TProjection, TMessage>({
+      channel: this.channel,
+      codec: this.options.codec,
+      manager: this.manager,
+      options,
+      inputLookupTimeoutMs: this.inputLookupTimeoutMs,
+      idProvider: this.idProvider,
+      logger: this.logger,
+    });
+    this.manager.register(turn.managedRun);
+    return turn;
+  }
+
+  public close(): void {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    this.unsubscribe();
+    for (const unsubscribe of this.channelUnsubscribes) {
+      unsubscribe();
+    }
+    this.manager.close();
+  }
+
+  private handleMessage(message: InboundMessage): void {
+    try {
+      if (message.name === EVENT_AI_INPUT) {
+        this.manager.observeInput(message);
+      } else if (message.name === EVENT_AI_CANCEL) {
+        this.manager.routeCancel(message);
+      }
+    } catch (error) {
+      const info = toErrorInfo(error, {
+        code: ErrorCode.SessionSubscriptionError,
+        message: "unable to process server transport message",
+      });
+      this.options.onError?.(info);
+      this.logger.error("server transport message handler failed", {
+        error: info,
+      });
+    }
+  }
+}
+
+interface RunDeps<TInput, TOutput, TProjection, TMessage> {
+  channel: ChannelLike;
+  codec: Codec<TInput, TOutput, TProjection, TMessage>;
+  manager: RunManager;
+  options: CreateRunOptions<TOutput>;
+  inputLookupTimeoutMs: number;
+  idProvider: InvocationIdProvider;
+  logger: Logger;
+}
+
+class DefaultAgentRun<TInput, TOutput, TProjection, TMessage> implements AgentRun<
+  TOutput,
+  TProjection,
+  TMessage
+> {
+  private readonly internalAbort = new AbortController();
+  private readonly signal: AbortSignal;
+  private started = false;
+  private loadedProjection: TProjection | undefined;
+  private loadedMessages: TMessage[] = [];
+  private capturedInput: BufferedInputEvent | undefined;
+  private readonly steerTracker = new RunSteerTracker();
+
+  public readonly runId: string;
+  public readonly managedRun: ManagedRun;
+
+  public constructor(private readonly deps: RunDeps<TInput, TOutput, TProjection, TMessage>) {
+    this.runId = requireRunId(deps.options);
+    this.signal = composeAbortSignal(this.internalAbort.signal, deps.options.signal);
+    this.managedRun = {
+      runId: this.runId,
+      abort: () => {
+        this.internalAbort.abort();
+      },
+      cancelled: false,
+      ...(deps.options.clientId !== undefined ? { clientId: deps.options.clientId } : {}),
+      ...(deps.options.onCancel !== undefined
+        ? { onCancel: (request) => deps.options.onCancel?.(request) ?? true }
+        : {}),
+      ...(deps.options.onError !== undefined
+        ? {
+            onError: (error) => {
+              deps.options.onError?.(error);
+            },
+          }
+        : {}),
+      // Always registered: the tracker must see every steer even when the
+      // caller supplies no onSteer hook of its own, or hasInput() would never
+      // report the input and the stamp would never be written.
+      onSteer: (codecMessageId: string) => {
+        this.steerTracker.add(codecMessageId);
+        deps.options.onSteer?.(codecMessageId);
+      },
+    };
+  }
+
+  public get abortSignal(): AbortSignal {
+    return this.signal;
+  }
+
+  public get view(): { readonly messages: readonly TMessage[] } {
+    return { messages: this.loadedMessages };
+  }
+
+  public get messages(): readonly TMessage[] {
+    return this.loadedMessages;
+  }
+
+  public async start(): Promise<void> {
+    if (this.started) {
+      return;
+    }
+    let inputHeaders: HeaderMap = Object.create(null) as HeaderMap;
+    if (this.deps.options.invocationId && this.deps.options.inputEventId) {
+      this.capturedInput = await this.deps.manager.lookupInput(
+        this.deps.options.invocationId,
+        this.deps.inputLookupTimeoutMs,
+      );
+      inputHeaders = this.capturedInput.headers;
+      this.foldInput(this.capturedInput.message);
+    }
+    const regenerateOf = inputHeaders[HEADER_MSG_REGENERATE];
+    const headers = mergeHeaders(
+      inputHeaders,
+      buildTransportHeaders({
+        runId: this.runId,
+        ...(this.deps.options.invocationId !== undefined
+          ? { invocationId: this.deps.options.invocationId }
+          : {}),
+        ...(this.deps.options.clientId !== undefined
+          ? { runClientId: this.deps.options.clientId }
+          : {}),
+        ...(this.deps.options.parent !== undefined ? { parent: this.deps.options.parent } : {}),
+        ...(this.deps.options.forkOf !== undefined && regenerateOf === undefined
+          ? { forkOf: this.deps.options.forkOf }
+          : {}),
+      }),
+    );
+    await this.publishLifecycle(EVENT_AI_RUN_START, headers);
+    this.started = true;
+  }
+
+  public async addMessages(
+    nodes: readonly MessageNode<TMessage>[],
+    options: AddMessageOptions = {},
+  ): Promise<AddMessagesResult> {
+    const msgIds: string[] = [];
+    const encoder = this.createEncoder(options.clientId);
+    for (const node of nodes) {
+      const input = this.deps.codec.createUserMessage(node.message).message;
+      const headers = mergeHeaders(
+        this.baseHeaders("user"),
+        node.headers ?? emptyHeaders(),
+        buildTransportHeaders({
+          ...(node.msgId !== undefined ? { codecMessageId: node.msgId } : {}),
+          ...(node.parentId !== undefined ? { parent: node.parentId } : {}),
+          ...(node.forkOf !== undefined ? { forkOf: node.forkOf } : {}),
+        }),
+      );
+      const ack = await publishInput(encoder, input as unknown as TInput, {
+        extras: { ai: { transport: headers } },
+        ...(node.msgId !== undefined ? { messageId: node.msgId } : {}),
+        ...(options.clientId !== undefined ? { clientId: options.clientId } : {}),
+      });
+      msgIds.push(node.msgId ?? ack.messageSerial);
+    }
+    return { msgIds };
+  }
+
+  public streamResponse(
+    stream: ReadableStream<TOutput>,
+    options: StreamResponseOptions<TOutput> = {},
+  ): Promise<StreamResult> {
+    const messageId = this.deps.idProvider.messageId();
+    const encoder = this.createEncoder(this.deps.options.clientId, {
+      role: "assistant",
+      codecMessageId: messageId,
+      ...(options.parent !== undefined ? { parent: options.parent } : {}),
+      ...(options.forkOf !== undefined ? { forkOf: options.forkOf } : {}),
+    });
+    return pipeStream(stream, encoder, this.signal, {
+      resolveWriteOptions: (output) =>
+        mergeWriteOptions(options.resolveWriteOptions?.(output), {
+          extras: {
+            ai: {
+              transport: mergeHeaders(
+                withSteerStamp(this.baseHeaders("assistant"), this.steerTracker),
+                options.stepHeaders ?? {},
+              ),
+            },
+          },
+        }),
+      ...(this.deps.options.onAbort !== undefined
+        ? {
+            onAbort: (write) => this.deps.options.onAbort?.(write),
+          }
+        : {}),
+      ...(this.deps.options.onError !== undefined
+        ? {
+            onError: (error) => {
+              this.deps.options.onError?.(error);
+            },
+          }
+        : {}),
+    });
+  }
+
+  public async addEvents(nodes: readonly EventsNode<TOutput>[]): Promise<void> {
+    for (const node of nodes) {
+      const encoder = this.createEncoder(this.deps.options.clientId, {
+        codecMessageId: node.msgId,
+      });
+      for (const event of node.events) {
+        await encoder.publishOutput(event, {
+          extras: {
+            ai: {
+              transport: withSteerStamp(
+                mergeHeaders(this.baseHeaders("assistant"), {
+                  [HEADER_CODEC_MESSAGE_ID]: node.msgId,
+                }),
+                this.steerTracker,
+              ),
+            },
+          },
+        });
+      }
+      await encoder.close();
+    }
+  }
+
+  public async loadProjection(): Promise<TProjection> {
+    if (this.loadedProjection !== undefined) {
+      return this.loadedProjection;
+    }
+    let projection = this.deps.codec.init();
+    const seen = new Set<string>();
+    if (this.capturedInput) {
+      projection = this.foldMessage(projection, this.capturedInput.message, seen);
+    }
+    let page = await this.deps.channel.history({
+      direction: "oldest_first",
+      limit: 200,
+    });
+    for (;;) {
+      for (const message of page.items) {
+        projection = this.foldMessage(projection, message, seen);
+      }
+      if (!page.hasNext()) {
+        break;
+      }
+      page = await page.next();
+    }
+    this.loadedProjection = projection;
+    this.loadedMessages = this.deps.codec.getMessages(projection);
+    return projection;
+  }
+
+  public async loadConversation(options: LoadConversationOptions = {}): Promise<TMessage[]> {
+    await this.loadProjection();
+    const maxMessages = options.maxMessages ?? 2_000;
+    return this.loadedMessages.slice(-maxMessages);
+  }
+
+  public createStep(options: StepOptions = {}): RunStep<TOutput> {
+    const stepId = options.stepId ?? this.deps.idProvider.messageId();
+    let startSerial: string | undefined;
+
+    const stepHeaders = (): HeaderMap => {
+      const base: Record<string, string> = { [HEADER_STEP_ID]: stepId };
+      // step-start carries no back-reference: its own serial IS the identity.
+      // Everything published afterwards points back at it.
+      if (startSerial !== undefined) {
+        base[HEADER_STEP_START_SERIAL] = startSerial;
+      }
+      if (options.stepClientId !== undefined) {
+        base[HEADER_STEP_CLIENT_ID] = options.stepClientId;
+      }
+      return base;
+    };
+
+    return {
+      stepId,
+      get startSerial(): string | undefined {
+        return startSerial;
+      },
+      start: async (): Promise<void> => {
+        const ack = await this.publishLifecycle(
+          EVENT_AI_STEP_START,
+          mergeHeaders(this.baseHeaders("assistant"), stepHeaders()),
+        );
+        // The ack's message serial is this attempt's identity, so it must be
+        // captured before any output is stamped.
+        startSerial = ack.messageSerial;
+      },
+      streamResponse: async (
+        stream: ReadableStream<TOutput>,
+        streamOptions: StreamResponseOptions<TOutput> = {},
+      ): Promise<StreamResult> =>
+        this.streamResponse(stream, { ...streamOptions, stepHeaders: stepHeaders() }),
+      end: async (reason: StepEndReason = "complete"): Promise<void> => {
+        await this.publishLifecycle(
+          EVENT_AI_STEP_END,
+          mergeHeaders(this.baseHeaders("assistant"), {
+            ...stepHeaders(),
+            [HEADER_STEP_REASON]: reason,
+          }),
+        );
+      },
+    };
+  }
+
+  public hasInput(): boolean {
+    // Draining marks the steers visible to the iteration that produces the
+    // next output, which is exactly what the stamp claims.
+    return this.steerTracker.drain().length > 0;
+  }
+
+  public async end(reason: RunEndReason): Promise<void> {
+    const headers =
+      reason === "suspended"
+        ? this.baseHeaders("assistant")
+        : mergeHeaders(this.baseHeaders("assistant"), {
+            [HEADER_RUN_REASON]: reason,
+          });
+    const eventName = reason === "suspended" ? EVENT_AI_RUN_SUSPEND : EVENT_AI_RUN_END;
+    try {
+      await this.publishLifecycle(eventName, headers);
+    } catch (error) {
+      throw toErrorInfo(error, {
+        code: ErrorCode.RunLifecycleError,
+        message: `unable to end turn; ${eventName} publish failed`,
+      });
+    }
+    if (reason !== "suspended") {
+      this.deps.manager.deregister(this.runId);
+    }
+  }
+
+  private foldInput(message: InboundMessage): void {
+    const projection = this.loadedProjection ?? this.deps.codec.init();
+    this.loadedProjection = this.foldMessage(projection, message, new Set());
+    this.loadedMessages = this.deps.codec.getMessages(this.loadedProjection);
+  }
+
+  private foldMessage(
+    projection: TProjection,
+    message: InboundMessage,
+    seen: Set<string>,
+  ): TProjection {
+    const key = `${String(message.deliverySerial ?? message.historySerial)}:${message.messageSerial}`;
+    if (seen.has(key)) {
+      return projection;
+    }
+    seen.add(key);
+    const decoded = this.deps.codec.createDecoder().decode(message);
+    const events = [...decoded.inputs, ...decoded.outputs] as DecodedEvent<TInput | TOutput>[];
+    let current = projection;
+    for (const event of events) {
+      current = this.deps.codec.fold(current, event.event, event.meta);
+    }
+    return current;
+  }
+
+  private async publishLifecycle(
+    name:
+      | typeof EVENT_AI_RUN_START
+      | typeof EVENT_AI_RUN_SUSPEND
+      | typeof EVENT_AI_RUN_END
+      | typeof EVENT_AI_STEP_START
+      | typeof EVENT_AI_STEP_END,
+    headers: HeaderMap,
+  ): Promise<MessageAck> {
+    try {
+      return await this.deps.channel.publish({
+        name,
+        extras: { ai: { transport: headers } },
+      });
+    } catch (error) {
+      throw toErrorInfo(error, {
+        code: ErrorCode.RunLifecycleError,
+        message: `unable to publish ${name}; channel publish failed`,
+      });
+    }
+  }
+
+  private createEncoder(
+    clientId: string | undefined,
+    headers: {
+      parent?: string;
+      forkOf?: string;
+      codecMessageId?: string;
+      role?: string;
+    } = {},
+  ): Encoder<TInput, TOutput> {
+    return this.deps.codec.createEncoder(this.deps.channel, {
+      ...(this.deps.options.onMessage !== undefined
+        ? { onMessage: this.deps.options.onMessage }
+        : {}),
+      ...(clientId !== undefined ? { clientId } : {}),
+      extras: {
+        ai: {
+          transport: withSteerStamp(
+            this.baseHeaders(headers.role ?? "assistant", headers),
+            this.steerTracker,
+          ),
+        },
+      },
+    });
+  }
+
+  private baseHeaders(
+    role: string,
+    overrides: {
+      parent?: string;
+      forkOf?: string;
+      codecMessageId?: string;
+    } = {},
+  ): HeaderMap {
+    const regenerateOf = this.capturedInput?.headers[HEADER_MSG_REGENERATE];
+    return buildTransportHeaders({
+      role,
+      runId: this.runId,
+      ...(this.deps.options.invocationId !== undefined
+        ? { invocationId: this.deps.options.invocationId }
+        : {}),
+      ...(this.deps.options.clientId !== undefined
+        ? {
+            runClientId: this.deps.options.clientId,
+            inputClientId: this.deps.options.clientId,
+          }
+        : {}),
+      ...(this.deps.options.parent !== undefined ? { parent: this.deps.options.parent } : {}),
+      ...(this.deps.options.forkOf !== undefined && regenerateOf === undefined
+        ? { forkOf: this.deps.options.forkOf }
+        : {}),
+      ...(overrides.parent !== undefined ? { parent: overrides.parent } : {}),
+      ...(overrides.forkOf !== undefined && regenerateOf === undefined
+        ? { forkOf: overrides.forkOf }
+        : {}),
+      ...(overrides.codecMessageId !== undefined
+        ? { codecMessageId: overrides.codecMessageId }
+        : {}),
+      ...(regenerateOf !== undefined ? { regenerates: regenerateOf } : {}),
+    });
+  }
+}
+
+/**
+ * Adds the steer stamp to agent-published headers.
+ *
+ * Kept separate from {@link baseHeaders} because the stamp belongs only on
+ * outputs, not on the run's own input echo, and because it is the one header
+ * whose size is bounded by the number of steers rather than a fixed shape.
+ */
+function withSteerStamp(headers: HeaderMap, tracker: RunSteerTracker): HeaderMap {
+  const stamp = tracker.stampHeaders();
+  return Object.keys(stamp).length === 0 ? headers : mergeHeaders(headers, stamp);
+}
+
+function publishInput<TInput, TOutput>(
+  encoder: Encoder<TInput, TOutput>,
+  input: TInput,
+  options: WriteOptions,
+): Promise<MessageAck> {
+  return encoder.publishInput(input, options);
+}
+
+function mergeWriteOptions(left: WriteOptions | undefined, right: WriteOptions): WriteOptions {
+  return {
+    ...left,
+    ...right,
+    extras: mergeExtras(left?.extras, right.extras),
+  };
+}
+
+function mergeExtras(left: unknown, right: unknown): unknown {
+  const leftRecord = record(left);
+  const rightRecord = record(right);
+  const leftAi = record(leftRecord.ai);
+  const rightAi = record(rightRecord.ai);
+  return {
+    ...leftRecord,
+    ...rightRecord,
+    ai: {
+      ...leftAi,
+      ...rightAi,
+      session: mergeHeaders(getTransportHeaders(left), getTransportHeaders(right)),
+      codec: mergeHeaders(getCodecHeaders(left), getCodecHeaders(right)),
+    },
+  };
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function emptyHeaders(): HeaderMap {
+  return Object.create(null) as HeaderMap;
+}
+
+function composeAbortSignal(internal: AbortSignal, external: AbortSignal | undefined): AbortSignal {
+  if (!external) {
+    return internal;
+  }
+  if ("any" in AbortSignal && typeof AbortSignal.any === "function") {
+    return AbortSignal.any([internal, external]);
+  }
+  const controller = new AbortController();
+  const abort = (): void => {
+    controller.abort();
+  };
+  internal.addEventListener("abort", abort, { once: true });
+  external.addEventListener("abort", abort, { once: true });
+  return controller.signal;
+}
+
+function requireChannelName(
+  options: AgentSessionOptions<unknown, unknown, unknown, unknown>,
+): string {
+  if (!options.channelName) {
+    throw new ErrorInfo({
+      code: ErrorCode.InvalidArgument,
+      message: "unable to create server transport; channelName is required with client",
+    });
+  }
+  return options.channelName;
+}
+
+function requireRunId(options: { runId?: string }): string {
+  const runId = options.runId;
+  if (!runId) {
+    throw new ErrorInfo({
+      code: ErrorCode.InvalidArgument,
+      message: "unable to create run; runId is required",
+    });
+  }
+  return runId;
+}
+
+function channelOptions(value: string): {
+  params?: { rewind?: { seconds: number } };
+} {
+  const rewind = normalizeRewind(value);
+  return rewind === undefined ? {} : { params: { rewind } };
+}
+
+function normalizeRewind(value: string): { seconds: number } | undefined {
+  const match = /^(\d+)m$/u.exec(value);
+  if (!match) {
+    return undefined;
+  }
+  return { seconds: Number(match[1]) * 60 };
+}
+
+function missingChannel(): ChannelLike {
+  throw new ErrorInfo({
+    code: ErrorCode.InvalidArgument,
+    message: "unable to create server transport; channel could not be resolved",
+  });
+}
+
+export type { CancelFilter, CancelRequest, StreamResult };

@@ -498,7 +498,7 @@ function bindChannelStates(channel: SockudoChannelPeer, state: ChannelState): vo
     state.events.emit(
       "failed",
       toErrorInfo(payload, {
-        code: ErrorCode.TransportSubscriptionError,
+        code: ErrorCode.SessionSubscriptionError,
         message: "unable to subscribe to channel; Sockudo reported an error",
       }),
     );
@@ -571,7 +571,7 @@ function normalizeAck(value: unknown): MessageAck {
   const historySerial = readSerial(record?.historySerial) ?? readSerial(record?.history_serial);
   if (!messageSerial || historySerial === undefined) {
     throw new ErrorInfo({
-      code: ErrorCode.TransportSendFailed,
+      code: ErrorCode.SessionSendFailed,
       message: "unable to normalize acknowledgement; missing messageSerial or historySerial",
       detail: value,
     });
@@ -840,12 +840,12 @@ function normalizeMember(member: unknown): PresenceMember {
 
 function mapFailure(error: unknown, operation: string): ErrorInfo {
   const mapped = toErrorInfo(error, {
-    code: ErrorCode.TransportSendFailed,
+    code: ErrorCode.SessionSendFailed,
     message: `unable to ${operation}; Sockudo client operation failed`,
   });
   if (mapped.code === 93002) {
     return new ErrorInfo({
-      code: ErrorCode.TransportSendFailed,
+      code: ErrorCode.SessionSendFailed,
       message: `unable to ${operation}; ${mapped.message}`,
       cause: error,
       statusCode: mapped.statusCode,

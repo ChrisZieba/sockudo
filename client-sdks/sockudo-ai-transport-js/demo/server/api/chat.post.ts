@@ -1,4 +1,4 @@
-import { createServerTransport } from "@sockudo/ai-transport/vercel";
+import { createAgentSession } from "@sockudo/ai-transport/vercel";
 import type { VercelOutput } from "@sockudo/ai-transport/vercel";
 import { streamText, toUIMessageStream } from "ai";
 import { demoConfig } from "../utils/config";
@@ -7,7 +7,7 @@ import { isAllowedDemoChannel, realtimeClient } from "../utils/sockudo";
 export default defineEventHandler(async (event) => {
   const body = (await readBody(event)) as Record<string, unknown>;
   const config = demoConfig();
-  const turnId = requireString(body.turnId, "turnId");
+  const runId = requireString(body.runId, "runId");
   const invocationId = requireString(body.invocationId, "invocationId");
   const inputEventId = requireString(body.inputEventId, "inputEventId");
   const channelName = optionalString(body.channelName) ?? config.channelName;
@@ -16,17 +16,17 @@ export default defineEventHandler(async (event) => {
   }
   const clientId = optionalString(body.clientId);
   // @docs-snippet usechat-route
-  const transport = createServerTransport({
+  const session = createAgentSession({
     client: realtimeClient(),
     channelName,
   });
-  const turn = transport.newTurn({
-    turnId,
+  const turn = session.createRun({
+    runId,
     invocationId,
     inputEventId,
     ...(clientId === undefined ? {} : { clientId }),
     onCancel(request) {
-      return request.filter.all === true || request.turnOwners.get(turnId) === clientId;
+      return request.filter.all === true || request.runOwners.get(runId) === clientId;
     },
     onError(error) {
       console.error("[sockudo-ai-transport-demo] turn failed", error.message);
@@ -34,7 +34,7 @@ export default defineEventHandler(async (event) => {
   });
   // @docs-snippet-end
   const work = runTurn(turn, body, config.model).finally(() => {
-    transport.close();
+    session.close();
   });
   event.waitUntil?.(work);
   void work;
@@ -44,7 +44,7 @@ export default defineEventHandler(async (event) => {
 
 // @docs-snippet core-route
 async function runTurn(
-  turn: ReturnType<ReturnType<typeof createServerTransport>["newTurn"]>,
+  turn: ReturnType<ReturnType<typeof createAgentSession>["createRun"]>,
   body: Record<string, unknown>,
   model: string,
 ): Promise<void> {

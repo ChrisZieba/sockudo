@@ -5,18 +5,18 @@ import { get, readable, writable, type Readable, type Writable } from "svelte/st
 import { ErrorCode, ErrorInfo } from "../errors.js";
 import type { InboundMessage } from "../realtime/index.js";
 import {
-  createClientTransport,
+  createClientSession,
   type BranchSelectionIntent,
-  type ClientTransport,
-  type ClientTransportOptions,
-  type TurnNode,
+  type ClientSession,
+  type ClientSessionOptions,
+  type RunNode,
   type View,
 } from "../core/transport/index.js";
 
 /**
- * Svelte transport store options.
+ * Svelte session store options.
  */
-export type TransportStoreOptions<TInput, TOutput, TProjection, TMessage> = ClientTransportOptions<
+export type SessionStoreOptions<TInput, TOutput, TProjection, TMessage> = ClientSessionOptions<
   TInput,
   TOutput,
   TProjection,
@@ -30,9 +30,9 @@ export type TransportStoreOptions<TInput, TOutput, TProjection, TMessage> = Clie
 };
 
 /**
- * Options for {@link getClientTransport}.
+ * Options for {@link getClientSession}.
  */
-export interface GetClientTransportOptions {
+export interface GetClientSessionOptions {
   /** Provider channel name. Defaults to nearest context transport. */
   channelName?: string;
   /** Suppresses lookup and returns empty state. */
@@ -42,20 +42,20 @@ export interface GetClientTransportOptions {
 }
 
 /**
- * Svelte transport state.
+ * Svelte session state.
  */
-export interface ClientTransportState<TInput, TOutput, TProjection, TMessage> {
+export interface ClientSessionState<TInput, TOutput, TProjection, TMessage> {
   /** Resolved transport. */
-  transport?: ClientTransport<TInput, TOutput, TProjection, TMessage>;
+  session?: ClientSession<TInput, TOutput, TProjection, TMessage>;
   /** Provider construction or lookup error. */
-  transportError?: ErrorInfo;
+  sessionError?: ErrorInfo;
 }
 
 /**
- * Svelte transport store.
+ * Svelte session store.
  */
-export interface ClientTransportStore<TInput, TOutput, TProjection, TMessage> extends Readable<
-  ClientTransportState<TInput, TOutput, TProjection, TMessage>
+export interface ClientSessionStore<TInput, TOutput, TProjection, TMessage> extends Readable<
+  ClientSessionState<TInput, TOutput, TProjection, TMessage>
 > {
   /** Channel registry key. */
   readonly channelName?: string;
@@ -68,9 +68,9 @@ export interface ClientTransportStore<TInput, TOutput, TProjection, TMessage> ex
  */
 export interface ViewStoreOptions<TInput, TMessage> {
   /** Explicit transport. */
-  transport?:
-    | ClientTransport<TInput, unknown, unknown, TMessage>
-    | Readable<ClientTransportState<TInput, unknown, unknown, TMessage>>;
+  session?:
+    | ClientSession<TInput, unknown, unknown, TMessage>
+    | Readable<ClientSessionState<TInput, unknown, unknown, TMessage>>;
   /** Explicit view; wins over `transport`. */
   view?: View<TInput, TMessage>;
   /** Auto-load page size once per view instance. */
@@ -86,7 +86,7 @@ export interface ViewState<TMessage> {
   /** Current visible messages. */
   messages: readonly TMessage[];
   /** Current visible turn nodes. */
-  nodes: readonly TurnNode<unknown>[];
+  nodes: readonly RunNode<unknown>[];
   /** Whether older messages can be loaded. */
   hasOlder: boolean;
   /** Whether a load operation is active. */
@@ -106,11 +106,11 @@ export interface ViewStore<TMessage> extends Readable<ViewState<TMessage>> {
   /** Gets selected sibling index. */
   getSelectedIndex(id: string): number;
   /** Gets sibling turn nodes. */
-  getSiblings(id: string): readonly TurnNode<unknown>[];
+  getSiblings(id: string): readonly RunNode<unknown>[];
   /** Returns whether siblings exist. */
   hasSiblings(id: string): boolean;
   /** Gets a turn node by turn id or codec message id. */
-  getNode(id: string): TurnNode<unknown> | undefined;
+  getNode(id: string): RunNode<unknown> | undefined;
   /** Sends a user message. */
   send(message: TMessage): Promise<unknown>;
   /** Requests regeneration. */
@@ -126,11 +126,11 @@ export interface ViewStore<TMessage> extends Readable<ViewState<TMessage>> {
 /**
  * Options for active-turn subscriptions.
  */
-export interface ActiveTurnsStoreOptions<TInput, TMessage> {
+export interface ActiveRunsStoreOptions<TInput, TMessage> {
   /** Explicit transport. Defaults to context transport. */
-  transport?:
-    | ClientTransport<TInput, unknown, unknown, TMessage>
-    | Readable<ClientTransportState<TInput, unknown, unknown, TMessage>>;
+  session?:
+    | ClientSession<TInput, unknown, unknown, TMessage>
+    | Readable<ClientSessionState<TInput, unknown, unknown, TMessage>>;
 }
 
 /**
@@ -138,48 +138,48 @@ export interface ActiveTurnsStoreOptions<TInput, TMessage> {
  */
 export interface SockudoMessagesStoreOptions<TInput, TMessage> {
   /** Explicit transport. Defaults to context transport. */
-  transport?:
-    | ClientTransport<TInput, unknown, unknown, TMessage>
-    | Readable<ClientTransportState<TInput, unknown, unknown, TMessage>>;
+  session?:
+    | ClientSession<TInput, unknown, unknown, TMessage>
+    | Readable<ClientSessionState<TInput, unknown, unknown, TMessage>>;
   /** Suppresses subscription and returns a stable empty list. */
   skip?: boolean;
 }
 
-interface TransportRegistry {
+interface SessionRegistry {
   defaultChannelName?: string;
-  slots: Map<string, ClientTransportStore<unknown, unknown, unknown, unknown>>;
+  slots: Map<string, ClientSessionStore<unknown, unknown, unknown, unknown>>;
 }
 
-const transportContextKey = Symbol("sockudo-ai-transport-svelte");
+const sessionContextKey = Symbol("sockudo-ai-transport-svelte");
 const stableEmptyMessages: readonly unknown[] = [];
-const stableEmptyNodes: readonly TurnNode<unknown>[] = [];
+const stableEmptyNodes: readonly RunNode<unknown>[] = [];
 const stableEmptyRawMessages: readonly InboundMessage[] = [];
-const stableEmptyActiveTurns = new Map<string, Set<string>>();
+const stableEmptyActiveRuns = new Map<string, Set<string>>();
 const autoLoadedViews = new WeakSet<View<unknown, unknown>>();
 
 /**
- * Creates a Svelte readable store that owns one client transport.
+ * Creates a Svelte readable store that owns one client session.
  */
-export function createTransportStore<
+export function createSessionStore<
   TInput = unknown,
   TOutput = unknown,
   TProjection = unknown,
   TMessage = unknown,
 >(
-  options: TransportStoreOptions<TInput, TOutput, TProjection, TMessage>,
-): ClientTransportStore<TInput, TOutput, TProjection, TMessage> {
-  const state = writable<ClientTransportState<TInput, TOutput, TProjection, TMessage>>({});
-  let transport: ClientTransport<TInput, TOutput, TProjection, TMessage> | undefined;
+  options: SessionStoreOptions<TInput, TOutput, TProjection, TMessage>,
+): ClientSessionStore<TInput, TOutput, TProjection, TMessage> {
+  const state = writable<ClientSessionState<TInput, TOutput, TProjection, TMessage>>({});
+  let session: ClientSession<TInput, TOutput, TProjection, TMessage> | undefined;
   try {
-    transport = createClientTransport(options);
-    state.set({ transport });
+    session = createClientSession(options);
+    state.set({ session });
   } catch (error) {
-    state.set({ transportError: toConstructionError(error) });
+    state.set({ sessionError: toConstructionError(error) });
   }
-  const store: ClientTransportStore<TInput, TOutput, TProjection, TMessage> = {
+  const store: ClientSessionStore<TInput, TOutput, TProjection, TMessage> = {
     subscribe: state.subscribe,
     close() {
-      return transport?.close() ?? Promise.resolve();
+      return session?.close() ?? Promise.resolve();
     },
     ...(options.channelName !== undefined ? { channelName: options.channelName } : {}),
   };
@@ -192,11 +192,11 @@ export function createTransportStore<
 }
 
 /**
- * Sets the Svelte transport context for child components.
+ * Sets the Svelte session context for child components.
  */
-export function setTransportContext<TInput, TOutput, TProjection, TMessage>(
-  store: ClientTransportStore<TInput, TOutput, TProjection, TMessage>,
-): ClientTransportStore<TInput, TOutput, TProjection, TMessage> {
+export function setSessionContext<TInput, TOutput, TProjection, TMessage>(
+  store: ClientSessionStore<TInput, TOutput, TProjection, TMessage>,
+): ClientSessionStore<TInput, TOutput, TProjection, TMessage> {
   const registry = readRegistry();
   const slots = new Map(registry?.slots);
   if (store.channelName !== undefined) {
@@ -204,39 +204,39 @@ export function setTransportContext<TInput, TOutput, TProjection, TMessage>(
   }
   const defaultChannelName = store.channelName ?? registry?.defaultChannelName;
   setContext(
-    transportContextKey,
+    sessionContextKey,
     defaultChannelName === undefined
-      ? ({ slots } satisfies TransportRegistry)
-      : ({ slots, defaultChannelName } satisfies TransportRegistry),
+      ? ({ slots } satisfies SessionRegistry)
+      : ({ slots, defaultChannelName } satisfies SessionRegistry),
   );
   return store;
 }
 
 /**
- * Creates, stores, and provides a Svelte transport in one call.
+ * Creates, stores, and provides a Svelte session in one call.
  */
-export function provideTransport<
+export function provideSession<
   TInput = unknown,
   TOutput = unknown,
   TProjection = unknown,
   TMessage = unknown,
 >(
-  options: TransportStoreOptions<TInput, TOutput, TProjection, TMessage>,
-): ClientTransportStore<TInput, TOutput, TProjection, TMessage> {
-  return setTransportContext(createTransportStore(options));
+  options: SessionStoreOptions<TInput, TOutput, TProjection, TMessage>,
+): ClientSessionStore<TInput, TOutput, TProjection, TMessage> {
+  return setSessionContext(createSessionStore(options));
 }
 
 /**
- * Reads the nearest or named Svelte client transport store.
+ * Reads the nearest or named Svelte client session store.
  */
-export function getClientTransport<
+export function getClientSession<
   TInput = unknown,
   TOutput = unknown,
   TProjection = unknown,
   TMessage = unknown,
 >(
-  options: GetClientTransportOptions = {},
-): Readable<ClientTransportState<TInput, TOutput, TProjection, TMessage>> {
+  options: GetClientSessionOptions = {},
+): Readable<ClientSessionState<TInput, TOutput, TProjection, TMessage>> {
   if (options.skip === true) {
     return readable({});
   }
@@ -245,13 +245,13 @@ export function getClientTransport<
   const store = key === undefined ? undefined : registry?.slots.get(key);
   if (!store) {
     return readable({
-      transportError: missingProviderError(options.channelName),
+      sessionError: missingProviderError(options.channelName),
     });
   }
-  const typed = store as ClientTransportStore<TInput, TOutput, TProjection, TMessage>;
+  const typed = store as ClientSessionStore<TInput, TOutput, TProjection, TMessage>;
   if (options.onError) {
     const state = get(typed);
-    const unsubscribe = state.transport?.on("error", (error) => {
+    const unsubscribe = state.session?.on("error", (error) => {
       options.onError?.(error);
     });
     if (unsubscribe) {
@@ -267,8 +267,8 @@ export function getClientTransport<
 export function createViewStore<TInput = unknown, TMessage = unknown>(
   options: ViewStoreOptions<TInput, TMessage> = {},
 ): ViewStore<TMessage> {
-  const transport = resolveTransport(options.transport);
-  const view = options.skip === true ? undefined : (options.view ?? transport?.view);
+  const session = resolveSession(options.session);
+  const view = options.skip === true ? undefined : (options.view ?? session?.view);
   return createViewStoreFromView(view, options.limit, false);
 }
 
@@ -278,34 +278,34 @@ export function createViewStore<TInput = unknown, TMessage = unknown>(
 export function createOwnedViewStore<TInput = unknown, TMessage = unknown>(
   options: Omit<ViewStoreOptions<TInput, TMessage>, "view"> = {},
 ): ViewStore<TMessage> {
-  const transport = resolveTransport(options.transport);
-  const view = options.skip === true ? undefined : transport?.createView();
+  const session = resolveSession(options.session);
+  const view = options.skip === true ? undefined : session?.createView();
   return createViewStoreFromView(view, options.limit, true);
 }
 
 /**
- * Creates stable tree callbacks for a Svelte transport.
+ * Creates stable tree callbacks for a Svelte session.
  */
 export function createTreeHandle<TInput = unknown, TMessage = unknown>(
-  options: ActiveTurnsStoreOptions<TInput, TMessage> = {},
+  options: ActiveRunsStoreOptions<TInput, TMessage> = {},
 ): {
   /** Gets sibling turn nodes without subscribing to tree changes. */
-  getSiblings(id: string): readonly TurnNode<unknown>[];
+  getSiblings(id: string): readonly RunNode<unknown>[];
   /** Returns whether siblings exist without subscribing to tree changes. */
   hasSiblings(id: string): boolean;
   /** Gets a turn node without subscribing to tree changes. */
-  getNode(id: string): TurnNode<unknown> | undefined;
+  getNode(id: string): RunNode<unknown> | undefined;
 } {
-  const transport = resolveTransport(options.transport);
+  const session = resolveSession(options.session);
   return {
     getSiblings(id) {
-      return requireTransport(transport).tree.getSiblings(id);
+      return requireSession(session).tree.getSiblings(id);
     },
     hasSiblings(id) {
-      return requireTransport(transport).tree.hasSiblings(id);
+      return requireSession(session).tree.hasSiblings(id);
     },
     getNode(id) {
-      return requireTransport(transport).tree.getNode(id);
+      return requireSession(session).tree.getNode(id);
     },
   };
 }
@@ -313,18 +313,18 @@ export function createTreeHandle<TInput = unknown, TMessage = unknown>(
 /**
  * Subscribes to active/suspended turn ownership.
  */
-export function createActiveTurnsStore<TInput = unknown, TMessage = unknown>(
-  options: ActiveTurnsStoreOptions<TInput, TMessage> = {},
+export function createActiveRunsStore<TInput = unknown, TMessage = unknown>(
+  options: ActiveRunsStoreOptions<TInput, TMessage> = {},
 ): Readable<Map<string, Set<string>>> {
-  const transport = resolveTransport(options.transport);
-  return readable(cloneActiveTurns(transport), (set) => {
-    if (!transport) {
-      set(stableEmptyActiveTurns);
+  const session = resolveSession(options.session);
+  return readable(cloneActiveRuns(session), (set) => {
+    if (!session) {
+      set(stableEmptyActiveRuns);
       return undefined;
     }
-    set(cloneActiveTurns(transport));
-    return transport.tree.on("turn", () => {
-      set(cloneActiveTurns(transport));
+    set(cloneActiveRuns(session));
+    return session.tree.on("turn", () => {
+      set(cloneActiveRuns(session));
     });
   });
 }
@@ -335,14 +335,14 @@ export function createActiveTurnsStore<TInput = unknown, TMessage = unknown>(
 export function createSockudoMessagesStore<TInput = unknown, TMessage = unknown>(
   options: SockudoMessagesStoreOptions<TInput, TMessage> = {},
 ): Readable<readonly InboundMessage[]> {
-  const transport = options.skip === true ? undefined : resolveTransport(options.transport);
+  const session = options.skip === true ? undefined : resolveSession(options.session);
   return readable(stableEmptyRawMessages, (set) => {
-    if (!transport) {
+    if (!session) {
       set(stableEmptyRawMessages);
       return undefined;
     }
     let messages = stableEmptyRawMessages;
-    return transport.on("message", (message) => {
+    return session.on("message", (message) => {
       messages = messages === stableEmptyRawMessages ? [message] : [...messages, message];
       set(messages);
     });
@@ -414,21 +414,21 @@ function createViewStoreFromView<TInput, TMessage>(
   return store;
 }
 
-function resolveTransport<TInput, TMessage>(
+function resolveSession<TInput, TMessage>(
   source:
-    | ClientTransport<TInput, unknown, unknown, TMessage>
-    | Readable<ClientTransportState<TInput, unknown, unknown, TMessage>>
+    | ClientSession<TInput, unknown, unknown, TMessage>
+    | Readable<ClientSessionState<TInput, unknown, unknown, TMessage>>
     | undefined,
-): ClientTransport<TInput, unknown, unknown, TMessage> | undefined {
+): ClientSession<TInput, unknown, unknown, TMessage> | undefined {
   if (source !== undefined) {
-    return isReadable(source) ? get(source).transport : source;
+    return isReadable(source) ? get(source).session : source;
   }
-  return get(getClientTransport<TInput, unknown, unknown, TMessage>()).transport;
+  return get(getClientSession<TInput, unknown, unknown, TMessage>()).session;
 }
 
-function readRegistry(): TransportRegistry | undefined {
+function readRegistry(): SessionRegistry | undefined {
   try {
-    return getContext<TransportRegistry | undefined>(transportContextKey);
+    return getContext<SessionRegistry | undefined>(sessionContextKey);
   } catch {
     return undefined;
   }
@@ -454,14 +454,14 @@ function viewSnapshot<TInput, TMessage>(
   };
 }
 
-function cloneActiveTurns(
-  transport: ClientTransport<unknown, unknown, unknown, unknown> | undefined,
+function cloneActiveRuns(
+  session: ClientSession<unknown, unknown, unknown, unknown> | undefined,
 ): Map<string, Set<string>> {
-  if (!transport) {
-    return stableEmptyActiveTurns;
+  if (!session) {
+    return stableEmptyActiveRuns;
   }
   const clone = new Map<string, Set<string>>();
-  for (const [clientId, turns] of transport.tree.getActiveTurnIds()) {
+  for (const [clientId, turns] of session.tree.getActiveRunIds()) {
     clone.set(clientId, new Set(turns));
   }
   return clone;
@@ -499,13 +499,13 @@ function requireView<TInput, TMessage>(
   return view;
 }
 
-function requireTransport(
-  transport: ClientTransport<unknown, unknown, unknown, unknown> | undefined,
-): ClientTransport<unknown, unknown, unknown, unknown> {
-  if (!transport) {
+function requireSession(
+  session: ClientSession<unknown, unknown, unknown, unknown> | undefined,
+): ClientSession<unknown, unknown, unknown, unknown> {
+  if (!session) {
     throw missingProviderError(undefined);
   }
-  return transport;
+  return session;
 }
 
 function isReadable<T>(value: unknown): value is Readable<T> {

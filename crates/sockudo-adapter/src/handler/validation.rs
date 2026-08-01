@@ -175,10 +175,12 @@ impl ConnectionHandler {
             Error::Auth("AI client events require an authenticated client_id".to_string())
         })?;
 
-        message.validate_ai_headers().map_err(|error| {
-            record_ai_rejection(self, &app_config.id, error.code);
-            ai_header_error(error)
-        })?;
+        message
+            .validate_ai_headers_with(self.server_options().ai_transport.header_limits())
+            .map_err(|error| {
+                record_ai_rejection(self, &app_config.id, error.code);
+                ai_header_error(error)
+            })?;
         validate_ai_client_id_headers(
             message,
             Some(verified_client_id.as_str()),

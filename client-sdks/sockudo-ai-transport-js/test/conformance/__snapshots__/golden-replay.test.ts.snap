@@ -23,8 +23,8 @@ exports[`golden transcript replay > replays server golden transcripts through de
     "nodes": [
       {
         "messageCount": 1,
+        "runId": "turn-abort",
         "status": "active",
-        "turnId": "turn-abort",
       },
     ],
   },
@@ -37,8 +37,8 @@ exports[`golden transcript replay > replays server golden transcripts through de
     "nodes": [
       {
         "messageCount": 0,
+        "runId": "turn-cancel",
         "status": "cancelled",
-        "turnId": "turn-cancel",
       },
     ],
   },
@@ -51,8 +51,8 @@ exports[`golden transcript replay > replays server golden transcripts through de
     "nodes": [
       {
         "messageCount": 0,
+        "runId": "turn-concurrent",
         "status": "complete",
-        "turnId": "turn-concurrent",
       },
     ],
   },
@@ -77,8 +77,8 @@ exports[`golden transcript replay > replays server golden transcripts through de
     "nodes": [
       {
         "messageCount": 1,
+        "runId": "turn-edit",
         "status": "active",
-        "turnId": "turn-edit",
       },
     ],
   },
@@ -91,8 +91,8 @@ exports[`golden transcript replay > replays server golden transcripts through de
     "nodes": [
       {
         "messageCount": 0,
+        "runId": "turn-error",
         "status": "error",
-        "turnId": "turn-error",
       },
     ],
   },
@@ -117,8 +117,8 @@ exports[`golden transcript replay > replays server golden transcripts through de
     "nodes": [
       {
         "messageCount": 1,
+        "runId": "turn-late",
         "status": "active",
-        "turnId": "turn-late",
       },
     ],
   },
@@ -143,8 +143,8 @@ exports[`golden transcript replay > replays server golden transcripts through de
     "nodes": [
       {
         "messageCount": 1,
+        "runId": "turn-normal",
         "status": "complete",
-        "turnId": "turn-normal",
       },
     ],
   },
@@ -169,8 +169,8 @@ exports[`golden transcript replay > replays server golden transcripts through de
     "nodes": [
       {
         "messageCount": 1,
+        "runId": "turn-recovery",
         "status": "active",
-        "turnId": "turn-recovery",
       },
     ],
   },
@@ -195,8 +195,8 @@ exports[`golden transcript replay > replays server golden transcripts through de
     "nodes": [
       {
         "messageCount": 1,
+        "runId": "turn-regenerate",
         "status": "active",
-        "turnId": "turn-regenerate",
       },
     ],
   },
@@ -209,8 +209,8 @@ exports[`golden transcript replay > replays server golden transcripts through de
     "nodes": [
       {
         "messageCount": 0,
+        "runId": "turn-suspended",
         "status": "active",
-        "turnId": "turn-suspended",
       },
     ],
   },

@@ -167,8 +167,10 @@ Transport keys:
 | `event-id` | Non-empty opaque string |
 | `input-client-id` | Verified client identity string |
 | `step-id` | Non-empty opaque string; stable logical step identity across attempts |
-| `step-start-serial` | Non-empty serial of the corresponding `ai-step-start` attempt |
-| `step-reason` | `complete`, `failed`, `cancelled` |
+| `step-start-serial` | Non-empty serial of the corresponding `ai-step-start` attempt. Carried on `ai-output` and `ai-step-end` only — never on `ai-step-start`, whose own channel serial *is* the value |
+| `run-continue` | `true` or `false`; marks a client input as re-entering an existing run |
+| `step-reason` | `complete`, `failed`, `cancelled`. Narrower than `run-reason`: a step has no `error` arm, since a stream/model/tool failure ends the attempt `failed` and is retryable |
+| `steer-codec-message-ids` | Non-empty JSON-stringified array of steer codec-message-ids the agent's loop had drained when the stamping step attempt opened; omitted when empty. Carried on a step attempt's assistant outputs. Unlike other transport values this key has a **2 KiB per-key ceiling** (≈48 UUID-shaped ids) rather than the generic 256-byte scalar budget, which would cap it at ~5 ids. Overflow still fails the whole output publish, so publishers MUST cap the list they emit |
 | `step-client-id` | Verified client identity string, or the empty native wire sentinel when the step participant is unknown |
 | `role` | `user`, `assistant`, `system`, `tool`, `agent` |
 | `error-code` | Non-empty opaque string |
@@ -176,8 +178,14 @@ Transport keys:
 | `model` | Non-empty opaque string; model identifier set by the publishing worker/agent, not interpreted by Sockudo |
 
 Legacy transport aliases `turn-id`, `turn-client-id`, `turn-reason`, and `turn-continue` are accepted
-for inbound/stored compatibility. `turn-reason=suspended` maps to native `ai-run-suspend`;
-new publishers should use `ai-run-suspend` and `ai-run-resume` instead of `turn-continue`.
+for inbound/stored compatibility. `turn-reason=suspended` maps to native `ai-run-suspend`.
+
+Publishers should use `run-continue` rather than `turn-continue`. Note the two paths are distinct
+and both are needed: the **lifecycle** path signals re-entry by event name (`ai-run-resume`), while
+the **input** path needs `run-continue`, because a client that mints its own run id — as the JS SDK
+does, so optimistic state has an id before the agent replies — sends `run-id` on every input, leaving
+nothing else to distinguish a continuation. The flag also gates whether `parent`/`fork-of` are
+re-read, which would otherwise re-anchor the run.
 
 Anti-spoof rule: any non-empty `*-client-id` value MUST match the verified connection identity from authenticated socket state or capability token. The native `run-client-id` and `step-client-id` keys may additionally be present with an empty value to represent an unknown owner; for an untrusted client an empty value is still a spoof and returns `104002`. Trusted app-key publishes may use these empty sentinels. The raw empty values are preserved in V2 wire extras, but are treated as absent for derived metrics, webhook identity, logs, and fallback `message.clientId` projections. All other identity keys remain non-empty. Client publishes may send `ai-input` and `ai-cancel`; `ai-output`, `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, and `ai-run-end` require trusted app key until capability tokens land, then require an agent-capable token.
 
@@ -327,7 +335,14 @@ Capability tokens are V2-only JWTs signed with HS256. Header `kid` identifies th
 - Standard `exp`, `iat`, optional `nbf`.
 - Required `jti` for revocation.
 
-Operations: `publish`, `subscribe`, `history`, `presence`. Pattern rules are exact match, namespace wildcard `ns:*`, and global `*`; matching is case-sensitive. HMAC app-key auth remains supported and trusted. Token auth is additive and never weakens existing private/presence HMAC rules.
+Operations: `publish`, `subscribe`, `history`, `presence`, the explicit annotation operations
+(`annotation-publish`, `annotation-subscribe`, `annotation-delete-own`,
+`annotation-delete-any`), own/any message update, delete, and append operations, and
+`push-admin`/`push-subscribe`. Underscore and hyphen spellings are accepted for the extended
+operations. Pattern rules are exact match, namespace wildcard `ns:*`, and global `*`; matching
+is case-sensitive. HMAC app-key auth remains supported and trusted. Token auth is additive and
+never weakens existing private/presence HMAC rules. The capability claim may be a JSON object or
+a string containing that object.
 
 Enforcement matrix:
 

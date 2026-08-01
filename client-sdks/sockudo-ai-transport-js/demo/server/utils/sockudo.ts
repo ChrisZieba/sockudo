@@ -33,7 +33,7 @@ export function realtimeClient(): ClientLike {
     wssPort: config.port,
     protocolVersion: 2,
     channelAuthorization: {
-      transport: "ajax",
+      session: "ajax",
       endpoint: `${config.appBaseUrl}/api/channel-auth`,
     },
   } as unknown as ConstructorParameters<typeof Sockudo>[1];
@@ -291,11 +291,11 @@ function normalizeHistoryItem(item: unknown, fallbackSerial: number): InboundMes
   const serial = stringValue(message.message_serial ?? message.messageSerial) ?? "";
   const historySerial = serialValue(wrapper.serial ?? message.serial) ?? fallbackSerial;
   const extras = message.extras;
-  const transport = getTransportHeaders(extras);
+  const session = getTransportHeaders(extras);
   return {
     name: stringValue(message.name) ?? stringValue(message.event) ?? "",
     data: parseJsonish(message.data),
-    action: historyAction(message.action, message.data, transport),
+    action: historyAction(message.action, message.data, session),
     messageSerial: serial,
     historySerial,
     timestamp: Number(message.time_ms ?? message.timestamp ?? Date.now()),
@@ -303,7 +303,7 @@ function normalizeHistoryItem(item: unknown, fallbackSerial: number): InboundMes
     ...optional("messageId", stringValue(message.message_id ?? message.messageId)),
     ...optional("extras", extras),
     getTransportHeaders() {
-      return transport;
+      return session;
     },
     getCodecHeaders() {
       return getCodecHeaders(extras);
@@ -314,7 +314,7 @@ function normalizeHistoryItem(item: unknown, fallbackSerial: number): InboundMes
 function historyAction(
   action: unknown,
   data: unknown,
-  transport: Record<string, string>,
+  session: Record<string, string>,
 ): InboundMessageAction {
   if (
     action === "create" ||
@@ -325,7 +325,7 @@ function historyAction(
   ) {
     return action;
   }
-  return transport.stream === "true" && typeof data === "string" ? "update" : "create";
+  return session.stream === "true" && typeof data === "string" ? "update" : "create";
 }
 
 function historyParams(options: HistoryOptions): Record<string, string> {

@@ -19,7 +19,7 @@ describe("feature parity receipt", () => {
         "History/replay paging and branch materialization",
         "Branching edit/regenerate/sibling navigation",
         "Interruption cancel-then-send/send-alongside",
-        "Concurrent turns and waitForTurn routing",
+        "Concurrent turns and waitForRun routing",
         "Tool calling server/client continuation",
         "Human-in-the-loop suspended continuation",
         "Optimistic update POST failure and race reconciliation",
@@ -34,6 +34,8 @@ describe("feature parity receipt", () => {
         "React API surface",
         "Vercel API surface",
         "Vercel React API surface",
+        "Steering: mid-run input and consumed outcomes",
+        "Step lifecycle: attempts and retry supersession",
       ]
     `);
   });

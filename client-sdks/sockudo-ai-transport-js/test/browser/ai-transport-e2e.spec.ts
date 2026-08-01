@@ -14,7 +14,7 @@ interface HarnessState {
   };
   cancel?: {
     chunks: string[];
-    turnId: string;
+    runId: string;
     ended: boolean;
     cancelEvent: boolean;
     reason?: string;
@@ -49,7 +49,7 @@ test("streams, mirrors, cancels, and replays history in the browser", async ({
   await page.getByTestId("run-cancel").click();
   await expect.poll(async () => (await readState(page)).cancel?.ended).toBe(true);
   const cancel = (await readState(page)).cancel;
-  expect(cancel?.turnId).toMatch(/^turn[_-]/u);
+  expect(cancel?.runId).toMatch(/^turn[_-]/u);
   expect(cancel?.cancelEvent).toBe(true);
   expect(cancel?.reason).toBe("cancelled");
   expect(cancel?.chunks.length).toBeGreaterThan(0);

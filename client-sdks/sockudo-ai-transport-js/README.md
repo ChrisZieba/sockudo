@@ -72,11 +72,11 @@ import { createChatTransportStore } from "@sockudo/ai-transport/vercel/svelte";
 
 ## Quickstart: Core SDK
 
-The core path uses `TransportProvider`, `useView`, `send`, `edit`, `regenerate`, and multiple branch
-views without Vercel `useChat`.
+The core path uses `ClientSessionProvider`, `useView`, `send`, `edit`, `regenerate`, and multiple
+branch views without Vercel `useChat`.
 
 ```tsx
-import { TransportProvider, useView } from "@sockudo/ai-transport/react";
+import { ClientSessionProvider, useView } from "@sockudo/ai-transport/react";
 ```
 
 See `demo/` for branch-tree, history, cancellation, and raw-frame examples.
@@ -91,7 +91,7 @@ import {
   createOpenAICompatibleProvider,
   createOpenAISdkProvider,
   createAnthropicSdkProvider,
-  runDirectLlmTurn,
+  runDirectLlm,
 } from "@sockudo/ai-transport/providers";
 ```
 

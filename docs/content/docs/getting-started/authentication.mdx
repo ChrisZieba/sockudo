@@ -180,8 +180,11 @@ fn issue_token(app_key: &str, app_secret: &str, client_id: &str) -> anyhow::Resu
 Token rules:
 
 - Header `kid` must equal the Sockudo app key and `alg` must be `HS256`.
-- `x-sockudo-capability` is a stringified JSON map from channel pattern to operations.
-- Operations are `publish`, `subscribe`, `history`, and `presence`.
+- `x-sockudo-capability` is a JSON map from channel pattern to operations; its stringified form is
+  accepted for compatibility.
+- Operations include `publish`, `subscribe`, `history`, and `presence`; AI Transport also accepts
+  the explicit annotation, message-mutation, and push operations documented in
+  [AI Transport authentication](/docs/server/ai-transport-authentication).
 - Patterns are exact names, namespace prefixes such as `orders:*`, or `*`; matching is case-sensitive.
 - `x-sockudo-client-id` is the verified identity used for presence and user-limited channels.
 - `iat`, `exp`, and `jti` are required. Tokens may live at most 24 hours; 1 hour or less is recommended.

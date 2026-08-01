@@ -13,14 +13,25 @@ export const EVENT_AI_RUN_END = "ai-run-end";
 /** AI cancellation event name. */
 export const EVENT_AI_CANCEL = "ai-cancel";
 
-/** Legacy AI turn lifecycle start event name accepted by Sockudo. */
-export const EVENT_AI_LEGACY_TURN_START = "ai-turn-start";
-/** Legacy AI turn lifecycle end event name accepted by Sockudo. */
-export const EVENT_AI_LEGACY_TURN_END = "ai-turn-end";
-/** Source-compatible alias for AI run lifecycle start. */
-export const EVENT_AI_TURN_START = EVENT_AI_RUN_START;
-/** Source-compatible alias for AI run lifecycle end. */
-export const EVENT_AI_TURN_END = EVENT_AI_RUN_END;
+/**
+ * AI step lifecycle start event name. A step is a re-attemptable unit of
+ * execution inside a run; a retry publishes a fresh `ai-step-start` under the
+ * same `step-id`, and the highest `step-start-serial` is the canonical attempt.
+ */
+export const EVENT_AI_STEP_START = "ai-step-start";
+/** AI step lifecycle end event name. Closes one attempt of a step. */
+export const EVENT_AI_STEP_END = "ai-step-end";
+
+/**
+ * Legacy inbound-only AI turn lifecycle event names.
+ *
+ * Retained for wire tolerance, not naming: channels written before 3.0 may
+ * still contain these, and history hydration must not silently drop them. The
+ * SDK never publishes them. Deliberately not re-exported from the package
+ * barrel — they are not part of the public API.
+ */
+export const INBOUND_LEGACY_EVENT_TURN_START = "ai-turn-start";
+export const INBOUND_LEGACY_EVENT_TURN_END = "ai-turn-end";
 
 /** Transport header key for run identity. */
 export const HEADER_RUN_ID = "run-id";
@@ -28,20 +39,51 @@ export const HEADER_RUN_ID = "run-id";
 export const HEADER_RUN_CLIENT_ID = "run-client-id";
 /** Transport header key for run end reason. */
 export const HEADER_RUN_REASON = "run-reason";
-/** Legacy transport header key for turn identity accepted by Sockudo. */
-export const HEADER_LEGACY_TURN_ID = "turn-id";
-/** Legacy transport header key for verified turn client identity accepted by Sockudo. */
-export const HEADER_LEGACY_TURN_CLIENT_ID = "turn-client-id";
-/** Legacy transport header key for turn end reason accepted by Sockudo. */
-export const HEADER_LEGACY_TURN_REASON = "turn-reason";
-/** Legacy transport header key for suspended-turn continuation. */
-export const HEADER_TURN_CONTINUE = "turn-continue";
-/** Source-compatible alias for run identity. */
-export const HEADER_TURN_ID = HEADER_RUN_ID;
-/** Source-compatible alias for verified run client identity. */
-export const HEADER_TURN_CLIENT_ID = HEADER_RUN_CLIENT_ID;
-/** Source-compatible alias for run end reason. */
-export const HEADER_TURN_REASON = HEADER_RUN_REASON;
+/**
+ * Legacy inbound-only transport header keys.
+ *
+ * Wire tolerance for pre-3.0 channel history, as with the legacy event names
+ * above. Never written. Not part of the public API.
+ *
+ * `turn-continue` is here rather than deleted because the *data* path still
+ * needs the flag; only its name was legacy. See {@link HEADER_RUN_CONTINUE}.
+ */
+export const INBOUND_LEGACY_HEADER_TURN_ID = "turn-id";
+export const INBOUND_LEGACY_HEADER_TURN_CLIENT_ID = "turn-client-id";
+export const INBOUND_LEGACY_HEADER_TURN_REASON = "turn-reason";
+export const INBOUND_LEGACY_HEADER_TURN_CONTINUE = "turn-continue";
+
+/**
+ * Marks a client input as re-entering an existing run.
+ *
+ * Not redundant with the `ai-run-resume` event name, which covers the lifecycle
+ * path only. This SDK mints the run id client-side so optimistic state has an
+ * id before the agent replies, which means `run-id` is present on every input
+ * and cannot discriminate a continuation on its own. The flag also gates
+ * whether `parent`/`fork-of` are re-read, since re-reading them on a
+ * continuation would re-anchor the run in the tree.
+ */
+export const HEADER_RUN_CONTINUE = "run-continue";
+
+/** Transport header key for step identity, stable across retry attempts. */
+export const HEADER_STEP_ID = "step-id";
+/**
+ * Transport header key back-referencing the serial of the `ai-step-start` that
+ * opened the attempt. Carried on `ai-output` and `ai-step-end` only — never on
+ * `ai-step-start`, whose own channel serial *is* the value.
+ */
+export const HEADER_STEP_START_SERIAL = "step-start-serial";
+/** Transport header key for step end reason: `complete`, `failed`, `cancelled`. */
+export const HEADER_STEP_REASON = "step-reason";
+/** Transport header key for the verified client identity that owns a step. */
+export const HEADER_STEP_CLIENT_ID = "step-client-id";
+/**
+ * Transport header key stamping which steers the agent had drained when the
+ * step attempt that produced this output opened. JSON-stringified array;
+ * omitted when empty.
+ */
+export const HEADER_STEER_CODEC_MESSAGE_IDS = "steer-codec-message-ids";
+
 /** Transport header key for invocation identity. */
 export const HEADER_INVOCATION_ID = "invocation-id";
 /** Transport header key for input event identity. */

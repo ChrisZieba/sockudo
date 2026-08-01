@@ -54,8 +54,12 @@ pub(super) async fn handle_ably_publish(
         .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
         .unwrap_or_default();
     for message in &messages {
-        if let Err(error) = validate_ably_publish_message(message, false)
-            .and_then(|()| effective_ably_client_id(client_id, message).map(|_| ()))
+        if let Err(error) = validate_ably_publish_message(
+            message,
+            false,
+            handler.server_options().ai_transport.header_limits(),
+        )
+        .and_then(|()| effective_ably_client_id(client_id, message).map(|_| ()))
         {
             send_publish_nack(sender, &inbound, 40000, error.to_string());
             return Ok(());
@@ -301,7 +305,7 @@ pub(super) async fn publish_ably_create(
     }
     if let Some(extras) = extras.as_ref() {
         extras
-            .validate_ai_headers()
+            .validate_ai_headers_with(handler.server_options().ai_transport.header_limits())
             .map_err(|error| AppError::InvalidInput(error.message))?;
     }
     let pusher_message = PusherMessage {

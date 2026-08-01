@@ -4,20 +4,20 @@ import { onDestroy } from "svelte";
 import { get, readable, type Readable } from "svelte/store";
 import { ErrorCode, ErrorInfo } from "../../errors.js";
 import {
-  createTransportStore,
-  getClientTransport,
-  setTransportContext,
-  createActiveTurnsStore as createGenericActiveTurnsStore,
+  createSessionStore,
+  getClientSession,
+  setSessionContext,
+  createActiveRunsStore as createGenericActiveRunsStore,
   createOwnedViewStore as createGenericOwnedViewStore,
   createSockudoMessagesStore as createGenericSockudoMessagesStore,
   createTreeHandle as createGenericTreeHandle,
   createViewStore as createGenericViewStore,
-  type ActiveTurnsStoreOptions,
-  type ClientTransportState,
-  type ClientTransportStore,
-  type GetClientTransportOptions,
+  type ActiveRunsStoreOptions,
+  type ClientSessionState,
+  type ClientSessionStore,
+  type GetClientSessionOptions,
   type SockudoMessagesStoreOptions,
-  type TransportStoreOptions,
+  type SessionStoreOptions,
   type ViewStore,
   type ViewStoreOptions,
 } from "../../svelte/index.js";
@@ -38,7 +38,7 @@ import {
  * Svelte store options for the Vercel AI SDK transport layer.
  */
 export type ChatTransportStoreOptions = Omit<
-  TransportStoreOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
+  SessionStoreOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
   "api" | "codec"
 > & {
   /** Server endpoint URL for the route handler.
@@ -56,17 +56,17 @@ export type ChatTransportStoreOptions = Omit<
 export interface ChatTransportState {
   /** Resolved Vercel chat transport. */
   chatTransport?: ChatTransport;
-  /** Resolved underlying client transport. */
-  transport?: ClientTransportState<
+  /** Resolved underlying client session. */
+  session?: ClientSessionState<
     VercelInput,
     VercelOutput,
     VercelProjection,
     AI.UIMessage
-  >["transport"];
+  >["session"];
   /** Chat transport lookup or construction error. */
   chatTransportError?: ErrorInfo;
   /** Underlying client transport lookup or construction error. */
-  transportError?: ErrorInfo;
+  sessionError?: ErrorInfo;
 }
 
 /**
@@ -84,7 +84,7 @@ export interface ChatTransportStore extends Readable<ChatTransportState> {
  */
 export function createChatTransportStore(options: ChatTransportStoreOptions): ChatTransportStore {
   const { chatOptions, api = "/api/chat", closeOnDestroy, ...transportOptions } = options;
-  const client = createTransportStore({
+  const client = createSessionStore({
     ...transportOptions,
     api,
     codec: UIMessageCodec,
@@ -93,31 +93,29 @@ export function createChatTransportStore(options: ChatTransportStoreOptions): Ch
   let chatTransport: ChatTransport | undefined;
   let chatTransportError: ErrorInfo | undefined;
   const clientState = get(client);
-  if (clientState.transport) {
+  if (clientState.session) {
     try {
-      chatTransport = createChatTransport(clientState.transport, chatOptions);
+      chatTransport = createChatTransport(clientState.session, chatOptions);
     } catch (error) {
       chatTransportError = toChatTransportError(error);
     }
   } else {
-    chatTransportError = clientState.transportError;
+    chatTransportError = clientState.sessionError;
   }
   const store = readable<ChatTransportState>(
     {
       ...(chatTransport !== undefined ? { chatTransport } : {}),
-      ...(clientState.transport !== undefined ? { transport: clientState.transport } : {}),
+      ...(clientState.session !== undefined ? { session: clientState.session } : {}),
       ...(chatTransportError !== undefined ? { chatTransportError } : {}),
-      ...(clientState.transportError !== undefined
-        ? { transportError: clientState.transportError }
-        : {}),
+      ...(clientState.sessionError !== undefined ? { sessionError: clientState.sessionError } : {}),
     },
     (set) =>
       client.subscribe((state) => {
         set({
           ...(chatTransport !== undefined ? { chatTransport } : {}),
-          ...(state.transport !== undefined ? { transport: state.transport } : {}),
+          ...(state.session !== undefined ? { session: state.session } : {}),
           ...(chatTransportError !== undefined ? { chatTransportError } : {}),
-          ...(state.transportError !== undefined ? { transportError: state.transportError } : {}),
+          ...(state.sessionError !== undefined ? { sessionError: state.sessionError } : {}),
         });
       }),
   );
@@ -143,8 +141,8 @@ export function createChatTransportStore(options: ChatTransportStoreOptions): Ch
 export function provideChatTransport(options: ChatTransportStoreOptions): ChatTransportStore {
   const store = createChatTransportStore(options);
   const clientState = get(store);
-  if (clientState.transport !== undefined) {
-    setTransportContext(createStaticTransportStore(options.channelName, clientState.transport));
+  if (clientState.session !== undefined) {
+    setSessionContext(createStaticSessionStore(options.channelName, clientState.session));
   }
   return store;
 }
@@ -153,25 +151,25 @@ export function provideChatTransport(options: ChatTransportStoreOptions): ChatTr
  * Reads the nearest or named Vercel chat transport store.
  */
 export function getChatTransport(
-  options: GetClientTransportOptions = {},
+  options: GetClientSessionOptions = {},
 ): Readable<ChatTransportState> {
-  const client = getClientTransport<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>(
+  const client = getClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>(
     options,
   );
   const state = get(client);
   if (options.skip === true) {
     return readable({});
   }
-  if (!state.transport) {
+  if (!state.session) {
     return readable({
-      ...(state.transportError !== undefined ? { transportError: state.transportError } : {}),
+      ...(state.sessionError !== undefined ? { sessionError: state.sessionError } : {}),
       chatTransportError: missingChatTransportError(options.channelName),
     });
   }
-  const chatTransport = createChatTransport(state.transport);
+  const chatTransport = createChatTransport(state.session);
   return readable(
     {
-      transport: state.transport,
+      session: state.session,
       chatTransport,
     },
     () => () => {
@@ -181,15 +179,15 @@ export function getChatTransport(
 }
 
 /**
- * Creates a Vercel-typed client transport store.
+ * Creates a Vercel-typed client session store.
  */
-export function createClientTransportStore(
+export function createClientSessionStore(
   options: Omit<
-    TransportStoreOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
+    SessionStoreOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
     "codec"
   >,
-): ClientTransportStore<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> {
-  return createTransportStore({
+): ClientSessionStore<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> {
+  return createSessionStore({
     ...options,
     codec: UIMessageCodec,
   });
@@ -216,17 +214,17 @@ export function createOwnedViewStore(
 /**
  * Creates stable tree callbacks for the Vercel transport.
  */
-export function createTreeHandle(options: ActiveTurnsStoreOptions<VercelInput, AI.UIMessage> = {}) {
+export function createTreeHandle(options: ActiveRunsStoreOptions<VercelInput, AI.UIMessage> = {}) {
   return createGenericTreeHandle(options);
 }
 
 /**
  * Subscribes to active/suspended Vercel turn ownership.
  */
-export function createActiveTurnsStore(
-  options: ActiveTurnsStoreOptions<VercelInput, AI.UIMessage> = {},
+export function createActiveRunsStore(
+  options: ActiveRunsStoreOptions<VercelInput, AI.UIMessage> = {},
 ) {
-  return createGenericActiveTurnsStore(options);
+  return createGenericActiveRunsStore(options);
 }
 
 /**
@@ -239,17 +237,17 @@ export function createSockudoMessagesStore(
   return createGenericSockudoMessagesStore(options);
 }
 
-function createStaticTransportStore(
+function createStaticSessionStore(
   channelName: string | undefined,
-  transport: NonNullable<ChatTransportState["transport"]>,
-): ClientTransportStore<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> {
+  session: NonNullable<ChatTransportState["session"]>,
+): ClientSessionStore<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> {
   const store = readable<
-    ClientTransportState<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>
-  >({ transport });
+    ClientSessionState<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>
+  >({ session });
   return {
     subscribe: store.subscribe,
     close() {
-      return transport.close();
+      return session.close();
     },
     ...(channelName !== undefined ? { channelName } : {}),
   };

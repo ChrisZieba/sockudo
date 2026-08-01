@@ -15,11 +15,11 @@ import { ErrorCode, ErrorInfo } from "../errors.js";
 import type { InboundMessage } from "../realtime/index.js";
 import { useSockudoRealtimeClient } from "../realtime/react.js";
 import {
-  createClientTransport,
+  createClientSession,
   type BranchSelectionIntent,
-  type ClientTransport,
-  type ClientTransportOptions,
-  type TurnNode,
+  type ClientSession,
+  type ClientSessionOptions,
+  type RunNode,
   type View,
 } from "../core/transport/index.js";
 
@@ -32,11 +32,11 @@ import {
  * through `src/realtime/react`, where the Sockudo client is adapted into the
  * realtime seam.
  *
- * Construction errors are caught and exposed by {@link useClientTransport} as
+ * Construction errors are caught and exposed by {@link useClientSession} as
  * `transportError`; children still render under the provider registry.
  */
-export type TransportProviderProps<TInput, TOutput, TProjection, TMessage> = Omit<
-  ClientTransportOptions<TInput, TOutput, TProjection, TMessage>,
+export type ClientSessionProviderProps<TInput, TOutput, TProjection, TMessage> = Omit<
+  ClientSessionOptions<TInput, TOutput, TProjection, TMessage>,
   "client" | "channel" | "channelName"
 > & {
   /**
@@ -50,12 +50,12 @@ export type TransportProviderProps<TInput, TOutput, TProjection, TMessage> = Omi
 };
 
 /**
- * Options for {@link useClientTransport}.
+ * Options for {@link useClientSession}.
  *
  * Lookup failures return a throwing `InvalidArgument` stub and set
  * `transportError`; when `skip` is true, `transportError` is omitted.
  */
-export interface UseClientTransportOptions {
+export interface UseClientSessionOptions {
   /**
    * Provider channel name.
    *
@@ -77,20 +77,20 @@ export interface UseClientTransportOptions {
 }
 
 /**
- * Result returned by {@link useClientTransport}.
+ * Result returned by {@link useClientSession}.
  *
  * Missing, skipped, and failed providers expose a transport proxy that throws
  * {@link ErrorInfo} with {@link ErrorCode.InvalidArgument} on property access.
  */
-export interface UseClientTransportResult<TInput, TOutput, TProjection, TMessage> {
+export interface UseClientSessionResult<TInput, TOutput, TProjection, TMessage> {
   /** Resolved transport or a throwing stub. */
-  transport: ClientTransport<TInput, TOutput, TProjection, TMessage>;
+  session: ClientSession<TInput, TOutput, TProjection, TMessage>;
   /**
    * Provider construction or lookup error.
    *
    * @defaultValue `undefined` when a transport resolves or lookup is skipped.
    */
-  transportError?: ErrorInfo;
+  sessionError?: ErrorInfo;
 }
 
 /**
@@ -106,7 +106,7 @@ export interface UseViewOptions<TInput, TMessage> {
    *
    * @defaultValue Context transport.
    */
-  transport?: ClientTransport<TInput, unknown, unknown, TMessage>;
+  session?: ClientSession<TInput, unknown, unknown, TMessage>;
   /**
    * Explicit view; wins over `transport`.
    *
@@ -137,7 +137,7 @@ export interface ViewHandle<TMessage> {
   /** Current visible messages. */
   messages: readonly TMessage[];
   /** Current visible turn nodes. */
-  nodes: readonly TurnNode<unknown>[];
+  nodes: readonly RunNode<unknown>[];
   /** Whether older messages can be loaded. */
   hasOlder: boolean;
   /** Whether a load operation is active. */
@@ -151,11 +151,11 @@ export interface ViewHandle<TMessage> {
   /** Gets selected sibling index. */
   getSelectedIndex(id: string): number;
   /** Gets sibling turn nodes. */
-  getSiblings(id: string): readonly TurnNode<unknown>[];
+  getSiblings(id: string): readonly RunNode<unknown>[];
   /** Returns whether siblings exist. */
   hasSiblings(id: string): boolean;
   /** Gets a turn node by turn id or codec message id. */
-  getNode(id: string): TurnNode<unknown> | undefined;
+  getNode(id: string): RunNode<unknown> | undefined;
   /** Sends a user message. */
   send(message: TMessage): Promise<unknown>;
   /** Requests regeneration. */
@@ -178,7 +178,7 @@ export interface UseCreateViewOptions<TInput, TMessage> {
    *
    * @defaultValue Context transport.
    */
-  transport?: ClientTransport<TInput, unknown, unknown, TMessage>;
+  session?: ClientSession<TInput, unknown, unknown, TMessage>;
   /**
    * Auto-load page size once per owned view instance.
    *
@@ -205,7 +205,7 @@ export interface UseTreeOptions<TInput, TMessage> {
    *
    * @defaultValue Context transport.
    */
-  transport?: ClientTransport<TInput, unknown, unknown, TMessage>;
+  session?: ClientSession<TInput, unknown, unknown, TMessage>;
 }
 
 /**
@@ -216,25 +216,25 @@ export interface UseTreeOptions<TInput, TMessage> {
  */
 export interface TreeHandle {
   /** Gets sibling turn nodes without subscribing to tree changes. */
-  getSiblings(id: string): readonly TurnNode<unknown>[];
+  getSiblings(id: string): readonly RunNode<unknown>[];
   /** Returns whether siblings exist without subscribing to tree changes. */
   hasSiblings(id: string): boolean;
   /** Gets a turn node without subscribing to tree changes. */
-  getNode(id: string): TurnNode<unknown> | undefined;
+  getNode(id: string): RunNode<unknown> | undefined;
 }
 
 /**
- * Options for {@link useActiveTurns}.
+ * Options for {@link useActiveRuns}.
  *
  * Without a resolved transport, the hook returns a stable empty map.
  */
-export interface UseActiveTurnsOptions<TInput, TMessage> {
+export interface UseActiveRunsOptions<TInput, TMessage> {
   /**
    * Explicit transport.
    *
    * @defaultValue Context transport.
    */
-  transport?: ClientTransport<TInput, unknown, unknown, TMessage>;
+  session?: ClientSession<TInput, unknown, unknown, TMessage>;
 }
 
 /**
@@ -249,7 +249,7 @@ export interface UseSockudoMessagesOptions<TInput, TMessage> {
    *
    * @defaultValue Context transport.
    */
-  transport?: ClientTransport<TInput, unknown, unknown, TMessage>;
+  session?: ClientSession<TInput, unknown, unknown, TMessage>;
   /**
    * Suppresses subscription and returns a stable empty list.
    *
@@ -259,20 +259,20 @@ export interface UseSockudoMessagesOptions<TInput, TMessage> {
 }
 
 /**
- * Generic hook bundle returned by {@link createTransportHooks}.
+ * Generic hook bundle returned by {@link createSessionHooks}.
  *
  * The bundled hooks share the same baked type parameters and error behavior as
  * the default exports.
  */
-export interface TransportHooks<TInput, TOutput, TProjection, TMessage> {
+export interface SessionHooks<TInput, TOutput, TProjection, TMessage> {
   /** Provider for a channel-keyed transport registry. */
-  TransportProvider(
-    props: TransportProviderProps<TInput, TOutput, TProjection, TMessage>,
+  ClientSessionProvider(
+    props: ClientSessionProviderProps<TInput, TOutput, TProjection, TMessage>,
   ): ReturnType<typeof createElement>;
   /** Reads the nearest or named client transport. */
-  useClientTransport(
-    options?: UseClientTransportOptions,
-  ): UseClientTransportResult<TInput, TOutput, TProjection, TMessage>;
+  useClientSession(
+    options?: UseClientSessionOptions,
+  ): UseClientSessionResult<TInput, TOutput, TProjection, TMessage>;
   /** Subscribes to a branch-aware view. */
   useView(options?: UseViewOptions<TInput, TMessage>): ViewHandle<TMessage>;
   /** Creates, owns, and subscribes to an additional view. */
@@ -280,33 +280,33 @@ export interface TransportHooks<TInput, TOutput, TProjection, TMessage> {
   /** Returns stable tree callbacks without re-rendering on tree changes. */
   useTree(options?: UseTreeOptions<TInput, TMessage>): TreeHandle;
   /** Subscribes to active/suspended turn ownership. */
-  useActiveTurns(options?: UseActiveTurnsOptions<TInput, TMessage>): Map<string, Set<string>>;
+  useActiveRuns(options?: UseActiveRunsOptions<TInput, TMessage>): Map<string, Set<string>>;
   /** Subscribes to raw normalized inbound messages. */
   useSockudoMessages(
     options?: UseSockudoMessagesOptions<TInput, TMessage>,
   ): readonly InboundMessage[];
 }
 
-interface TransportSlot {
-  transport?: ClientTransport<unknown, unknown, unknown, unknown>;
+interface SessionSlot {
+  session?: ClientSession<unknown, unknown, unknown, unknown>;
   error?: ErrorInfo;
 }
 
-interface TransportRegistry {
+interface SessionRegistry {
   defaultChannelName?: string;
-  slots: Map<string, TransportSlot>;
+  slots: Map<string, SessionSlot>;
 }
 
-const TransportContext = createContext<TransportRegistry | undefined>(undefined);
+const SessionContext = createContext<SessionRegistry | undefined>(undefined);
 const autoLoadedViews = new WeakSet<View<unknown, unknown>>();
-const pendingTransportCloses = new WeakMap<
-  ClientTransport<unknown, unknown, unknown, unknown>,
+const pendingSessionCloses = new WeakMap<
+  ClientSession<unknown, unknown, unknown, unknown>,
   { cancelled: boolean }
 >();
 const stableEmptyMessages: readonly unknown[] = [];
-const stableEmptyNodes: readonly TurnNode<unknown>[] = [];
+const stableEmptyNodes: readonly RunNode<unknown>[] = [];
 const stableEmptyRawMessages: readonly InboundMessage[] = [];
-const stableEmptyActiveTurns = new Map<string, Set<string>>();
+const stableEmptyActiveRuns = new Map<string, Set<string>>();
 
 /**
  * Creates generic React hooks for a specific codec/message type family.
@@ -316,23 +316,23 @@ const stableEmptyActiveTurns = new Map<string, Set<string>>();
  * Returned hooks throw only via synchronous handle/stub access for invalid
  * usage; async transport/view methods reject with {@link ErrorInfo}.
  */
-export function createTransportHooks<
+export function createSessionHooks<
   TInput = unknown,
   TOutput = unknown,
   TProjection = unknown,
   TMessage = unknown,
->(): TransportHooks<TInput, TOutput, TProjection, TMessage> {
-  function TransportProvider(
-    props: TransportProviderProps<TInput, TOutput, TProjection, TMessage>,
+>(): SessionHooks<TInput, TOutput, TProjection, TMessage> {
+  function ClientSessionProvider(
+    props: ClientSessionProviderProps<TInput, TOutput, TProjection, TMessage>,
   ): ReturnType<typeof createElement> {
-    const parent = useContext(TransportContext);
+    const parent = useContext(SessionContext);
     const client = useSockudoRealtimeClient();
     const { children, channelName, ...transportOptions } = props;
     const key = channelName;
-    const slot = useMemo<TransportSlot>(() => {
+    const slot = useMemo<SessionSlot>(() => {
       try {
         return {
-          transport: createClientTransport({
+          session: createClientSession({
             ...transportOptions,
             client,
             channelName,
@@ -342,8 +342,8 @@ export function createTransportHooks<
         return { error: toConstructionError(error) };
       }
     }, [channelName, client]);
-    useDeferredTransportClose(slot.transport);
-    const registry = useMemo<TransportRegistry>(() => {
+    useDeferredSessionClose(slot.session);
+    const registry = useMemo<SessionRegistry>(() => {
       const slots = new Map(parent?.slots);
       if (key !== "") {
         slots.set(key, slot);
@@ -351,13 +351,13 @@ export function createTransportHooks<
       const defaultChannelName = key || parent?.defaultChannelName;
       return defaultChannelName === undefined ? { slots } : { slots, defaultChannelName };
     }, [key, parent, slot]);
-    return createElement(TransportContext.Provider, { value: registry }, children);
+    return createElement(SessionContext.Provider, { value: registry }, children);
   }
 
-  function useClientTransport(
-    options: UseClientTransportOptions = {},
-  ): UseClientTransportResult<TInput, TOutput, TProjection, TMessage> {
-    const registry = useContext(TransportContext);
+  function useClientSession(
+    options: UseClientSessionOptions = {},
+  ): UseClientSessionResult<TInput, TOutput, TProjection, TMessage> {
+    const registry = useContext(SessionContext);
     const callbackRef = useRef<((error: ErrorInfo) => void) | undefined>(undefined);
     callbackRef.current =
       options.onError === undefined
@@ -367,169 +367,169 @@ export function createTransportHooks<
           };
     const slot = resolveSlot(registry, options.channelName);
     const skipped = options.skip === true;
-    const transport = skipped ? undefined : slot?.transport;
+    const session = skipped ? undefined : slot?.session;
     const error = skipped ? undefined : (slot?.error ?? missingProviderError(options.channelName));
     useEffect(() => {
-      if (!transport || !callbackRef.current) {
+      if (!session || !callbackRef.current) {
         return;
       }
-      return transport.on("error", (payload) => {
+      return session.on("error", (payload) => {
         callbackRef.current?.(payload);
       });
-    }, [transport]);
-    if (transport) {
+    }, [session]);
+    if (session) {
       return {
-        transport: transport as ClientTransport<TInput, TOutput, TProjection, TMessage>,
+        session: session as ClientSession<TInput, TOutput, TProjection, TMessage>,
       };
     }
-    const result: UseClientTransportResult<TInput, TOutput, TProjection, TMessage> = {
-      transport: throwingTransportStub(),
+    const result: UseClientSessionResult<TInput, TOutput, TProjection, TMessage> = {
+      session: throwingSessionStub(),
     };
     if (error !== undefined) {
-      result.transportError = error;
+      result.sessionError = error;
     }
     return result;
   }
 
   function useView(options: UseViewOptions<TInput, TMessage> = {}): ViewHandle<TMessage> {
-    const context = useClientTransport(options.skip === undefined ? {} : { skip: options.skip });
-    const contextTransport = context.transportError === undefined ? context.transport : undefined;
+    const context = useClientSession(options.skip === undefined ? {} : { skip: options.skip });
+    const contextTransport = context.sessionError === undefined ? context.session : undefined;
     const sourceView =
       options.skip === true
         ? undefined
-        : (options.view ?? options.transport?.view ?? contextTransport?.view);
+        : (options.view ?? options.session?.view ?? contextTransport?.view);
     return useViewHandle(sourceView, options.limit);
   }
 
   function useCreateView(
     options: UseCreateViewOptions<TInput, TMessage> = {},
   ): ViewHandle<TMessage> {
-    const context = useClientTransport(options.skip === undefined ? {} : { skip: options.skip });
-    const contextTransport = context.transportError === undefined ? context.transport : undefined;
-    const transport = options.skip === true ? undefined : (options.transport ?? contextTransport);
+    const context = useClientSession(options.skip === undefined ? {} : { skip: options.skip });
+    const contextTransport = context.sessionError === undefined ? context.session : undefined;
+    const session = options.skip === true ? undefined : (options.session ?? contextTransport);
     const [view, setView] = useState<View<TInput, TMessage> | undefined>();
     useEffect(() => {
-      if (options.skip === true || !transport) {
+      if (options.skip === true || !session) {
         setView(undefined);
         return;
       }
-      const created = transport.createView();
+      const created = session.createView();
       setView(created);
       return () => {
         created.close();
       };
-    }, [options.skip, transport]);
+    }, [options.skip, session]);
     return useViewHandle(view, options.limit);
   }
 
   function useTree(options: UseTreeOptions<TInput, TMessage> = {}): TreeHandle {
-    const context = useClientTransport({
-      skip: options.transport !== undefined,
+    const context = useClientSession({
+      skip: options.session !== undefined,
     });
-    const contextTransport = context.transportError === undefined ? context.transport : undefined;
-    const transport = options.transport ?? contextTransport;
+    const contextTransport = context.sessionError === undefined ? context.session : undefined;
+    const session = options.session ?? contextTransport;
     return useMemo<TreeHandle>(
       () => ({
         getSiblings(id) {
-          return requireTransport(transport).tree.getSiblings(id);
+          return requireSession(session).tree.getSiblings(id);
         },
         hasSiblings(id) {
-          return requireTransport(transport).tree.hasSiblings(id);
+          return requireSession(session).tree.hasSiblings(id);
         },
         getNode(id) {
-          return requireTransport(transport).tree.getNode(id);
+          return requireSession(session).tree.getNode(id);
         },
       }),
-      [transport],
+      [session],
     );
   }
 
-  function useActiveTurns(
-    options: UseActiveTurnsOptions<TInput, TMessage> = {},
+  function useActiveRuns(
+    options: UseActiveRunsOptions<TInput, TMessage> = {},
   ): Map<string, Set<string>> {
-    const context = useClientTransport({
-      skip: options.transport !== undefined,
+    const context = useClientSession({
+      skip: options.session !== undefined,
     });
-    const contextTransport = context.transportError === undefined ? context.transport : undefined;
-    const transport = options.transport ?? contextTransport;
-    const [active, setActive] = useState(() => cloneActiveTurns(transport));
+    const contextTransport = context.sessionError === undefined ? context.session : undefined;
+    const session = options.session ?? contextTransport;
+    const [active, setActive] = useState(() => cloneActiveRuns(session));
     useEffect(() => {
-      if (!transport) {
-        setActive(stableEmptyActiveTurns);
+      if (!session) {
+        setActive(stableEmptyActiveRuns);
         return;
       }
-      setActive(cloneActiveTurns(transport));
-      return transport.tree.on("turn", () => {
-        setActive(cloneActiveTurns(transport));
+      setActive(cloneActiveRuns(session));
+      return session.tree.on("turn", () => {
+        setActive(cloneActiveRuns(session));
       });
-    }, [transport]);
+    }, [session]);
     return active;
   }
 
   function useSockudoMessages(
     options: UseSockudoMessagesOptions<TInput, TMessage> = {},
   ): readonly InboundMessage[] {
-    const context = useClientTransport({
-      skip: options.skip === true || options.transport !== undefined,
+    const context = useClientSession({
+      skip: options.skip === true || options.session !== undefined,
     });
-    const contextTransport = context.transportError === undefined ? context.transport : undefined;
-    const transport = options.skip === true ? undefined : (options.transport ?? contextTransport);
+    const contextTransport = context.sessionError === undefined ? context.session : undefined;
+    const session = options.skip === true ? undefined : (options.session ?? contextTransport);
     const [messages, setMessages] = useState<readonly InboundMessage[]>(stableEmptyRawMessages);
     useEffect(() => {
-      if (!transport) {
+      if (!session) {
         setMessages(stableEmptyRawMessages);
         return;
       }
       setMessages(stableEmptyRawMessages);
-      return transport.on("message", (message) => {
+      return session.on("message", (message) => {
         setMessages((current) =>
           current === stableEmptyRawMessages ? [message] : [...current, message],
         );
       });
-    }, [transport]);
+    }, [session]);
     return options.skip === true ? stableEmptyRawMessages : messages;
   }
 
   return {
-    TransportProvider,
-    useClientTransport,
+    ClientSessionProvider,
+    useClientSession,
     useView,
     useCreateView,
     useTree,
-    useActiveTurns,
+    useActiveRuns,
     useSockudoMessages,
   };
 }
 
-const defaultHooks = createTransportHooks();
+const defaultHooks = createSessionHooks();
 
 /**
- * Provides a channel-keyed AI client transport using the outer
+ * Provides a channel-keyed AI client session using the outer
  * `@sockudo/client/react` `SockudoProvider`.
  *
  * @defaultValue No default `channelName`; the prop is required.
  *
  * Construction failures are caught and exposed through
- * {@link useClientTransport}; children continue to render.
+ * {@link useClientSession}; children continue to render.
  */
-export function TransportProvider(
-  props: TransportProviderProps<unknown, unknown, unknown, unknown>,
+export function ClientSessionProvider(
+  props: ClientSessionProviderProps<unknown, unknown, unknown, unknown>,
 ): ReturnType<typeof createElement> {
-  return defaultHooks.TransportProvider(props);
+  return defaultHooks.ClientSessionProvider(props);
 }
 
 /**
- * Reads the nearest or named AI client transport.
+ * Reads the nearest or named AI client session.
  *
  * @defaultValue Uses the nearest provider when `channelName` is omitted.
  *
  * Missing, skipped, and failed providers return a throwing `InvalidArgument`
  * stub; `transportError` is set except when `skip` is true.
  */
-export function useClientTransport(
-  options?: UseClientTransportOptions,
-): UseClientTransportResult<unknown, unknown, unknown, unknown> {
-  return defaultHooks.useClientTransport(options);
+export function useClientSession(
+  options?: UseClientSessionOptions,
+): UseClientSessionResult<unknown, unknown, unknown, unknown> {
+  return defaultHooks.useClientSession(options);
 }
 
 /**
@@ -576,13 +576,13 @@ export function useTree(options?: UseTreeOptions<unknown, unknown>): TreeHandle 
  *
  * @defaultValue Uses the context transport.
  *
- * Returns a new `Map<clientId, Set<turnId>>` reference for each turn event and a
+ * Returns a new `Map<clientId, Set<runId>>` reference for each turn event and a
  * stable empty map without a resolved transport.
  */
-export function useActiveTurns(
-  options?: UseActiveTurnsOptions<unknown, unknown>,
+export function useActiveRuns(
+  options?: UseActiveRunsOptions<unknown, unknown>,
 ): Map<string, Set<string>> {
-  return defaultHooks.useActiveTurns(options);
+  return defaultHooks.useActiveRuns(options);
 }
 
 /**
@@ -641,13 +641,13 @@ function useViewHandle<TInput, TMessage>(
   const getSelectedIndex = useCallback((id: string): number => {
     return viewRef.current?.getSelectedIndex(id) ?? 0;
   }, []);
-  const getSiblings = useCallback((id: string): readonly TurnNode<unknown>[] => {
+  const getSiblings = useCallback((id: string): readonly RunNode<unknown>[] => {
     return viewRef.current?.getSiblings(id) ?? stableEmptyNodes;
   }, []);
   const hasSiblings = useCallback((id: string): boolean => {
     return viewRef.current?.hasSiblings(id) ?? false;
   }, []);
-  const getNode = useCallback((id: string): TurnNode<unknown> | undefined => {
+  const getNode = useCallback((id: string): RunNode<unknown> | undefined => {
     return viewRef.current?.getNode(id);
   }, []);
   const send = useCallback((message: TMessage): Promise<unknown> => {
@@ -696,38 +696,38 @@ function useViewHandle<TInput, TMessage>(
   );
 }
 
-function useDeferredTransportClose(
-  transport: ClientTransport<unknown, unknown, unknown, unknown> | undefined,
+function useDeferredSessionClose(
+  session: ClientSession<unknown, unknown, unknown, unknown> | undefined,
 ): void {
   useEffect(() => {
-    if (transport) {
-      const pending = pendingTransportCloses.get(transport);
+    if (session) {
+      const pending = pendingSessionCloses.get(session);
       if (pending) {
         pending.cancelled = true;
-        pendingTransportCloses.delete(transport);
+        pendingSessionCloses.delete(session);
       }
     }
     return () => {
-      if (!transport) {
+      if (!session) {
         return;
       }
       const pending = { cancelled: false };
-      pendingTransportCloses.set(transport, pending);
+      pendingSessionCloses.set(session, pending);
       queueMicrotask(() => {
         if (!pending.cancelled) {
-          pendingTransportCloses.delete(transport);
-          void transport.close();
+          pendingSessionCloses.delete(session);
+          void session.close();
         }
       });
     };
-  }, [transport]);
+  }, [session]);
 }
 
 function viewSnapshot<TInput, TMessage>(
   view: View<TInput, TMessage> | undefined,
 ): {
   messages: readonly TMessage[];
-  nodes: readonly TurnNode<unknown>[];
+  nodes: readonly RunNode<unknown>[];
   hasOlder: boolean;
   loading: boolean;
   loadError?: ErrorInfo;
@@ -750,21 +750,21 @@ function viewSnapshot<TInput, TMessage>(
 }
 
 function resolveSlot(
-  registry: TransportRegistry | undefined,
+  registry: SessionRegistry | undefined,
   channelName: string | undefined,
-): TransportSlot | undefined {
+): SessionSlot | undefined {
   const key = channelName ?? registry?.defaultChannelName;
   return key === undefined ? undefined : registry?.slots.get(key);
 }
 
-function cloneActiveTurns(
-  transport: ClientTransport<unknown, unknown, unknown, unknown> | undefined,
+function cloneActiveRuns(
+  session: ClientSession<unknown, unknown, unknown, unknown> | undefined,
 ): Map<string, Set<string>> {
-  if (!transport) {
-    return stableEmptyActiveTurns;
+  if (!session) {
+    return stableEmptyActiveRuns;
   }
   const clone = new Map<string, Set<string>>();
-  for (const [clientId, turns] of transport.tree.getActiveTurnIds()) {
+  for (const [clientId, turns] of session.tree.getActiveRunIds()) {
     clone.set(clientId, new Set(turns));
   }
   return clone;
@@ -776,8 +776,8 @@ function missingProviderError(channelName: string | undefined): ErrorInfo {
     statusCode: 400,
     message:
       channelName === undefined
-        ? "unable to resolve client transport; no TransportProvider is available"
-        : `unable to resolve client transport; no TransportProvider for channel ${channelName}`,
+        ? "unable to resolve client transport; no ClientSessionProvider is available"
+        : `unable to resolve client transport; no ClientSessionProvider for channel ${channelName}`,
   });
 }
 
@@ -788,12 +788,12 @@ function toConstructionError(error: unknown): ErrorInfo {
   return new ErrorInfo({
     code: ErrorCode.InvalidArgument,
     statusCode: 400,
-    message: "unable to create client transport in TransportProvider",
+    message: "unable to create client transport in ClientSessionProvider",
     cause: error,
   });
 }
 
-function throwingTransportStub<TInput, TOutput, TProjection, TMessage>(): ClientTransport<
+function throwingSessionStub<TInput, TOutput, TProjection, TMessage>(): ClientSession<
   TInput,
   TOutput,
   TProjection,
@@ -806,7 +806,7 @@ function throwingTransportStub<TInput, TOutput, TProjection, TMessage>(): Client
         throw missingProviderError(undefined);
       },
     },
-  ) as ClientTransport<TInput, TOutput, TProjection, TMessage>;
+  ) as ClientSession<TInput, TOutput, TProjection, TMessage>;
 }
 
 function requireView<TInput, TMessage>(
@@ -818,11 +818,11 @@ function requireView<TInput, TMessage>(
   return view;
 }
 
-function requireTransport(
-  transport: ClientTransport<unknown, unknown, unknown, unknown> | undefined,
-): ClientTransport<unknown, unknown, unknown, unknown> {
-  if (!transport) {
+function requireSession(
+  session: ClientSession<unknown, unknown, unknown, unknown> | undefined,
+): ClientSession<unknown, unknown, unknown, unknown> {
+  if (!session) {
     throw missingProviderError(undefined);
   }
-  return transport;
+  return session;
 }

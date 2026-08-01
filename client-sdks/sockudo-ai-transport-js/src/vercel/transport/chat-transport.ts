@@ -1,7 +1,7 @@
 import { ErrorCode, ErrorInfo, toErrorInfo } from "../../errors.js";
 import type {
-  ActiveTurn,
-  ClientTransport,
+  ClientRun,
+  ClientSession,
   CloseOptions,
   SendOptions,
 } from "../../core/transport/index.js";
@@ -110,19 +110,14 @@ export interface ChatTransport {
   onStreamingChange(cb: (streaming: boolean) => void): () => void;
 }
 
-type VercelClientTransport = ClientTransport<
-  VercelInput,
-  VercelOutput,
-  VercelProjection,
-  AI.UIMessage
->;
+type VercelClientSession = ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
 interface SendDecision {
   history: readonly AI.UIMessage[];
   messages: readonly AI.UIMessage[];
   parent?: string;
   forkOf?: string;
-  active: Promise<ActiveTurn<VercelOutput>>;
+  active: Promise<ClientRun<VercelInput, VercelOutput>>;
 }
 
 const unresolvedToolStates = new Set<AI.DynamicToolState>([
@@ -132,13 +127,13 @@ const unresolvedToolStates = new Set<AI.DynamicToolState>([
 ]);
 
 /**
- * Creates a Vercel `useChat` transport over a Sockudo client transport.
+ * Creates a Vercel `useChat` transport over a Sockudo client session.
  */
 export function createChatTransport(
-  transport: VercelClientTransport,
+  session: VercelClientSession,
   chatOptions: ChatTransportOptions = {},
 ): ChatTransport {
-  return new SockudoChatTransport(transport, chatOptions);
+  return new SockudoChatTransport(session, chatOptions);
 }
 
 /**
@@ -206,7 +201,7 @@ class SockudoChatTransport implements ChatTransport {
   private streamingValue = false;
 
   public constructor(
-    private readonly transport: VercelClientTransport,
+    private readonly session: VercelClientSession,
     private readonly options: ChatTransportOptions,
   ) {}
 
@@ -219,14 +214,14 @@ class SockudoChatTransport implements ChatTransport {
   ): Promise<ReadableStream<AI.UIMessageChunk>> {
     if (options.abortSignal?.aborted) {
       throw new ErrorInfo({
-        code: ErrorCode.TransportSendFailed,
+        code: ErrorCode.SessionSendFailed,
         statusCode: 499,
         message: "unable to send; request was already aborted",
       });
     }
 
     this.setStreaming(true);
-    let active: ActiveTurn<VercelOutput>;
+    let active: ClientRun<VercelInput, VercelOutput>;
     try {
       const decision = this.decide(options);
       active = await decision.active;
@@ -252,7 +247,7 @@ class SockudoChatTransport implements ChatTransport {
   }
 
   public close(options?: CloseOptions): Promise<void> {
-    return this.transport.close(options);
+    return this.session.close(options);
   }
 
   public onStreamingChange(cb: (streaming: boolean) => void): () => void {
@@ -287,7 +282,7 @@ class SockudoChatTransport implements ChatTransport {
       messages: [],
       parent,
       forkOf: target,
-      active: this.transport.view.regenerate(
+      active: this.session.view.regenerate(
         target,
         parent,
         this.sendOptions(options, {
@@ -298,7 +293,7 @@ class SockudoChatTransport implements ChatTransport {
           messages: [],
           history: options.messages,
         }),
-      ) as Promise<ActiveTurn<VercelOutput>>,
+      ) as Promise<ClientRun<VercelInput, VercelOutput>>,
     };
   }
 
@@ -308,8 +303,8 @@ class SockudoChatTransport implements ChatTransport {
       throw invalid("unable to submit; at least one message is required");
     }
     if (last.role === "assistant") {
-      const treeMessage = messageById(this.transport.view.getMessages(), last.id);
-      const metadata = this.transport.view.getMessageMetadata(last.id);
+      const treeMessage = messageById(this.session.view.getMessages(), last.id);
+      const metadata = this.session.view.getMessageMetadata(last.id);
       if (treeMessage && metadata) {
         const inputs = deriveContinuationInputs(last, treeMessage);
         return {
@@ -317,18 +312,18 @@ class SockudoChatTransport implements ChatTransport {
           messages: [],
           parent: last.id,
           forkOf: last.id,
-          active: this.transport.view.sendInput(
+          active: this.session.view.sendInput(
             inputs,
             this.sendOptions(options, {
               messageId: metadata.codecMessageId,
-              turnId: metadata.turnId,
+              runId: metadata.runId,
               parent: last.id,
               forkOf: last.id,
               trigger: "submit-message",
               messages: [],
               history: options.messages,
             }),
-          ) as Promise<ActiveTurn<VercelOutput>>,
+          ) as Promise<ClientRun<VercelInput, VercelOutput>>,
         };
       }
     }
@@ -352,22 +347,22 @@ class SockudoChatTransport implements ChatTransport {
     });
     const active =
       options.messageId !== undefined
-        ? this.transport.view.edit(options.messageId, last, sendOptions)
-        : this.transport.view.send(last, sendOptions);
+        ? this.session.view.edit(options.messageId, last, sendOptions)
+        : this.session.view.send(last, sendOptions);
     return {
       history,
       messages: [last],
       ...(parent !== undefined ? { parent } : {}),
       ...(forkOf !== undefined ? { forkOf } : {}),
-      active: active as Promise<ActiveTurn<VercelOutput>>,
+      active: active as Promise<ClientRun<VercelInput, VercelOutput>>,
     };
   }
 
   private sendOptions(
     options: ChatTransportSendMessagesOptions,
-    context: SendMessagesRequestContext & { turnId?: string },
+    context: SendMessagesRequestContext & { runId?: string },
   ): SendOptions {
-    const preparedContext = stripTurnId({
+    const preparedContext = stripRunId({
       ...context,
       ...(options.chatId !== undefined ? { chatId: options.chatId } : {}),
     });
@@ -390,8 +385,8 @@ class SockudoChatTransport implements ChatTransport {
     return {
       body,
       headers,
-      waitForTurnStart: false,
-      ...(context.turnId !== undefined ? { turnId: context.turnId } : {}),
+      waitForRunStart: false,
+      ...(context.runId !== undefined ? { runId: context.runId } : {}),
       ...(context.parent !== undefined ? { parent: context.parent } : {}),
       ...(context.forkOf !== undefined ? { forkOf: context.forkOf } : {}),
       trigger: context.trigger,
@@ -449,8 +444,8 @@ class SockudoChatTransport implements ChatTransport {
   }
 }
 
-function stripTurnId(
-  context: SendMessagesRequestContext & { turnId?: string },
+function stripRunId(
+  context: SendMessagesRequestContext & { runId?: string },
 ): SendMessagesRequestContext {
   const result: SendMessagesRequestContext = {
     trigger: context.trigger,

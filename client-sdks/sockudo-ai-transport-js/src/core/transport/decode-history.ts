@@ -1,16 +1,15 @@
 import {
-  EVENT_AI_LEGACY_TURN_END,
-  EVENT_AI_LEGACY_TURN_START,
+  INBOUND_LEGACY_EVENT_TURN_END,
+  INBOUND_LEGACY_EVENT_TURN_START,
   EVENT_AI_RUN_END,
   EVENT_AI_RUN_RESUME,
   EVENT_AI_RUN_START,
   EVENT_AI_RUN_SUSPEND,
   HEADER_RUN_REASON,
-  HEADER_TURN_CONTINUE,
 } from "../../constants.js";
 import type { Decoder, DecodedEvent } from "../codec/index.js";
 import type { InboundMessage, PaginatedResult, Serial } from "../../realtime/types.js";
-import type { ConversationTree, TurnEndReason } from "./tree.js";
+import type { Tree, RunEndReason } from "./tree.js";
 import { mergeHeaders } from "../../utils.js";
 
 /**
@@ -31,7 +30,7 @@ export interface DecodeHistoryResult {
 export function decodeHistoryPage<TInput, TOutput, TProjection>(
   page: PaginatedResult<InboundMessage>,
   decoder: Decoder<TInput, TOutput>,
-  tree: ConversationTree<TInput | TOutput, TProjection>,
+  tree: Tree<TInput | TOutput, TProjection>,
 ): DecodeHistoryResult {
   let processedMessages = 0;
   let decodedEvents = 0;
@@ -40,8 +39,8 @@ export function decodeHistoryPage<TInput, TOutput, TProjection>(
     processedMessages += 1;
     const headers = message.getTransportHeaders();
     if (isRunStartMessage(message.name)) {
-      tree.applyTurnLifecycle({
-        type: "turn-start",
+      tree.applyRunLifecycle({
+        type: "start",
         headers,
         serial: message.historySerial,
       });
@@ -49,17 +48,19 @@ export function decodeHistoryPage<TInput, TOutput, TProjection>(
       continue;
     }
     if (message.name === EVENT_AI_RUN_RESUME) {
-      tree.applyTurnLifecycle({
-        type: "turn-start",
-        headers: mergeHeaders(headers, { [HEADER_TURN_CONTINUE]: "true" }),
+      // The `resume` arm replaces what used to be a `turn-start` carrying a
+      // continuation header: the event name already says this is re-entry.
+      tree.applyRunLifecycle({
+        type: "resume",
+        headers,
         serial: message.historySerial,
       });
       lifecycleEvents += 1;
       continue;
     }
     if (message.name === EVENT_AI_RUN_SUSPEND) {
-      tree.applyTurnLifecycle({
-        type: "turn-end",
+      tree.applyRunLifecycle({
+        type: "suspend",
         headers: mergeHeaders(headers, { [HEADER_RUN_REASON]: "suspended" }),
         serial: message.historySerial,
         reason: "suspended",
@@ -68,8 +69,8 @@ export function decodeHistoryPage<TInput, TOutput, TProjection>(
       continue;
     }
     if (isRunEndMessage(message.name)) {
-      tree.applyTurnLifecycle({
-        type: "turn-end",
+      tree.applyRunLifecycle({
+        type: "end",
         headers,
         serial: message.historySerial,
         ...optionalReason(headers[HEADER_RUN_REASON]),
@@ -86,11 +87,11 @@ export function decodeHistoryPage<TInput, TOutput, TProjection>(
 }
 
 function isRunStartMessage(name: string): boolean {
-  return name === EVENT_AI_RUN_START || name === EVENT_AI_LEGACY_TURN_START;
+  return name === EVENT_AI_RUN_START || name === INBOUND_LEGACY_EVENT_TURN_START;
 }
 
 function isRunEndMessage(name: string): boolean {
-  return name === EVENT_AI_RUN_END || name === EVENT_AI_LEGACY_TURN_END;
+  return name === EVENT_AI_RUN_END || name === INBOUND_LEGACY_EVENT_TURN_END;
 }
 
 /**
@@ -132,7 +133,7 @@ export interface LoadHistoryResult extends DecodeHistoryResult {
 export async function loadHistoryIntoTree<TInput, TOutput, TProjection>(
   source: HistoryReader,
   decoder: Decoder<TInput, TOutput>,
-  tree: ConversationTree<TInput | TOutput, TProjection>,
+  tree: Tree<TInput | TOutput, TProjection>,
   options: LoadHistoryOptions = {},
 ): Promise<LoadHistoryResult> {
   const historyOptions: {
@@ -153,7 +154,7 @@ export async function loadHistoryIntoTree<TInput, TOutput, TProjection>(
 
 function optionalReason(
   value: string | undefined,
-): { reason: TurnEndReason } | Record<string, never> {
+): { reason: RunEndReason } | Record<string, never> {
   switch (value) {
     case "complete":
     case "cancelled":

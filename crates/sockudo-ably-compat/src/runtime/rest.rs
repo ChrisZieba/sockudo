@@ -797,7 +797,11 @@ pub(super) async fn ably_batch_publish_inner(
         let prepared_messages: Arc<[PreparedAblyBatchMessage]> = messages
             .into_iter()
             .map(|message| {
-                validate_ably_publish_message(&message, true)?;
+                validate_ably_publish_message(
+                    &message,
+                    true,
+                    handler.server_options().ai_transport.header_limits(),
+                )?;
                 let (connection_id, effective_client_id) = rest_publish_identity(
                     &hub,
                     &resolved.app.id,
@@ -913,7 +917,11 @@ pub(super) async fn ably_channel_publish_inner(
     let prepared_messages = messages
         .into_iter()
         .map(|message| {
-            validate_ably_publish_message(&message, true)?;
+            validate_ably_publish_message(
+                &message,
+                true,
+                handler.server_options().ai_transport.header_limits(),
+            )?;
             let (connection_id, effective_client_id) = rest_publish_identity(
                 hub,
                 &resolved.app.id,
@@ -1628,7 +1636,11 @@ pub async fn ably_channel_message_mutation(
             response_format,
         );
     };
-    if let Err(error) = validate_ably_publish_message(&message, true) {
+    if let Err(error) = validate_ably_publish_message(
+        &message,
+        true,
+        handler.server_options().ai_transport.header_limits(),
+    ) {
         return ably_app_error_response_format(error, response_format);
     }
     if let Err(error) = reconcile_mutation_message_serial(&mut message, &message_serial) {

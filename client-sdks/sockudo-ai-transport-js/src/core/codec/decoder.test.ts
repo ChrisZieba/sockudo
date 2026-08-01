@@ -457,9 +457,9 @@ interface MessageOptions {
 function message(options: MessageOptions): InboundMessage {
   const messageSerial = options.messageSerial ?? "msg-1";
   const serial = options.serial ?? 1;
-  const transport = Object.create(null) as Record<string, string>;
-  Object.assign(transport, options.transport);
-  transport[HEADER_CODEC_MESSAGE_ID] = messageSerial;
+  const session = Object.create(null) as Record<string, string>;
+  Object.assign(session, options.transport);
+  session[HEADER_CODEC_MESSAGE_ID] = messageSerial;
   const codec = Object.create(null) as Record<string, string>;
   Object.assign(codec, options.codec);
   return {
@@ -471,7 +471,7 @@ function message(options: MessageOptions): InboundMessage {
     timestamp: 0,
     raw: {},
     getTransportHeaders() {
-      return transport;
+      return session;
     },
     getCodecHeaders() {
       return codec;
