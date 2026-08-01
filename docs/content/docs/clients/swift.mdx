@@ -89,11 +89,12 @@ Keep the `EventBindingToken` returned by `bind` when you want to remove one
 handler with `unbind(eventName:token:)`; call `unbindAll()` only when the
 channel owner is being torn down.
 
-Unexpected disconnects reconnect with bounded exponential backoff. Tune
+Unexpected disconnects reconnect with bounded quadratic backoff. Tune
 `maxReconnectAttempts` and `maxReconnectGapInSeconds` for the app's foreground
-and background policy. Client events emitted while disconnected are buffered
-up to 50 per channel and replayed after subscription; unsubscribing clears that
-buffer.
+and background policy. The attempt counter resets after a successful connection
+and on explicit `connect()` or `disconnect()` calls. Client events emitted while
+disconnected are buffered up to 50 per channel and replayed after subscription;
+unsubscribing clears that buffer.
 
 ## Auth
 

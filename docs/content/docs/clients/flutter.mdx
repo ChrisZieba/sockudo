@@ -77,6 +77,20 @@ live. Unsubscribe in the owning service or controller's disposal path, and
 disconnect on explicit sign-out or process shutdown. Let the SDK handle
 temporary transport failures and resubscription.
 
+Unexpected disconnects emit `ConnectionState.reconnecting` and use quadratic
+backoff (0s, 1s, 4s, 9s) capped at 120 seconds. Configure
+`maxReconnectAttempts` (default `6`, `null` for unlimited) and
+`maxReconnectGapInSeconds`; protocol retry and TLS-upgrade close codes remain
+immediate.
+
+```dart
+const options = SockudoOptions(
+  cluster: 'local',
+  maxReconnectAttempts: 10,
+  maxReconnectGapInSeconds: 60,
+);
+```
+
 ## Auth
 
 ```dart

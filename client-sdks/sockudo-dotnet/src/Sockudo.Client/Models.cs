@@ -30,6 +30,7 @@ public enum ConnectionState
 {
     Initialized,
     Connecting,
+    Reconnecting,
     Connected,
     Disconnected,
     Unavailable,
@@ -610,6 +611,8 @@ public sealed record SockudoOptions(
     SockudoWireFormat WireFormat = SockudoWireFormat.Json,
     SockudoAppendMode AppendMode = SockudoAppendMode.Delta,
     int? AppendRollupWindow = null,
+    int? MaxReconnectAttempts = 6,
+    double MaxReconnectGapInSeconds = 120.0,
     TokenAuthenticationOptions? TokenAuthentication = null
 )
 {

@@ -27,6 +27,7 @@ import { prefixedEvent } from "../protocol_prefix";
  * States:
  * - initialized - initial state, never transitioned to
  * - connecting - connection is being established
+ * - reconnecting - a connection retry is being established
  * - connected - connection has been fully established
  * - disconnected - on requested disconnection
  * - unavailable - after connection timeout or when there's no network
@@ -36,6 +37,8 @@ import { prefixedEvent } from "../protocol_prefix";
  * - unavailableTimeout - time to transition to unavailable state
  * - activityTimeout - time after which ping message should be sent
  * - pongTimeout - time for server to respond with pong before reconnecting
+ * - maxReconnectAttempts - maximum retries before disconnecting; null is unlimited
+ * - maxReconnectGapInSeconds - cap for quadratic reconnect delay
  *
  * @param {String} key application key
  * @param {Object} options
@@ -57,6 +60,7 @@ export default class ConnectionManager extends EventsDispatcher {
   errorCallbacks: ErrorCallbacks;
   handshakeCallbacks: HandshakeCallbacks;
   connectionCallbacks: ConnectionCallbacks;
+  private reconnectAttempts: number;
 
   constructor(key: string, options: ConnectionManagerOptions) {
     super();
@@ -67,6 +71,7 @@ export default class ConnectionManager extends EventsDispatcher {
     this.options = options;
     this.timeline = this.options.timeline;
     this.usingTLS = this.options.useTLS;
+    this.reconnectAttempts = 0;
 
     this.errorCallbacks = this.buildErrorCallbacks();
     this.connectionCallbacks = this.buildConnectionCallbacks(this.errorCallbacks);
@@ -96,6 +101,10 @@ export default class ConnectionManager extends EventsDispatcher {
    * to find events emitted on connection attempts.
    */
   connect() {
+    this.connectWithState("connecting", true);
+  }
+
+  private connectWithState(state: "connecting" | "reconnecting", resetAttempts: boolean) {
     if (this.connection || this.runner) {
       return;
     }
@@ -103,7 +112,10 @@ export default class ConnectionManager extends EventsDispatcher {
       this.updateState("failed");
       return;
     }
-    this.updateState("connecting");
+    if (resetAttempts) {
+      this.reconnectAttempts = 0;
+    }
+    this.updateState(state);
     this.startConnecting();
     this.setUnavailableTimer();
   }
@@ -137,6 +149,7 @@ export default class ConnectionManager extends EventsDispatcher {
 
   /** Closes the connection. */
   disconnect() {
+    this.reconnectAttempts = 0;
     this.disconnectInternally();
     this.updateState("disconnected");
   }
@@ -191,14 +204,32 @@ export default class ConnectionManager extends EventsDispatcher {
   }
 
   private retryIn(delay) {
+    if (
+      this.options.maxReconnectAttempts !== null &&
+      this.reconnectAttempts >= this.options.maxReconnectAttempts
+    ) {
+      this.disconnectInternally();
+      this.updateState("disconnected");
+      return;
+    }
+    this.reconnectAttempts += 1;
+    this.clearRetryTimer();
     this.timeline.info({ action: "retry", delay: delay });
     if (delay > 0) {
       this.emit("connecting_in", Math.round(delay / 1000));
     }
     this.retryTimer = new Timer(delay || 0, () => {
       this.disconnectInternally();
-      this.connect();
+      this.connectWithState("reconnecting", false);
     });
+  }
+
+  private reconnectDelay(action?: "tls_only" | "backoff" | "retry"): number {
+    if (action === "retry" || action === "tls_only") {
+      return 0;
+    }
+    const intervalSeconds = this.reconnectAttempts * this.reconnectAttempts;
+    return Math.min(intervalSeconds, this.options.maxReconnectGapInSeconds) * 1000;
   }
 
   private clearRetryTimer() {
@@ -265,8 +296,8 @@ export default class ConnectionManager extends EventsDispatcher {
       },
       closed: () => {
         this.abandonConnection();
-        if (this.shouldRetry()) {
-          this.retryIn(1000);
+        if (this.shouldRetry() && !this.retryTimer) {
+          this.retryIn(this.reconnectDelay());
         }
       },
     });
@@ -281,6 +312,7 @@ export default class ConnectionManager extends EventsDispatcher {
           handshake.connection.activityTimeout || Infinity,
         );
         this.clearUnavailableTimer();
+        this.reconnectAttempts = 0;
         this.setConnection(handshake.connection);
         this.socket_id = this.connection.id;
         this.updateState("connected", { socket_id: this.socket_id });
@@ -302,16 +334,16 @@ export default class ConnectionManager extends EventsDispatcher {
       tls_only: withErrorEmitted(() => {
         this.usingTLS = true;
         this.updateStrategy();
-        this.retryIn(0);
+        this.retryIn(this.reconnectDelay("tls_only"));
       }),
       refused: withErrorEmitted(() => {
         this.disconnect();
       }),
       backoff: withErrorEmitted(() => {
-        this.retryIn(1000);
+        this.retryIn(this.reconnectDelay("backoff"));
       }),
       retry: withErrorEmitted(() => {
-        this.retryIn(0);
+        this.retryIn(this.reconnectDelay("retry"));
       }),
     };
   }
@@ -353,6 +385,8 @@ export default class ConnectionManager extends EventsDispatcher {
   }
 
   private shouldRetry(): boolean {
-    return this.state === "connecting" || this.state === "connected";
+    return (
+      this.state === "connecting" || this.state === "reconnecting" || this.state === "connected"
+    );
   }
 }

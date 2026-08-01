@@ -7,5 +7,7 @@ interface ConnectionManagerOptions {
     pongTimeout: number;
     activityTimeout: number;
     useTLS: boolean;
+    maxReconnectAttempts: number | null;
+    maxReconnectGapInSeconds: number;
 }
 export default ConnectionManagerOptions;

@@ -362,19 +362,27 @@ await client.user.sign_in()
 Bind to connection state changes to react to connect, disconnect, and reconnect events:
 
 ```python
-def on_state_change(change) -> None:
-    print(f"connection: {change.previous} -> {change.current}")
+def on_state_change(change, _) -> None:
+    print(f"connection: {change['previous']} -> {change['current']}")
 
 
-client.connection.bind("state_change", on_state_change)
-client.connection.bind(
+client.bind("state_change", on_state_change)
+client.bind(
     "connected", lambda data, _: print("socket id:", data.get("socket_id"))
 )
-client.connection.bind("disconnected", lambda data, _: print("disconnected"))
-client.connection.bind("error", lambda data, _: print("error:", data))
+client.bind("reconnecting", lambda *_: print("reconnecting"))
+client.bind("disconnected", lambda *_: print("disconnected"))
+client.bind("error", lambda data, _: print("error:", data))
 
 await client.connect()
 ```
+
+Unexpected disconnects retry with a quadratic delay of 0s, 1s, 4s, 9s, up to
+120s by default. Protocol retry and TLS-upgrade close codes reconnect
+immediately. Configure `max_reconnect_attempts` (default `6`, `None` for
+unlimited) and `max_reconnect_gap_in_seconds` in `SockudoOptions`. The attempt
+counter resets after a successful connection and on explicit connect or
+disconnect calls.
 
 ### Protocol V2
 

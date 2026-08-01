@@ -26,6 +26,8 @@ export interface Config {
   pongTimeout: number;
   statsHost: string;
   unavailableTimeout: number;
+  maxReconnectAttempts: number | null;
+  maxReconnectGapInSeconds: number;
   useTLS: boolean;
   wsHost: string;
   wsPath: string;
@@ -61,6 +63,11 @@ export function getConfig(opts: Options, sockudo): Config {
     pongTimeout: opts.pongTimeout || Defaults.pongTimeout,
     statsHost: opts.statsHost || Defaults.stats_host,
     unavailableTimeout: opts.unavailableTimeout || Defaults.unavailableTimeout,
+    maxReconnectAttempts:
+      opts.maxReconnectAttempts === undefined
+        ? Defaults.maxReconnectAttempts
+        : opts.maxReconnectAttempts,
+    maxReconnectGapInSeconds: opts.maxReconnectGapInSeconds ?? Defaults.maxReconnectGapInSeconds,
     wsPath: opts.wsPath || Defaults.wsPath,
     wsPort: opts.wsPort || Defaults.wsPort,
     wssPort: opts.wssPort || Defaults.wssPort,

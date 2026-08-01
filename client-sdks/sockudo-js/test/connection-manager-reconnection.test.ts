@@ -1,0 +1,124 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { getConfig } from "../src/core/config";
+import ConnectionManager from "../src/core/connection/connection_manager";
+import EventsDispatcher from "../src/core/events/dispatcher";
+import type Strategy from "../src/core/strategies/strategy";
+import type Timeline from "../src/core/timeline/timeline";
+
+describe("connection manager reconnection", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("uses parity defaults and preserves null as unlimited", () => {
+    const defaults = getConfig({ cluster: "local" }, {});
+    const unlimited = getConfig({ cluster: "local", maxReconnectAttempts: null }, {});
+
+    expect(defaults.maxReconnectAttempts).toBe(6);
+    expect(defaults.maxReconnectGapInSeconds).toBe(120);
+    expect(unlimited.maxReconnectAttempts).toBeNull();
+  });
+
+  it("emits reconnecting and stops at the configured attempt limit", async () => {
+    vi.useFakeTimers();
+    const { callbacks, manager } = createManager({ maxReconnectAttempts: 1 });
+    const states: string[] = [];
+    manager.bind("state_change", ({ current }) => states.push(current));
+
+    manager.connect();
+    callbacks[0](null, { action: "backoff" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(states).toEqual(["connecting", "reconnecting"]);
+
+    callbacks[1](null, { action: "backoff" });
+
+    expect(manager.state).toBe("disconnected");
+    expect(states.at(-1)).toBe("disconnected");
+  });
+
+  it("uses quadratic capped delays and resets attempts after success", async () => {
+    vi.useFakeTimers();
+    const { callbacks, manager, timeline } = createManager({
+      maxReconnectAttempts: null,
+      maxReconnectGapInSeconds: 5,
+    });
+    const internals = manager as unknown as { reconnectAttempts: number };
+    internals.reconnectAttempts = 3;
+
+    manager.errorCallbacks.backoff({ action: "backoff" });
+
+    expect(timeline.info).toHaveBeenLastCalledWith({ action: "retry", delay: 5000 });
+
+    await vi.advanceTimersByTimeAsync(5000);
+    const connection = fakeConnection();
+    callbacks[0](null, {
+      action: "connected",
+      activityTimeout: 120_000,
+      connection,
+    });
+
+    expect(manager.state).toBe("connected");
+    expect(internals.reconnectAttempts).toBe(0);
+
+    timeline.info.mockClear();
+    manager.errorCallbacks.retry({ action: "retry" });
+    manager.connectionCallbacks.closed();
+
+    expect(timeline.info).toHaveBeenCalledTimes(1);
+    expect(timeline.info).toHaveBeenLastCalledWith({ action: "retry", delay: 0 });
+
+    manager.disconnect();
+    internals.reconnectAttempts = 4;
+    manager.connect();
+
+    expect(internals.reconnectAttempts).toBe(0);
+  });
+});
+
+function createManager(
+  overrides: Partial<{
+    maxReconnectAttempts: number | null;
+    maxReconnectGapInSeconds: number;
+  }> = {},
+) {
+  const callbacks: Array<(error: unknown, handshake: any) => void> = [];
+  const strategy: Strategy = {
+    isSupported: () => true,
+    connect: (_priority, callback) => {
+      callbacks.push(callback);
+      return { abort: vi.fn(), forceMinPriority: vi.fn() };
+    },
+  };
+  const timeline = {
+    info: vi.fn(),
+    error: vi.fn(),
+  } as unknown as Timeline & { info: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+  const manager = new ConnectionManager("app-key", {
+    timeline,
+    getStrategy: () => strategy,
+    unavailableTimeout: 10_000,
+    pongTimeout: 30_000,
+    activityTimeout: 120_000,
+    useTLS: false,
+    maxReconnectAttempts:
+      overrides.maxReconnectAttempts === undefined ? 6 : overrides.maxReconnectAttempts,
+    maxReconnectGapInSeconds: overrides.maxReconnectGapInSeconds ?? 120,
+  });
+
+  return { callbacks, manager, timeline };
+}
+
+function fakeConnection() {
+  const connection = new EventsDispatcher() as EventsDispatcher & {
+    id: string;
+    activityTimeout: number;
+    handlesActivityChecks: () => boolean;
+    close: () => void;
+  };
+  connection.id = "1.1";
+  connection.activityTimeout = 120_000;
+  connection.handlesActivityChecks = () => true;
+  connection.close = vi.fn();
+  return connection;
+}

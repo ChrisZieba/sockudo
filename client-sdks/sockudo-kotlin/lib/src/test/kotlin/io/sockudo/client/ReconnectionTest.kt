@@ -79,10 +79,8 @@ class ReconnectionTest {
                 """{"event":"sockudo:connection_established","data":{"socket_id":"1.1","activity_timeout":120}}""",
             )
 
-            repeat(3) {
-                invokeHandleSocketClosed(client, 4100, null)
-                delay(50)
-            }
+            setReconnectAttempts(client, 2)
+            invokeHandleSocketClosed(client, 4100, null)
 
             waitFor { "disconnected" in stateChanges }
             assertTrue("disconnected" in stateChanges, "Expected DISCONNECTED after max attempts, got: $stateChanges")
@@ -165,6 +163,12 @@ class ReconnectionTest {
         val field = SockudoClient::class.java.getDeclaredField("reconnectAttempts")
         field.isAccessible = true
         return field.getInt(client)
+    }
+
+    private fun setReconnectAttempts(client: SockudoClient, attempts: Int) {
+        val field = SockudoClient::class.java.getDeclaredField("reconnectAttempts")
+        field.isAccessible = true
+        field.setInt(client, attempts)
     }
 
     private suspend fun waitFor(timeoutMs: Long = 2_000, condition: () -> Boolean) {

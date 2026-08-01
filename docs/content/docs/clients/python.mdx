@@ -74,6 +74,8 @@ inside a callback. Schedule or await that work in an async task instead.
 | `force_tls` | Select `wss://` when true | Enable outside local development |
 | `protocol_version` | `2` for Sockudo-native features; `1` for Pusher compatibility | Prefer `2` for new applications |
 | `connection_recovery` | Resume from the last `stream_id` and `serial` | Enable when missed events matter |
+| `max_reconnect_attempts` | Retry limit; `None` means unlimited | Defaults to `6` |
+| `max_reconnect_gap_in_seconds` | Maximum quadratic backoff delay | Defaults to `120.0` seconds |
 | `wire_format` | JSON, MessagePack, or Protobuf | Use a binary format only when every endpoint supports it |
 
 `cluster` remains required by the options type, but a custom `ws_host` is the
@@ -94,6 +96,7 @@ client.bind(
     lambda data, _: print("socket id:", data.get("socket_id")),
 )
 client.bind("connecting", lambda *_: print("connecting"))
+client.bind("reconnecting", lambda *_: print("reconnecting"))
 client.bind("error", lambda error, _: print("error:", error))
 ```
 
@@ -106,7 +109,9 @@ await client.unsubscribe("public-updates")
 
 `await client.close()` is an alias for `disconnect()`. A manual disconnect
 stops reconnect timers; an unexpected transport failure uses the client's
-reconnect policy.
+reconnect policy. Retries emit `reconnecting` and use quadratic backoff (0s,
+1s, 4s, 9s) capped by `max_reconnect_gap_in_seconds`; protocol retry and
+TLS-upgrade close codes remain immediate.
 
 ## Private and presence authorization
 

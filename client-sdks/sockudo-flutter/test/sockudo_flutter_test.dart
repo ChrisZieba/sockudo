@@ -381,7 +381,7 @@ void main() {
       final request = await server.first;
       queryBox.value = request.uri.queryParameters;
       final socket = await WebSocketTransformer.upgrade(request);
-      await socket.close();
+      await socket.done;
     }());
 
     final client = SockudoClient(
@@ -410,6 +410,7 @@ void main() {
     expect(query['append_mode'], 'full');
     expect(query['append_rollup_window'], '40');
     expect(query['token'], 'initial-token');
+    client.disconnect();
   });
 
   test('validates append rollup window values locally', () {
@@ -426,6 +427,61 @@ void main() {
     );
   });
 
+  test('reconnection options and state have parity defaults', () {
+    const options = SockudoOptions(cluster: 'local');
+
+    expect(ConnectionState.reconnecting.name, 'reconnecting');
+    expect(options.maxReconnectAttempts, 6);
+    expect(options.maxReconnectGapInSeconds, 120.0);
+  });
+
+  test('retries emit reconnecting and stop at the configured limit', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    var acceptedConnections = 0;
+    final serverSubscription = server.listen((request) async {
+      acceptedConnections += 1;
+      final socket = await WebSocketTransformer.upgrade(request);
+      await socket.close(4200, 'retry immediately');
+    });
+
+    final client = SockudoClient(
+      'app-key',
+      SockudoOptions(
+        cluster: 'local',
+        forceTls: false,
+        enabledTransports: const <SockudoTransport>[SockudoTransport.ws],
+        wsHost: '127.0.0.1',
+        wsPort: server.port,
+        maxReconnectAttempts: 2,
+        maxReconnectGapInSeconds: 0.0,
+      ),
+    );
+    final states = <String>[];
+    client.bind('state_change', (data, _) {
+      states.add((data as Map<Object?, Object?>)['current']! as String);
+    });
+    addTearDown(() async {
+      client.close();
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    });
+
+    client.connect();
+    await _waitFor(() => states.contains('disconnected'));
+
+    expect(states.where((state) => state == 'reconnecting').length, 2);
+    expect(acceptedConnections, 3);
+
+    final connectionsBeforeExplicitConnect = acceptedConnections;
+    client.connect();
+    await _waitFor(
+      () => acceptedConnections > connectionsBeforeExplicitConnect,
+    );
+    await _waitFor(
+      () => states.where((state) => state == 'reconnecting').length > 2,
+    );
+  });
+
   test('uses v1 by default and omits the format query', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     addTearDown(() async {
@@ -437,7 +493,7 @@ void main() {
       final request = await server.first;
       queryBox.value = request.uri.queryParameters;
       final socket = await WebSocketTransformer.upgrade(request);
-      await socket.close();
+      await socket.done;
     }());
 
     final client = SockudoClient(
@@ -460,6 +516,7 @@ void main() {
     expect(query['protocol'], '7');
     expect(query.containsKey('format'), isFalse);
     expect(query.containsKey('append_mode'), isFalse);
+    client.disconnect();
   });
 
   test(

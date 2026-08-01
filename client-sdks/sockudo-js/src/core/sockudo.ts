@@ -139,6 +139,8 @@ export default class Sockudo {
       pongTimeout: this.config.pongTimeout,
       unavailableTimeout: this.config.unavailableTimeout,
       useTLS: Boolean(this.config.useTLS),
+      maxReconnectAttempts: this.config.maxReconnectAttempts,
+      maxReconnectGapInSeconds: this.config.maxReconnectGapInSeconds,
     });
 
     // Initialize message deduplication (enabled by default)
@@ -322,9 +324,11 @@ export default class Sockudo {
         this.global_emitter.emit(event.event, event.data);
       }
     });
-    this.connection.bind("connecting", () => {
+    const disconnectChannels = () => {
       this.channels.disconnect();
-    });
+    };
+    this.connection.bind("connecting", disconnectChannels);
+    this.connection.bind("reconnecting", disconnectChannels);
     this.connection.bind("disconnected", () => {
       this.channels.disconnect();
     });

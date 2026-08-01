@@ -19,6 +19,8 @@ export interface Options {
     messageDeduplication?: boolean;
     messageDeduplicationCapacity?: number;
     connectionRecovery?: boolean;
+    maxReconnectAttempts?: number | null;
+    maxReconnectGapInSeconds?: number;
     echoMessages?: boolean;
     enableStats?: boolean;
     disableStats?: boolean;

@@ -168,6 +168,102 @@ def test_rejects_invalid_append_rollup_window() -> None:
         )
 
 
+def test_reconnection_options_and_state_defaults() -> None:
+    options = SockudoOptions(cluster="local")
+
+    assert ConnectionState.RECONNECTING.value == "reconnecting"
+    assert options.max_reconnect_attempts == 6
+    assert options.max_reconnect_gap_in_seconds == 120.0
+
+
+@pytest.mark.asyncio
+async def test_retry_emits_reconnecting_and_stops_at_max_attempts() -> None:
+    client = SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster="local",
+            force_tls=False,
+            enabled_transports=[SockudoTransport.WS],
+            max_reconnect_attempts=1,
+        ),
+    )
+    states: list[str] = []
+    opened: list[SockudoTransport] = []
+
+    async def fake_open_websocket(transport: SockudoTransport) -> None:
+        opened.append(transport)
+
+    client._open_websocket = fake_open_websocket  # type: ignore[method-assign]
+    client.bind("state_change", lambda change, _: states.append(change["current"]))
+
+    await client._schedule_retry(0)
+    assert client._retry_task is not None
+    await client._retry_task
+
+    assert states == ["reconnecting"]
+    assert opened == [SockudoTransport.WS]
+
+    await client._schedule_retry(0)
+
+    assert client.connection_state is ConnectionState.DISCONNECTED
+    assert states[-1] == "disconnected"
+    client._cancel_timers()
+    await client.config.close()
+
+
+@pytest.mark.asyncio
+async def test_close_actions_use_quadratic_capped_delay() -> None:
+    client = SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster="local",
+            force_tls=False,
+            max_reconnect_attempts=None,
+            max_reconnect_gap_in_seconds=5.0,
+        ),
+    )
+    delays: list[float] = []
+
+    async def capture_retry(delay: float) -> None:
+        delays.append(delay)
+
+    client._schedule_retry = capture_retry  # type: ignore[method-assign]
+    client._reconnect_attempts = 3
+
+    await client._handle_socket_closed(4100, "")
+    await client._handle_socket_closed(4200, "")
+    await client._handle_socket_closed(4000, "")
+
+    assert delays == [5.0, 0.0, 0.0]
+    assert client.config.use_tls is True
+    await client.config.close()
+
+
+@pytest.mark.asyncio
+async def test_connect_and_disconnect_reset_reconnect_attempts() -> None:
+    client = SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster="local",
+            force_tls=False,
+            enabled_transports=[SockudoTransport.WS],
+        ),
+    )
+
+    async def fake_open_websocket(_: SockudoTransport) -> None:
+        return None
+
+    client._open_websocket = fake_open_websocket  # type: ignore[method-assign]
+    client._reconnect_attempts = 3
+
+    await client.connect()
+    assert client._reconnect_attempts == 0
+
+    client._reconnect_attempts = 4
+    await client.disconnect()
+    assert client._reconnect_attempts == 0
+
+
 def test_subscribe_tracks_event_filters() -> None:
     client = SockudoClient("app-key", SockudoOptions(cluster="local", force_tls=False))
 
@@ -341,6 +437,7 @@ def test_connection_recovery_uses_channel_positions_payload() -> None:
         stream_id="stream-1",
         last_message_id="msg-42",
     )
+    client._reconnect_attempts = 4
 
     payload = json.dumps(
         {
@@ -351,6 +448,7 @@ def test_connection_recovery_uses_channel_positions_payload() -> None:
 
     asyncio.run(client._handle_raw_message(payload))
 
+    assert client._reconnect_attempts == 0
     resume_event = next(item for item in sent if item[0] == "sockudo:resume")
     assert resume_event[1] == {
         "channel_positions": {
