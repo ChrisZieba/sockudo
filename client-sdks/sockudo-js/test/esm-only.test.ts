@@ -22,4 +22,20 @@ describe("esm-only packaging", () => {
     expect(JSON.stringify(packageJson.exports).includes(".cjs")).toBe(false);
     expect(JSON.stringify(packageJson.exports).includes('"require"')).toBe(false);
   });
+
+  it("points explicit mobile entrypoints at their Sockudo builds", () => {
+    const reactNativeEntry = readFileSync(
+      join(currentDir, "..", "react-native", "index.js"),
+      "utf8",
+    );
+    const nativeScriptEntry = readFileSync(
+      join(currentDir, "..", "nativescript", "index.js"),
+      "utf8",
+    );
+
+    expect(reactNativeEntry).toContain('from "../dist/react-native/sockudo.js"');
+    expect(nativeScriptEntry).toContain('from "../dist/nativescript/sockudo.js"');
+    expect(reactNativeEntry).not.toContain("pusher.js");
+    expect(nativeScriptEntry).not.toContain("pusher.js");
+  });
 });
