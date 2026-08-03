@@ -182,11 +182,18 @@ pub async fn stats(
         app_stat.occupancy.channels = channel_names.len();
         app_stat.occupancy.subscriptions = namespace.channels.iter().map(|entry| entry.len()).sum();
 
-        for socket in namespace.sockets.iter() {
-            if socket.value().get_user_id().await.is_some() {
+        // Snapshotted first: holding this iter's shard guard across the awaits below
+        // can deadlock against add_socket()'s insert on the same shard.
+        let socket_refs: Vec<_> = namespace
+            .sockets
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
+        for socket in socket_refs {
+            if socket.get_user_id().await.is_some() {
                 app_stat.authenticated_connections += 1;
             }
-            if socket.value().get_connection_meta().await.is_some() {
+            if socket.get_connection_meta().await.is_some() {
                 app_stat.connections_with_meta += 1;
             }
         }
