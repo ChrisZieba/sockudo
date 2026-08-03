@@ -160,10 +160,17 @@ impl ConnectionHandler {
 
         // Skip count reads entirely when this leave cannot produce an observable
         // count-derived event.
-        let wants_channel_vacated_webhook =
-            self.subscription_count_webhook_configured(app_config, "channel_vacated");
-        let wants_subscription_count_webhook =
-            self.subscription_count_webhook_configured(app_config, "subscription_count");
+        let wants_channel_vacated_webhook = self.subscription_count_webhook_configured_for_channel(
+            app_config,
+            "channel_vacated",
+            channel_name,
+        );
+        let wants_subscription_count_webhook = self
+            .subscription_count_webhook_configured_for_channel(
+                app_config,
+                "subscription_count",
+                channel_name,
+            );
         let wants_meta_channel = self
             .subscription_count_meta_channel_has_local_subscriber(app_config, channel_name)
             .await;
@@ -231,14 +238,17 @@ impl ConnectionHandler {
         Ok(())
     }
 
-    pub(crate) fn subscription_count_webhook_configured(
+    pub(crate) fn subscription_count_webhook_configured_for_channel(
         &self,
         app_config: &App,
         event_type: &str,
+        channel: &str,
     ) -> bool {
         self.webhook_integration
             .as_ref()
-            .is_some_and(|integration| integration.webhook_configured(app_config, event_type))
+            .is_some_and(|integration| {
+                integration.wants_channel_count_webhook(app_config, event_type, channel)
+            })
     }
 
     /// Returns true when this node has local subscribers for the channel's
@@ -850,7 +860,11 @@ impl ConnectionHandler {
         // Per Pusher spec: delay prevents spurious webhooks from momentary disconnects
         if current_sub_count == 0
             && let Some(webhook_integration) = &self.webhook_integration
-            && webhook_integration.webhook_configured(app_config, "channel_vacated")
+            && webhook_integration.wants_channel_count_webhook(
+                app_config,
+                "channel_vacated",
+                channel_str,
+            )
         {
             let wi = Arc::clone(webhook_integration);
             let cm = Arc::clone(&self.connection_manager);

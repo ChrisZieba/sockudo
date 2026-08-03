@@ -373,6 +373,21 @@ impl WebhookIntegration {
             || self.webhook_configured(app, "subscription_count")
     }
 
+    /// Like [`Self::webhook_configured`] but also checks the webhook's filter
+    /// against `channel`. No filter matches all channels.
+    pub fn wants_channel_count_webhook(&self, app: &App, event_type: &str, channel: &str) -> bool {
+        self.is_enabled()
+            && app.webhooks_ref().is_some_and(|webhooks| {
+                webhooks.iter().any(|wh| {
+                    wh.event_types.iter().any(|e| e.as_str() == event_type)
+                        && wh
+                            .filter
+                            .as_ref()
+                            .is_none_or(|f| f.matches_channel(channel))
+                })
+            })
+    }
+
     pub async fn send_channel_occupied(&self, app: &App, channel: &str) -> Result<()> {
         if !self.should_send_webhook(app, "channel_occupied") {
             return Ok(());
@@ -806,7 +821,7 @@ mod tests {
     use super::*;
     use sockudo_app::memory_app_manager::MemoryAppManager;
     use sockudo_core::app::{AppFeaturesPolicy, AppLimitsPolicy, AppPolicy};
-    use sockudo_core::webhook_types::{JobData, JobPayload, Webhook};
+    use sockudo_core::webhook_types::{JobData, JobPayload, Webhook, WebhookFilter};
     use sockudo_queue::manager::QueueManagerFactory;
 
     async fn create_test_queue_manager() -> Arc<QueueManager> {
@@ -1246,6 +1261,161 @@ mod tests {
         assert_eq!(merged[0].payload.events.len(), 2);
         assert_eq!(merged[1].app_id, "app-b");
         assert_eq!(merged[1].payload.events.len(), 1);
+    }
+
+    async fn make_integration(enabled: bool) -> WebhookIntegration {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let queue_manager = create_test_queue_manager().await;
+        WebhookIntegration::new(
+            WebhookConfig {
+                enabled,
+                ..Default::default()
+            },
+            app_manager,
+            Some(queue_manager),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn wants_channel_count_webhook_no_webhooks_configured() {
+        let integration = make_integration(true).await;
+        let app = test_app();
+        assert!(!integration.wants_channel_count_webhook(
+            &app,
+            "channel_occupied",
+            "presence-lobby"
+        ));
+    }
+
+    #[tokio::test]
+    async fn wants_channel_count_webhook_event_type_mismatch() {
+        let integration = make_integration(true).await;
+        let mut app = test_app();
+        app.policy.webhooks = Some(vec![Webhook {
+            event_types: vec!["channel_vacated".to_string()],
+            ..Webhook::default()
+        }]);
+        assert!(!integration.wants_channel_count_webhook(
+            &app,
+            "channel_occupied",
+            "presence-lobby"
+        ));
+    }
+
+    #[tokio::test]
+    async fn wants_channel_count_webhook_match_no_filter() {
+        let integration = make_integration(true).await;
+        let mut app = test_app();
+        app.policy.webhooks = Some(vec![Webhook {
+            event_types: vec!["channel_occupied".to_string()],
+            ..Webhook::default()
+        }]);
+        assert!(integration.wants_channel_count_webhook(&app, "channel_occupied", "public-room"));
+        assert!(integration.wants_channel_count_webhook(&app, "channel_occupied", "private-x"));
+        assert!(integration.wants_channel_count_webhook(
+            &app,
+            "channel_occupied",
+            "presence-lobby"
+        ));
+    }
+
+    #[tokio::test]
+    async fn wants_channel_count_webhook_filter_prefix_match() {
+        let integration = make_integration(true).await;
+        let mut app = test_app();
+        app.policy.webhooks = Some(vec![Webhook {
+            event_types: vec!["channel_occupied".to_string()],
+            filter: Some(WebhookFilter {
+                channel_prefix: Some("presence-".to_string()),
+                ..Default::default()
+            }),
+            ..Webhook::default()
+        }]);
+        assert!(integration.wants_channel_count_webhook(
+            &app,
+            "channel_occupied",
+            "presence-lobby"
+        ));
+    }
+
+    #[tokio::test]
+    async fn wants_channel_count_webhook_filter_prefix_no_match() {
+        let integration = make_integration(true).await;
+        let mut app = test_app();
+        app.policy.webhooks = Some(vec![Webhook {
+            event_types: vec!["channel_occupied".to_string()],
+            filter: Some(WebhookFilter {
+                channel_prefix: Some("presence-".to_string()),
+                ..Default::default()
+            }),
+            ..Webhook::default()
+        }]);
+        assert!(!integration.wants_channel_count_webhook(&app, "channel_occupied", "private-x"));
+    }
+
+    #[tokio::test]
+    async fn wants_channel_count_webhook_two_webhooks_second_filter_matches() {
+        let integration = make_integration(true).await;
+        let mut app = test_app();
+        app.policy.webhooks = Some(vec![
+            Webhook {
+                event_types: vec!["channel_occupied".to_string()],
+                filter: Some(WebhookFilter {
+                    channel_prefix: Some("presence-".to_string()),
+                    ..Default::default()
+                }),
+                ..Webhook::default()
+            },
+            Webhook {
+                event_types: vec!["channel_occupied".to_string()],
+                filter: Some(WebhookFilter {
+                    channel_prefix: Some("private-".to_string()),
+                    ..Default::default()
+                }),
+                ..Webhook::default()
+            },
+        ]);
+        assert!(integration.wants_channel_count_webhook(&app, "channel_occupied", "private-x"));
+    }
+
+    #[tokio::test]
+    async fn wants_channel_count_webhook_no_filter_webhook_matches_all() {
+        let integration = make_integration(true).await;
+        let mut app = test_app();
+        app.policy.webhooks = Some(vec![
+            Webhook {
+                event_types: vec!["channel_occupied".to_string()],
+                filter: None,
+                ..Webhook::default()
+            },
+            Webhook {
+                event_types: vec!["channel_occupied".to_string()],
+                filter: Some(WebhookFilter {
+                    channel_prefix: Some("presence-".to_string()),
+                    ..Default::default()
+                }),
+                ..Webhook::default()
+            },
+        ]);
+        assert!(integration.wants_channel_count_webhook(&app, "channel_occupied", "public-room"));
+        assert!(integration.wants_channel_count_webhook(&app, "channel_occupied", "private-x"));
+    }
+
+    #[tokio::test]
+    async fn wants_channel_count_webhook_disabled_integration() {
+        let integration = make_integration(false).await;
+        let mut app = test_app();
+        app.policy.webhooks = Some(vec![Webhook {
+            event_types: vec!["channel_occupied".to_string()],
+            ..Webhook::default()
+        }]);
+        assert!(!integration.wants_channel_count_webhook(
+            &app,
+            "channel_occupied",
+            "presence-lobby"
+        ));
     }
 
     #[test]

@@ -9,7 +9,6 @@ use ahash::AHashMap;
 use reqwest::{Client, header};
 use serde::Serialize;
 use sockudo_core::token::Token;
-use sockudo_core::utils::channel_namespace_name;
 use sockudo_core::webhook_types::{JobData, Webhook, WebhookFilter, WebhookRetryPolicy};
 use sonic_rs::Value;
 #[cfg(feature = "lambda")]
@@ -105,41 +104,7 @@ impl WebhookSender {
             .and_then(Value::as_str)
             .unwrap_or_default();
 
-        if let Some(prefix) = &filter.channel_prefix
-            && !channel.starts_with(prefix)
-        {
-            return false;
-        }
-
-        if let Some(suffix) = &filter.channel_suffix
-            && !channel.ends_with(suffix)
-        {
-            return false;
-        }
-
-        if let Some(regex) = channel_pattern
-            && !regex.is_match(channel)
-        {
-            return false;
-        }
-
-        let namespace = channel_namespace_name(channel);
-
-        if let Some(expected_namespace) = &filter.channel_namespace
-            && namespace != Some(expected_namespace.as_str())
-        {
-            return false;
-        }
-
-        if let Some(expected_namespaces) = &filter.channel_namespaces
-            && !expected_namespaces
-                .iter()
-                .any(|candidate| namespace == Some(candidate.as_str()))
-        {
-            return false;
-        }
-
-        true
+        filter.matches_channel_with_pattern(channel, channel_pattern)
     }
 
     fn filter_events_for_webhook(&self, events: &[Value], webhook_config: &Webhook) -> Vec<Value> {
@@ -848,5 +813,88 @@ mod tests {
         assert_eq!(relevant.len(), 2);
         assert_eq!(relevant.get("http://localhost/prefix").unwrap().1.len(), 1);
         assert_eq!(relevant.get("http://localhost/all").unwrap().1.len(), 2);
+    }
+
+    #[test]
+    fn test_filter_events_for_webhook_respects_channel_pattern() {
+        let webhook_sender = WebhookSender::new(
+            Arc::new(MemoryAppManager::new()),
+            WebhookRetryConfig::default(),
+            10_000,
+        );
+        let webhook = Webhook {
+            url: Some(url::Url::parse("http://localhost/webhook").unwrap()),
+            lambda_function: None,
+            lambda: None,
+            event_types: vec!["channel_occupied".to_string()],
+            filter: Some(WebhookFilter {
+                channel_prefix: None,
+                channel_suffix: None,
+                channel_pattern: Some("^presence-.*$".to_string()),
+                channel_namespace: None,
+                channel_namespaces: None,
+            }),
+            headers: None,
+            retry: None,
+            request_timeout_ms: None,
+        };
+
+        let filtered = webhook_sender.filter_events_for_webhook(
+            &[
+                sonic_rs::json!({
+                    "name": "channel_occupied",
+                    "channel": "presence-lobby"
+                }),
+                sonic_rs::json!({
+                    "name": "channel_occupied",
+                    "channel": "private-conversation.123"
+                }),
+            ],
+            &webhook,
+        );
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(
+            filtered[0].get("channel").and_then(Value::as_str),
+            Some("presence-lobby")
+        );
+    }
+
+    #[test]
+    fn test_filter_events_for_webhook_invalid_pattern_drops_all_events() {
+        let webhook_sender = WebhookSender::new(
+            Arc::new(MemoryAppManager::new()),
+            WebhookRetryConfig::default(),
+            10_000,
+        );
+        let webhook = Webhook {
+            url: Some(url::Url::parse("http://localhost/webhook").unwrap()),
+            lambda_function: None,
+            lambda: None,
+            event_types: vec!["channel_occupied".to_string()],
+            filter: Some(WebhookFilter {
+                channel_prefix: None,
+                channel_suffix: None,
+                channel_pattern: Some("[invalid".to_string()),
+                channel_namespace: None,
+                channel_namespaces: None,
+            }),
+            headers: None,
+            retry: None,
+            request_timeout_ms: None,
+        };
+
+        let filtered = webhook_sender.filter_events_for_webhook(
+            &[sonic_rs::json!({
+                "name": "channel_occupied",
+                "channel": "presence-lobby"
+            })],
+            &webhook,
+        );
+
+        assert!(
+            filtered.is_empty(),
+            "invalid channel_pattern must drop every event for the webhook"
+        );
     }
 }
