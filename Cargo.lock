@@ -8016,6 +8016,7 @@ dependencies = [
  "sockudo-filter",
  "sockudo-metrics",
  "sockudo-protocol",
+ "sockudo-queue",
  "sockudo-webhook",
  "sockudo-ws",
  "sonic-rs",

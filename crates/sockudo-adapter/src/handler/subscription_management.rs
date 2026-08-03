@@ -423,10 +423,18 @@ impl ConnectionHandler {
 
         // Skip count reads entirely when this join cannot produce an observable
         // count-derived event.
-        let wants_channel_occupied_webhook =
-            self.subscription_count_webhook_configured(app_config, "channel_occupied");
-        let wants_subscription_count_webhook =
-            self.subscription_count_webhook_configured(app_config, "subscription_count");
+        let wants_channel_occupied_webhook = self
+            .subscription_count_webhook_configured_for_channel(
+                app_config,
+                "channel_occupied",
+                channel,
+            );
+        let wants_subscription_count_webhook = self
+            .subscription_count_webhook_configured_for_channel(
+                app_config,
+                "subscription_count",
+                channel,
+            );
         let wants_meta_channel = self
             .subscription_count_meta_channel_has_local_subscriber(app_config, channel)
             .await;
