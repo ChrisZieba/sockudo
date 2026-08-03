@@ -36,6 +36,12 @@ pub mod transports;
 pub(crate) mod v2_broadcast;
 pub mod watchlist;
 
+/// Shared test infrastructure for `ConnectionManager` mocks.
+/// Gated behind `cfg(any(test, doctest))` for unit tests and always available
+/// to integration tests via the implicit dev-dependency on the crate.
+#[doc(hidden)]
+pub mod test_support;
+
 pub use self::{
     connection_manager::ConnectionManager,
     handler::{ConnectionHandler, ConnectionHandlerBuilder, RealtimeEgressTap},

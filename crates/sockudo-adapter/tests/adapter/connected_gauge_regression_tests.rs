@@ -6,28 +6,24 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use ahash::AHashMap;
 use async_trait::async_trait;
 use sockudo_adapter::ConnectionManager;
-use sockudo_adapter::connection_manager::{ChannelSocketCount, HorizontalAdapterInterface};
+use sockudo_adapter::delegate_connection_manager;
 use sockudo_adapter::handler::ConnectionHandler;
 use sockudo_adapter::local_adapter::LocalAdapter;
+use sockudo_adapter::test_support::NoopConnectionManager;
 use sockudo_app::memory_app_manager::MemoryAppManager;
 use sockudo_core::app::{App, AppLimitsPolicy, AppManager, AppPolicy};
 use sockudo_core::cache::CacheManager;
-use sockudo_core::channel::PresenceMemberInfo;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::metrics::MetricsInterface;
-use sockudo_core::namespace::Namespace;
 use sockudo_core::options::ServerOptions;
-use sockudo_core::websocket::{SocketId, WebSocketBufferConfig, WebSocketRef};
-use sockudo_protocol::messages::PusherMessage;
+use sockudo_core::websocket::{SocketId, WebSocketBufferConfig};
 use sockudo_protocol::{ProtocolVersion, WireFormat};
 use sockudo_ws::axum_integration::{WebSocket, WebSocketWriter};
 use sockudo_ws::client::WebSocketClient;
 use sockudo_ws::{Config as WsConfig, Http1, Stream as WsStream, WebSocketStream};
 use sonic_rs::Value;
-use std::any::Any;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 
@@ -108,146 +104,26 @@ impl MetricsInterface for CountingMetrics {
 
 // Reports a fixed socket count so the quota check rejects before mark_new_connection.
 #[derive(Clone)]
-struct FullCapacityAdapter {
+struct TestAdapter {
     reported_count: usize,
 }
 
-impl FullCapacityAdapter {
+impl TestAdapter {
     fn with_count(n: usize) -> Self {
         Self { reported_count: n }
     }
 }
 
 #[async_trait]
-impl ConnectionManager for FullCapacityAdapter {
-    async fn init(&self) {}
-    async fn get_namespace(&self, _: &str) -> Option<Arc<Namespace>> {
-        None
-    }
-    async fn add_socket(
-        &self,
-        _: SocketId,
-        _: WebSocketWriter,
-        _: &str,
-        _: Arc<dyn AppManager + Send + Sync>,
-        _: WebSocketBufferConfig,
-        _: ProtocolVersion,
-        _: WireFormat,
-        _: bool,
-        _: sockudo_protocol::AppendMode,
-    ) -> Result<()> {
-        Ok(())
-    }
-    async fn get_connection(&self, _: &SocketId, _: &str) -> Option<WebSocketRef> {
-        None
-    }
-    async fn remove_connection(&self, _: &SocketId, _: &str) -> Result<()> {
-        Ok(())
-    }
-    async fn send_message(&self, _: &str, _: &SocketId, _: PusherMessage) -> Result<()> {
-        Ok(())
-    }
-    async fn send(
-        &self,
-        _: &str,
-        _: PusherMessage,
-        _: Option<&SocketId>,
-        _: &str,
-        _: Option<f64>,
-    ) -> Result<()> {
-        Ok(())
-    }
-    async fn get_channel_members(
-        &self,
-        _: &str,
-        _: &str,
-    ) -> Result<AHashMap<String, PresenceMemberInfo>> {
-        Ok(AHashMap::new())
-    }
-    async fn get_channel_sockets(&self, _: &str, _: &str) -> Result<Vec<SocketId>> {
-        Ok(Vec::new())
-    }
-    async fn remove_channel(&self, _: &str, _: &str) {}
-    async fn is_in_channel(&self, _: &str, _: &str, _: &SocketId) -> Result<bool> {
-        Ok(false)
-    }
-    async fn get_user_sockets(&self, _: &str, _: &str) -> Result<Vec<WebSocketRef>> {
-        Ok(Vec::new())
-    }
-    async fn cleanup_connection(&self, _: &str, _: WebSocketRef) {}
-    async fn terminate_connection(&self, _: &str, _: &str) -> Result<()> {
-        Ok(())
-    }
-    async fn add_channel_to_sockets(&self, _: &str, _: &str, _: &SocketId) {}
-    async fn get_channel_socket_count_info(&self, _: &str, _: &str) -> ChannelSocketCount {
-        ChannelSocketCount {
-            count: 0,
-            complete: true,
-        }
-    }
-    async fn get_channel_socket_count(&self, _: &str, _: &str) -> usize {
-        0
-    }
-    async fn add_to_channel(&self, _: &str, _: &str, _: &SocketId) -> Result<(bool, bool)> {
-        Ok((false, false))
-    }
-    async fn remove_from_channel(&self, _: &str, _: &str, _: &SocketId) -> Result<(bool, bool)> {
-        Ok((false, false))
-    }
-    async fn get_presence_member(
-        &self,
-        _: &str,
-        _: &str,
-        _: &SocketId,
-    ) -> Option<PresenceMemberInfo> {
-        None
-    }
-    async fn terminate_user_connections(&self, _: &str, _: &str) -> Result<()> {
-        Ok(())
-    }
-    async fn force_reconnect_user(&self, _: &str, _: &str) -> Result<()> {
-        Ok(())
-    }
-    async fn add_user(&self, _: WebSocketRef) -> Result<()> {
-        Ok(())
-    }
-    async fn remove_user(&self, _: WebSocketRef) -> Result<()> {
-        Ok(())
-    }
-    async fn get_channels_with_socket_count(&self, _: &str) -> Result<AHashMap<String, usize>> {
-        Ok(AHashMap::new())
-    }
-    async fn get_sockets_count(&self, _: &str) -> Result<usize> {
-        Ok(self.reported_count)
-    }
-    async fn get_namespaces(&self) -> Result<Vec<(String, Arc<Namespace>)>> {
-        Ok(Vec::new())
-    }
-    fn as_any_mut(&mut self) -> &mut dyn Any {
+impl NoopConnectionManager for TestAdapter {
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
-    async fn remove_user_socket(&self, _: &str, _: &SocketId, _: &str) -> Result<()> {
-        Ok(())
-    }
-    async fn count_user_connections_in_channel(
-        &self,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: Option<&SocketId>,
-    ) -> Result<usize> {
-        Ok(0)
-    }
-    async fn check_health(&self) -> Result<()> {
-        Ok(())
-    }
-    fn get_node_id(&self) -> String {
-        "test-node".to_string()
-    }
-    fn as_horizontal_adapter(&self) -> Option<&dyn HorizontalAdapterInterface> {
-        None
+    async fn get_sockets_count(&self, _app_id: &str) -> Result<usize> {
+        Ok(self.reported_count)
     }
 }
+delegate_connection_manager!(TestAdapter);
 
 struct NullCacheManager;
 
@@ -536,7 +412,7 @@ async fn connected_gauge_over_quota_never_increments() {
 
     let handler = ConnectionHandler::builder(
         app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
-        Arc::new(FullCapacityAdapter::with_count(1)) as Arc<dyn ConnectionManager + Send + Sync>,
+        Arc::new(TestAdapter::with_count(1)) as Arc<dyn ConnectionManager + Send + Sync>,
         Arc::new(NullCacheManager),
         ServerOptions::default(),
     )
@@ -581,7 +457,7 @@ async fn connected_gauge_over_quota_never_increments() {
 fn drain_guard_is_accepting_false_when_running_false() {
     let handler = ConnectionHandler::builder(
         Arc::new(MemoryAppManager::new()) as Arc<dyn AppManager + Send + Sync>,
-        Arc::new(FullCapacityAdapter::with_count(0)) as Arc<dyn ConnectionManager + Send + Sync>,
+        Arc::new(TestAdapter::with_count(0)) as Arc<dyn ConnectionManager + Send + Sync>,
         Arc::new(NullCacheManager),
         ServerOptions::default(),
     )
@@ -601,7 +477,7 @@ fn is_accepting_defaults_to_true() {
     let app_manager = Arc::new(MemoryAppManager::new());
     let handler = ConnectionHandler::builder(
         app_manager as Arc<dyn AppManager + Send + Sync>,
-        Arc::new(FullCapacityAdapter::with_count(0)) as Arc<dyn ConnectionManager + Send + Sync>,
+        Arc::new(TestAdapter::with_count(0)) as Arc<dyn ConnectionManager + Send + Sync>,
         Arc::new(NullCacheManager),
         ServerOptions::default(),
     )
