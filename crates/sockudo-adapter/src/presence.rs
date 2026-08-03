@@ -1104,18 +1104,14 @@ pub fn global_presence_manager() -> &'static PresenceManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ahash::AHashMap;
+    use crate::delegate_connection_manager;
+    use crate::test_support::NoopConnectionManager;
     use async_trait::async_trait;
     use sockudo_core::app::{App, AppPolicy};
-    use sockudo_core::channel::PresenceMemberInfo;
-    use sockudo_core::namespace::Namespace;
     use sockudo_core::presence_history::{
         MemoryPresenceHistoryStore, PresenceHistoryDirection, PresenceHistoryEventCause,
         PresenceHistoryEventKind, PresenceHistoryReadRequest, PresenceHistoryRetentionPolicy,
     };
-    use sockudo_protocol::WireFormat;
-    use sockudo_ws::axum_integration::WebSocketWriter;
-    use std::any::Any;
     use std::collections::VecDeque;
     use std::sync::Mutex as StdMutex;
 
@@ -1147,11 +1143,11 @@ mod tests {
         assert_eq!(manager.presence_locks.len(), 100);
     }
 
-    struct ScriptedConnectionManager {
+    struct TestAdapter {
         counts: StdMutex<VecDeque<usize>>,
     }
 
-    impl ScriptedConnectionManager {
+    impl TestAdapter {
         fn new(counts: Vec<usize>) -> Self {
             Self {
                 counts: StdMutex::new(counts.into()),
@@ -1160,155 +1156,9 @@ mod tests {
     }
 
     #[async_trait]
-    impl ConnectionManager for ScriptedConnectionManager {
-        async fn init(&self) {}
-        async fn get_namespace(&self, _app_id: &str) -> Option<Arc<Namespace>> {
-            None
-        }
-        async fn add_socket(
-            &self,
-            _socket_id: SocketId,
-            _socket: WebSocketWriter,
-            _app_id: &str,
-            _app_manager: Arc<dyn sockudo_core::app::AppManager + Send + Sync>,
-            _buffer_config: sockudo_core::websocket::WebSocketBufferConfig,
-            _protocol_version: sockudo_protocol::ProtocolVersion,
-            _wire_format: WireFormat,
-            _echo_messages: bool,
-            _append_mode: sockudo_protocol::AppendMode,
-        ) -> Result<()> {
-            Ok(())
-        }
-        async fn get_connection(
-            &self,
-            _socket_id: &SocketId,
-            _app_id: &str,
-        ) -> Option<sockudo_core::websocket::WebSocketRef> {
-            None
-        }
-        async fn remove_connection(&self, _socket_id: &SocketId, _app_id: &str) -> Result<()> {
-            Ok(())
-        }
-        async fn send_message(
-            &self,
-            _app_id: &str,
-            _socket_id: &SocketId,
-            _message: PusherMessage,
-        ) -> Result<()> {
-            Ok(())
-        }
-        async fn send(
-            &self,
-            _channel: &str,
-            _message: PusherMessage,
-            _except: Option<&SocketId>,
-            _app_id: &str,
-            _start_time_ms: Option<f64>,
-        ) -> Result<()> {
-            Ok(())
-        }
-        async fn get_channel_members(
-            &self,
-            _app_id: &str,
-            _channel: &str,
-        ) -> Result<AHashMap<String, PresenceMemberInfo>> {
-            Ok(AHashMap::new())
-        }
-        async fn get_channel_sockets(
-            &self,
-            _app_id: &str,
-            _channel: &str,
-        ) -> Result<Vec<SocketId>> {
-            Ok(Vec::new())
-        }
-        async fn remove_channel(&self, _app_id: &str, _channel: &str) {}
-        async fn is_in_channel(
-            &self,
-            _app_id: &str,
-            _channel: &str,
-            _socket_id: &SocketId,
-        ) -> Result<bool> {
-            Ok(false)
-        }
-        async fn get_user_sockets(
-            &self,
-            _user_id: &str,
-            _app_id: &str,
-        ) -> Result<Vec<sockudo_core::websocket::WebSocketRef>> {
-            Ok(Vec::new())
-        }
-        async fn cleanup_connection(
-            &self,
-            _app_id: &str,
-            _ws: sockudo_core::websocket::WebSocketRef,
-        ) {
-        }
-        async fn terminate_connection(&self, _app_id: &str, _user_id: &str) -> Result<()> {
-            Ok(())
-        }
-        async fn add_channel_to_sockets(
-            &self,
-            _app_id: &str,
-            _channel: &str,
-            _socket_id: &SocketId,
-        ) {
-        }
-        async fn get_channel_socket_count_info(
-            &self,
-            _app_id: &str,
-            _channel: &str,
-        ) -> crate::connection_manager::ChannelSocketCount {
-            crate::connection_manager::ChannelSocketCount {
-                count: 0,
-                complete: true,
-            }
-        }
-        async fn get_channel_socket_count(&self, _app_id: &str, _channel: &str) -> usize {
-            0
-        }
-        async fn add_to_channel(
-            &self,
-            _app_id: &str,
-            _channel: &str,
-            _socket_id: &SocketId,
-        ) -> Result<(bool, bool)> {
-            Ok((false, false))
-        }
-        async fn remove_from_channel(
-            &self,
-            _app_id: &str,
-            _channel: &str,
-            _socket_id: &SocketId,
-        ) -> Result<(bool, bool)> {
-            Ok((false, false))
-        }
-        async fn get_presence_member(
-            &self,
-            _app_id: &str,
-            _channel: &str,
-            _socket_id: &SocketId,
-        ) -> Option<PresenceMemberInfo> {
-            None
-        }
-        async fn terminate_user_connections(&self, _app_id: &str, _user_id: &str) -> Result<()> {
-            Ok(())
-        }
-        async fn force_reconnect_user(&self, _app_id: &str, _user_id: &str) -> Result<()> {
-            Ok(())
-        }
-        async fn add_user(&self, _ws: sockudo_core::websocket::WebSocketRef) -> Result<()> {
-            Ok(())
-        }
-        async fn remove_user(&self, _ws: sockudo_core::websocket::WebSocketRef) -> Result<()> {
-            Ok(())
-        }
-        async fn remove_user_socket(
-            &self,
-            _user_id: &str,
-            _socket_id: &SocketId,
-            _app_id: &str,
-        ) -> Result<()> {
-            Ok(())
+    impl NoopConnectionManager for TestAdapter {
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
         }
         async fn count_user_connections_in_channel(
             &self,
@@ -1319,33 +1169,8 @@ mod tests {
         ) -> Result<usize> {
             Ok(self.counts.lock().unwrap().pop_front().unwrap_or_default())
         }
-        async fn get_channels_with_socket_count(
-            &self,
-            _app_id: &str,
-        ) -> Result<AHashMap<String, usize>> {
-            Ok(AHashMap::new())
-        }
-        async fn get_sockets_count(&self, _app_id: &str) -> Result<usize> {
-            Ok(0)
-        }
-        async fn get_namespaces(&self) -> Result<Vec<(String, Arc<Namespace>)>> {
-            Ok(Vec::new())
-        }
-        fn as_any_mut(&mut self) -> &mut dyn Any {
-            self
-        }
-        async fn check_health(&self) -> Result<()> {
-            Ok(())
-        }
-        fn get_node_id(&self) -> String {
-            "test-node".to_string()
-        }
-        fn as_horizontal_adapter(
-            &self,
-        ) -> Option<&dyn crate::connection_manager::HorizontalAdapterInterface> {
-            None
-        }
     }
+    delegate_connection_manager!(TestAdapter);
 
     fn test_app() -> App {
         App::from_policy(
@@ -1369,7 +1194,7 @@ mod tests {
     async fn presence_manager_records_authoritative_join_and_leave_history() {
         let manager = PresenceManager::new();
         let connection_manager: Arc<dyn ConnectionManager + Send + Sync> =
-            Arc::new(ScriptedConnectionManager::new(vec![0, 0]));
+            Arc::new(TestAdapter::new(vec![0, 0]));
         let store = Arc::new(MemoryPresenceHistoryStore::new(Default::default()));
         let app = test_app();
         let socket = SocketId::new();
@@ -1432,7 +1257,7 @@ mod tests {
     async fn presence_manager_skips_non_authoritative_socket_churn_history() {
         let manager = PresenceManager::new();
         let connection_manager: Arc<dyn ConnectionManager + Send + Sync> =
-            Arc::new(ScriptedConnectionManager::new(vec![0, 1, 1, 0]));
+            Arc::new(TestAdapter::new(vec![0, 1, 1, 0]));
         let store = Arc::new(MemoryPresenceHistoryStore::new(Default::default()));
         let app = test_app();
         let socket_a = SocketId::new();
@@ -1531,7 +1356,7 @@ mod tests {
     async fn presence_manager_suppresses_duplicate_authoritative_join_reports() {
         let manager = PresenceManager::new();
         let connection_manager: Arc<dyn ConnectionManager + Send + Sync> =
-            Arc::new(ScriptedConnectionManager::new(vec![0, 0]));
+            Arc::new(TestAdapter::new(vec![0, 0]));
         let store = Arc::new(MemoryPresenceHistoryStore::new(Default::default()));
         let app = test_app();
         let socket_a = SocketId::new();
@@ -1591,7 +1416,7 @@ mod tests {
     async fn presence_manager_suppresses_duplicate_authoritative_remove_reports() {
         let manager = PresenceManager::new();
         let connection_manager: Arc<dyn ConnectionManager + Send + Sync> =
-            Arc::new(ScriptedConnectionManager::new(vec![0, 0, 0]));
+            Arc::new(TestAdapter::new(vec![0, 0, 0]));
         let store = Arc::new(MemoryPresenceHistoryStore::new(Default::default()));
         let app = test_app();
         let socket = SocketId::new();
