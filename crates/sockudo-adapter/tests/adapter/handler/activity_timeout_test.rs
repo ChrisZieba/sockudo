@@ -221,10 +221,7 @@ async fn native_ping_handler_updates_activity_without_duplicate_pong() {
     assert!(matches!(established, Message::Text(_)));
 
     let payload = Bytes::from_static(b"native-ping");
-    client
-        .send(Message::Ping(payload.clone()))
-        .await
-        .unwrap();
+    client.send(Message::Ping(payload.clone())).await.unwrap();
 
     let frame = timeout(Duration::from_secs(2), client.next())
         .await
