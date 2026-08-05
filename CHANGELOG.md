@@ -4,9 +4,10 @@
 
 ### Fixed
 
-- Protocol V2 now uses the native nonce-based Ping/Pong heartbeat in `sockudo-ws` 2.0.1 and
-  closes missed Pong deadlines with code 4201, without running a duplicate application-level
-  heartbeat. Protocol V1 and Ably compatibility keep their existing heartbeat behavior.
+- Protocol V2 now uses the native nonce-based Ping/Pong heartbeat in `sockudo-ws` 2.0.1, lets the
+  WebSocket engine provide native Pong responses, and closes missed Pong deadlines with code 4201,
+  without running a duplicate application-level heartbeat. Protocol V1 and Ably compatibility keep
+  their existing heartbeat behavior.
 
 ## [4.6.0] - 2026-06-17
 

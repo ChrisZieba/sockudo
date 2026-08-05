@@ -1,4 +1,6 @@
 use crate::mocks::connection_handler_mock::MockCacheManager;
+use bytes::Bytes;
+use futures_util::{SinkExt, StreamExt};
 use sockudo_adapter::ConnectionManager;
 use sockudo_adapter::handler::ConnectionHandler;
 use sockudo_adapter::local_adapter::LocalAdapter;
@@ -9,9 +11,10 @@ use sockudo_core::websocket::{SocketId, WebSocketBufferConfig};
 use sockudo_protocol::{AppendMode, ProtocolVersion, WireFormat};
 use sockudo_ws::axum_integration::{WebSocket, WebSocketWriter};
 use sockudo_ws::client::WebSocketClient;
-use sockudo_ws::{Config as WsConfig, Http1, Stream as WsStream, WebSocketStream};
+use sockudo_ws::{Config as WsConfig, Http1, Message, Stream as WsStream, WebSocketStream};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::{Duration, timeout};
 
 const APP_ID: &str = "activity-timeout-test";
 type TestClient = WebSocketStream<WsStream<Http1>>;
@@ -41,6 +44,27 @@ async fn create_test_pair() -> (WebSocketWriter, TestClient) {
             }
         });
         writer
+    });
+
+    let stream = TcpStream::connect(address).await.unwrap();
+    let client = WebSocketClient::<Http1>::new(WsConfig::default());
+    let (client, _): (TestClient, _) = client
+        .connect(stream, &address.to_string(), "/", None)
+        .await
+        .unwrap();
+
+    (server.await.unwrap(), client)
+}
+
+async fn create_full_test_pair() -> (WebSocket, TestClient) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        sockudo_ws::handshake::server_handshake(&mut stream)
+            .await
+            .unwrap();
+        WebSocket::from_tcp(stream, WsConfig::default())
     });
 
     let stream = TcpStream::connect(address).await.unwrap();
@@ -166,4 +190,47 @@ async fn initial_activity_timeout_task_is_installed_only_for_v1() {
         .clear_activity_timeout(APP_ID, &v1_socket_id)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn native_ping_handler_updates_activity_without_duplicate_pong() {
+    let harness = build_harness().await;
+    let (socket, mut client) = create_full_test_pair().await;
+    let handler = harness.handler.clone();
+    let app_key = harness.app.key.clone();
+    let socket_task = tokio::spawn(async move {
+        handler
+            .handle_socket(
+                socket,
+                app_key,
+                None,
+                ProtocolVersion::V2,
+                WireFormat::Json,
+                true,
+                AppendMode::Delta,
+                None,
+            )
+            .await
+    });
+
+    let established = timeout(Duration::from_secs(2), client.next())
+        .await
+        .expect("timed out waiting for connection establishment")
+        .expect("websocket stream ended")
+        .expect("websocket receive failed");
+    assert!(matches!(established, Message::Text(_)));
+
+    let payload = Bytes::from_static(b"native-ping");
+    client
+        .send(Message::Ping(payload.clone()))
+        .await
+        .unwrap();
+
+    let frame = timeout(Duration::from_secs(2), client.next())
+        .await
+        .expect("timed out waiting for native pong")
+        .expect("websocket stream ended")
+        .expect("websocket receive failed");
+    assert!(matches!(frame, Message::Pong(received) if received == payload));
+    socket_task.abort();
 }
