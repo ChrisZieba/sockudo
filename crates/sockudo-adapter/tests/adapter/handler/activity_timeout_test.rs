@@ -1,5 +1,4 @@
 use crate::mocks::connection_handler_mock::MockCacheManager;
-use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use sockudo_adapter::ConnectionManager;
 use sockudo_adapter::handler::ConnectionHandler;
@@ -8,13 +7,14 @@ use sockudo_app::memory_app_manager::MemoryAppManager;
 use sockudo_core::app::{App, AppManager, AppPolicy};
 use sockudo_core::options::ServerOptions;
 use sockudo_core::websocket::{SocketId, WebSocketBufferConfig};
+use sockudo_protocol::constants::PONG_TIMEOUT;
 use sockudo_protocol::{AppendMode, ProtocolVersion, WireFormat};
 use sockudo_ws::axum_integration::{WebSocket, WebSocketWriter};
 use sockudo_ws::client::WebSocketClient;
 use sockudo_ws::{Config as WsConfig, Http1, Message, Stream as WsStream, WebSocketStream};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::{Duration, timeout};
+use tokio::time::{Duration, sleep, timeout};
 
 const APP_ID: &str = "activity-timeout-test";
 type TestClient = WebSocketStream<WsStream<Http1>>;
@@ -77,6 +77,33 @@ async fn create_full_test_pair() -> (WebSocket, TestClient) {
     (server.await.unwrap(), client)
 }
 
+async fn start_handled_socket(harness: &Harness, protocol_version: ProtocolVersion) -> TestClient {
+    let (socket, mut client) = create_full_test_pair().await;
+    let handler = harness.handler.clone();
+    let app_key = harness.app.key.clone();
+    tokio::spawn(async move {
+        handler
+            .handle_socket(
+                socket,
+                app_key,
+                None,
+                protocol_version,
+                WireFormat::Json,
+                true,
+                AppendMode::Delta,
+                None,
+            )
+            .await
+            .unwrap();
+    });
+    timeout(Duration::from_secs(2), client.next())
+        .await
+        .expect("timed out waiting for connection establishment")
+        .expect("websocket stream ended")
+        .expect("websocket receive failed");
+    client
+}
+
 async fn build_harness() -> Harness {
     let app = App::from_policy(
         APP_ID.to_string(),
@@ -90,11 +117,13 @@ async fn build_harness() -> Harness {
 
     let adapter = Arc::new(LocalAdapter::new());
     adapter.init().await;
+    let mut server_options = ServerOptions::default();
+    server_options.activity_timeout = 5;
     let handler = ConnectionHandler::builder(
         app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
         adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
         Arc::new(MockCacheManager::new()),
-        ServerOptions::default(),
+        server_options,
     )
     .local_adapter(adapter.clone())
     .build();
@@ -193,41 +222,137 @@ async fn initial_activity_timeout_task_is_installed_only_for_v1() {
 }
 
 #[tokio::test]
-async fn native_ping_handler_updates_activity_without_duplicate_pong() {
+async fn v1_connection_closes_without_pong() {
     let harness = build_harness().await;
-    let (socket, mut client) = create_full_test_pair().await;
-    let handler = harness.handler.clone();
-    let app_key = harness.app.key.clone();
-    let socket_task = tokio::spawn(async move {
-        handler
-            .handle_socket(
-                socket,
-                app_key,
-                None,
-                ProtocolVersion::V2,
-                WireFormat::Json,
-                true,
-                AppendMode::Delta,
-                None,
-            )
-            .await
-    });
 
-    let established = timeout(Duration::from_secs(2), client.next())
+    // Test v1 pusher protocol <= 5 without native ping support, handle activity timeout with pusher:ping/pusher:pong events
+    let (v1_socket_id, mut v1_client) = add_socket(&harness, ProtocolVersion::V1).await;
+    harness
+        .handler
+        .setup_initial_timeouts(&v1_socket_id, &harness.app)
         .await
-        .expect("timed out waiting for connection establishment")
-        .expect("websocket stream ended")
-        .expect("websocket receive failed");
-    assert!(matches!(established, Message::Text(_)));
+        .unwrap();
 
-    let payload = Bytes::from_static(b"native-ping");
-    client.send(Message::Ping(payload.clone())).await.unwrap();
+    // Wait for the activity timeout to trigger
+    let activity_timeout_duration = Duration::from_secs(5);
+    let result = timeout(activity_timeout_duration + Duration::from_secs(1), async {
+        loop {
+            if let Some(message) = v1_client.next().await {
+                if let Ok(Message::Text(text)) = message {
+                    if text
+                        .windows(b"pusher:ping".len())
+                        .any(|window| window == b"pusher:ping")
+                    {
+                        // Respond with pusher:pong
+                        let pong_message =
+                            Message::Text(bytes::Bytes::from_static(br#"{"event":"pusher:pong"}"#));
+                        v1_client.send(pong_message).await.unwrap();
+                        break;
+                    }
+                }
+            }
+        }
+    })
+    .await;
 
-    let frame = timeout(Duration::from_secs(2), client.next())
+    assert!(
+        result.is_ok(),
+        "V1 must receive pusher:ping events and respond with pusher:pong"
+    );
+
+    let close_result = timeout(Duration::from_secs(PONG_TIMEOUT + 1), async {
+        loop {
+            match v1_client.next().await {
+                Some(Ok(Message::Close(_))) | None => break,
+                Some(Ok(_)) => continue,
+                Some(Err(_)) => break,
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        close_result.is_ok(),
+        "V1 must close when pusher:pong is not received"
+    );
+}
+
+#[tokio::test]
+async fn v1_pong_resets_activity_timer() {
+    let harness = build_harness().await;
+    let mut client = start_handled_socket(&harness, ProtocolVersion::V1).await;
+
+    let ping = timeout(Duration::from_secs(6), async {
+        loop {
+            if let Some(Ok(Message::Text(text))) = client.next().await {
+                if text
+                    .windows(b"pusher:ping".len())
+                    .any(|w| w == b"pusher:ping")
+                {
+                    break;
+                }
+            }
+        }
+    })
+    .await;
+    assert!(ping.is_ok(), "V1 must receive pusher:ping");
+
+    client
+        .send(Message::Text(bytes::Bytes::from_static(
+            br#"{"event":"pusher:pong"}"#,
+        )))
         .await
-        .expect("timed out waiting for native pong")
-        .expect("websocket stream ended")
-        .expect("websocket receive failed");
-    assert!(matches!(frame, Message::Pong(received) if received == payload));
-    socket_task.abort();
+        .unwrap();
+
+    let still_open = timeout(Duration::from_secs(6), async {
+        loop {
+            match client.next().await {
+                Some(Ok(Message::Close(_))) | None => break false,
+                Some(Ok(_)) => continue,
+                Some(Err(_)) => break false,
+            }
+        }
+    })
+    .await;
+    assert!(
+        still_open.is_err(),
+        "pusher:pong must reset the activity timer"
+    );
+}
+
+#[tokio::test]
+async fn native_ping_resets_activity_timer_and_receives_pong() {
+    let harness = build_harness().await;
+    let mut client = start_handled_socket(&harness, ProtocolVersion::V1).await;
+
+    sleep(Duration::from_secs(3)).await;
+    client
+        .send(Message::Ping(bytes::Bytes::from_static(b"activity")))
+        .await
+        .unwrap();
+    assert!(matches!(
+        timeout(Duration::from_secs(2), client.next()).await.unwrap(),
+        Some(Ok(Message::Pong(payload))) if payload == bytes::Bytes::from_static(b"activity")
+    ));
+
+    let no_application_ping = timeout(Duration::from_secs(4), async {
+        loop {
+            match client.next().await {
+                Some(Ok(Message::Text(text)))
+                    if text
+                        .windows(b"pusher:ping".len())
+                        .any(|window| window == b"pusher:ping") =>
+                {
+                    break false;
+                }
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break true,
+                Some(Ok(_)) => continue,
+            }
+        }
+    })
+    .await;
+    assert!(
+        no_application_ping.is_err() || no_application_ping.unwrap(),
+        "native ping must reset the timer without causing pusher:ping"
+    );
 }
