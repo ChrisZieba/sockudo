@@ -117,8 +117,10 @@ async fn build_harness() -> Harness {
 
     let adapter = Arc::new(LocalAdapter::new());
     adapter.init().await;
-    let mut server_options = ServerOptions::default();
-    server_options.activity_timeout = 5;
+    let server_options = ServerOptions {
+        activity_timeout: 5,
+        ..ServerOptions::default()
+    };
     let handler = ConnectionHandler::builder(
         app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
         adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
@@ -237,19 +239,16 @@ async fn v1_connection_closes_without_pong() {
     let activity_timeout_duration = Duration::from_secs(5);
     let result = timeout(activity_timeout_duration + Duration::from_secs(1), async {
         loop {
-            if let Some(message) = v1_client.next().await {
-                if let Ok(Message::Text(text)) = message {
-                    if text
-                        .windows(b"pusher:ping".len())
-                        .any(|window| window == b"pusher:ping")
-                    {
-                        // Respond with pusher:pong
-                        let pong_message =
-                            Message::Text(bytes::Bytes::from_static(br#"{"event":"pusher:pong"}"#));
-                        v1_client.send(pong_message).await.unwrap();
-                        break;
-                    }
-                }
+            if let Some(Ok(Message::Text(text))) = v1_client.next().await
+                && text
+                    .windows(b"pusher:ping".len())
+                    .any(|window| window == b"pusher:ping")
+            {
+                // Respond with pusher:pong
+                let pong_message =
+                    Message::Text(bytes::Bytes::from_static(br#"{"event":"pusher:pong"}"#));
+                v1_client.send(pong_message).await.unwrap();
+                break;
             }
         }
     })
@@ -284,13 +283,12 @@ async fn v1_pong_resets_activity_timer() {
 
     let ping = timeout(Duration::from_secs(6), async {
         loop {
-            if let Some(Ok(Message::Text(text))) = client.next().await {
-                if text
+            if let Some(Ok(Message::Text(text))) = client.next().await
+                && text
                     .windows(b"pusher:ping".len())
                     .any(|w| w == b"pusher:ping")
-                {
-                    break;
-                }
+            {
+                break;
             }
         }
     })
