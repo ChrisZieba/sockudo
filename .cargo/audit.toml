@@ -23,4 +23,10 @@ ignore = [
     # RUSTSEC-2026-0049: rustls-webpki < 0.103.10 warning.
     # Transitive via async-nats; drops once async-nats bumps rustls-webpki.
     "RUSTSEC-2026-0049",
+
+    # RUSTSEC-2026-0235: rkyv 0.7 out-of-bounds read (Rc/Arc archives).
+    # Transitive via the optional `surrealdb` feature (surrealdb -> revision ->
+    # rust_decimal/rkyv); not present in default/production builds. Clears once
+    # surrealdb migrates `revision` to rkyv >= 0.8.
+    "RUSTSEC-2026-0235",
 ]

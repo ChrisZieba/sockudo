@@ -53,6 +53,10 @@ impl DisconnectCause {
 pub struct ConnectionTimeouts {
     pub activity_timeout_handle: Option<JoinHandle<()>>,
     pub auth_timeout_handle: Option<JoinHandle<()>>,
+    /// Task that fires when a capability (V2 auth) token reaches its `exp`. It
+    /// captures a `ConnectionHandler` clone and sleeps until expiry, so it must be
+    /// aborted on disconnect to avoid retaining that state for the token's lifetime.
+    pub token_expiry_handle: Option<JoinHandle<()>>,
 }
 
 impl Default for ConnectionTimeouts {
@@ -66,6 +70,7 @@ impl ConnectionTimeouts {
         Self {
             activity_timeout_handle: None,
             auth_timeout_handle: None,
+            token_expiry_handle: None,
         }
     }
 
@@ -81,9 +86,16 @@ impl ConnectionTimeouts {
         }
     }
 
+    pub fn clear_token_expiry(&mut self) {
+        if let Some(handle) = self.token_expiry_handle.take() {
+            handle.abort();
+        }
+    }
+
     pub fn clear_all(&mut self) {
         self.clear_activity_timeout();
         self.clear_auth_timeout();
+        self.clear_token_expiry();
     }
 }
 
@@ -281,5 +293,31 @@ mod disconnect_cause_tests {
         state.record_disconnect_cause(DisconnectCause::ActivityTimeout);
         state.record_disconnect_cause(DisconnectCause::FatalError);
         assert_eq!(state.disconnect_cause, DisconnectCause::ActivityTimeout);
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    // `clear_all` (called on disconnect) must abort the token-expiry task.
+    #[tokio::test]
+    async fn clear_all_aborts_token_expiry_task() {
+        let mut timeouts = ConnectionTimeouts::new();
+        let handle = tokio::spawn(async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            }
+        });
+        // Independent probe to observe abort (the handle itself is taken by clear).
+        let abort = handle.abort_handle();
+        timeouts.token_expiry_handle = Some(handle);
+
+        timeouts.clear_all();
+
+        assert!(timeouts.token_expiry_handle.is_none());
+        // Let the runtime process the abort, then confirm the task is gone.
+        tokio::task::yield_now().await;
+        assert!(abort.is_finished());
     }
 }

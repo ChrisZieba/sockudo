@@ -118,7 +118,17 @@ impl ConnectionHandler {
 
         connection.set_token_auth_context(context.clone()).await;
         self.connection_manager.add_user(connection.clone()).await?;
-        self.schedule_token_expiry(socket_id, app_config, &context);
+
+        // Track the expiry task on the connection so it is aborted on disconnect
+        // (ConnectionTimeouts::clear_all) instead of lingering — with its
+        // ConnectionHandler clone — until the token's `exp`. On refresh, abort the
+        // previous token's expiry task before installing the new one.
+        let expiry_handle = self.schedule_token_expiry(socket_id, app_config, &context);
+        {
+            let mut ws = connection.inner.lock().await;
+            ws.state.timeouts.clear_token_expiry();
+            ws.state.timeouts.token_expiry_handle = Some(expiry_handle);
+        }
 
         Ok(())
     }
@@ -177,7 +187,7 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         app_config: &App,
         context: &TokenAuthContext,
-    ) {
+    ) -> tokio::task::JoinHandle<()> {
         let handler = self.clone();
         let socket_id = *socket_id;
         let app_config = app_config.clone();
@@ -223,7 +233,7 @@ impl ConnectionHandler {
             {
                 warn!(%socket_id, error = %error, "failed to close expired token connection");
             }
-        });
+        })
     }
 
     async fn connection_still_uses_token(
