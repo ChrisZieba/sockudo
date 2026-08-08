@@ -61,8 +61,12 @@ impl SockudoServer {
             "app manager initialized"
         );
 
-        let (connection_manager, typed_adapter) =
-            AdapterFactory::create_with_typed(&config.adapter, &config.database).await?;
+        let (connection_manager, typed_adapter) = AdapterFactory::create_with_typed(
+            &config.adapter,
+            &config.database,
+            config.server_role.is_api(),
+        )
+        .await?;
         let local_adapter = Some(typed_adapter.local_adapter());
 
         info!(adapter = ?config.adapter.driver, "adapter initialized");
@@ -593,37 +597,38 @@ impl SockudoServer {
             )));
         }
 
-        let (cleanup_queue, cleanup_worker_handles) = if cleanup_config.async_enabled {
-            let presence_cleanup = PresenceCleanupContext {
-                history_store: Arc::clone(&presence_history_store),
-                history_config: config.presence_history.clone(),
-                manager: Arc::clone(&presence_manager),
-            };
-            let multi_worker_system = MultiWorkerCleanupSystem::new(
-                connection_manager.clone(),
-                app_manager.clone(),
-                Some(webhook_integration.clone()),
-                presence_cleanup,
-                cleanup_config.clone(),
-                metrics.clone(),
-            );
-
-            let cleanup_sender =
-                if let Some(direct_sender) = multi_worker_system.get_direct_sender() {
-                    info!(cleanup_mode = "direct", "cleanup sender initialized");
-                    CleanupSender::Direct(direct_sender)
-                } else {
-                    info!(cleanup_mode = "multi_worker", "cleanup sender initialized");
-                    CleanupSender::Multi(multi_worker_system.get_sender())
+        let (cleanup_queue, cleanup_worker_handles) =
+            if !config.server_role.is_api() && cleanup_config.async_enabled {
+                let presence_cleanup = PresenceCleanupContext {
+                    history_store: Arc::clone(&presence_history_store),
+                    history_config: config.presence_history.clone(),
+                    manager: Arc::clone(&presence_manager),
                 };
+                let multi_worker_system = MultiWorkerCleanupSystem::new(
+                    connection_manager.clone(),
+                    app_manager.clone(),
+                    Some(webhook_integration.clone()),
+                    presence_cleanup,
+                    cleanup_config.clone(),
+                    metrics.clone(),
+                );
 
-            let worker_handles = multi_worker_system.get_worker_handles();
+                let cleanup_sender =
+                    if let Some(direct_sender) = multi_worker_system.get_direct_sender() {
+                        info!(cleanup_mode = "direct", "cleanup sender initialized");
+                        CleanupSender::Direct(direct_sender)
+                    } else {
+                        info!(cleanup_mode = "multi_worker", "cleanup sender initialized");
+                        CleanupSender::Multi(multi_worker_system.get_sender())
+                    };
 
-            info!("multi-worker cleanup system initialized");
-            (Some(cleanup_sender), Some(worker_handles))
-        } else {
-            (None, None)
-        };
+                let worker_handles = multi_worker_system.get_worker_handles();
+
+                info!("multi-worker cleanup system initialized");
+                (Some(cleanup_sender), Some(worker_handles))
+            } else {
+                (None, None)
+            };
 
         // Initialize delta compression manager
         #[cfg(feature = "delta")]
@@ -987,8 +992,10 @@ impl SockudoServer {
         #[cfg(feature = "ably-compat")]
         ably_compat.bind_handler(&handler);
 
-        // Start dead node cleanup event processing loop (only runs if cluster health is enabled)
-        if let Some(event_receiver) = dead_node_event_receiver {
+        // Start dead node cleanup event processing loop (only runs if cluster health is enabled).
+        if !config.server_role.is_api()
+            && let Some(event_receiver) = dead_node_event_receiver
+        {
             let handler_clone = handler.clone();
             tokio::spawn(async move {
                 info!("dead node cleanup event loop started");
@@ -1001,9 +1008,10 @@ impl SockudoServer {
             });
         }
 
-        // Start replay buffer eviction task (only when connection recovery is enabled)
+        // Start replay buffer eviction task (only when connection recovery is enabled).
         #[cfg(feature = "recovery")]
-        if config.connection_recovery.enabled
+        if !config.server_role.is_api()
+            && config.connection_recovery.enabled
             && let Some(replay_buf) = handler.replay_buffer().cloned()
         {
             let eviction_interval =

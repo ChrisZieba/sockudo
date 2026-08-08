@@ -143,6 +143,18 @@ fn annotation_wire_event(annotation: &Annotation) -> AnnotationEventData {
     }
 }
 
+fn reject_socket_actor_in_api_role(
+    handler: &ConnectionHandler,
+    requested_socket_id: Option<&str>,
+) -> Result<(), AppError> {
+    if requested_socket_id.is_some() && handler.server_options().server_role.is_api() {
+        return Err(AppError::InvalidInput(
+            "socket_id cannot be verified in the api server role (no local WebSocket connections); omit socket_id or send the request to a WebSocket pod".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 async fn resolve_annotation_publish_actor(
     handler: &Arc<ConnectionHandler>,
     app_id: &str,
@@ -150,6 +162,7 @@ async fn resolve_annotation_publish_actor(
     requested_client_id: Option<&str>,
     requested_socket_id: Option<&str>,
 ) -> Result<Option<String>, AppError> {
+    reject_socket_actor_in_api_role(handler, requested_socket_id)?;
     if let Some(raw_socket_id) = requested_socket_id {
         let socket_id = SocketId::from_string(raw_socket_id)
             .map_err(|e| AppError::InvalidInput(format!("Invalid socket_id: {e}")))?;
@@ -205,6 +218,7 @@ async fn authorize_annotation_delete(
     target_client_id: Option<&str>,
     requested_socket_id: Option<&str>,
 ) -> Result<Option<String>, AppError> {
+    reject_socket_actor_in_api_role(handler, requested_socket_id)?;
     let Some(raw_socket_id) = requested_socket_id else {
         return Ok(None);
     };
@@ -259,6 +273,7 @@ async fn authorize_annotation_subscribe(
     channel: &str,
     requested_socket_id: Option<&str>,
 ) -> Result<(), AppError> {
+    reject_socket_actor_in_api_role(handler, requested_socket_id)?;
     let Some(raw_socket_id) = requested_socket_id else {
         return Ok(());
     };
@@ -454,6 +469,7 @@ pub async fn delete_annotation(
     validate_channel_name(&app, &path.channel_name).await?;
     require_versioned_messages_enabled(&handler, &path.channel_name)?;
     require_annotations_enabled(&handler, &app, &path.channel_name)?;
+    reject_socket_actor_in_api_role(&handler, query.get("socket_id").map(String::as_str))?;
     let message_serial = parse_message_serial(&path.message_serial)?;
     let target_serial = parse_annotation_serial(&path.annotation_serial)?;
     let target = handler

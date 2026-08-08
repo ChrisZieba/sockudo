@@ -348,3 +348,23 @@ After the stable knee is known:
    shared backend
 
 Capacity belongs to the complete deployment, not the Sockudo process in isolation.
+
+## API pod topology
+
+When HTTP publish traffic is large relative to WebSocket connection count, running
+separate API pods (`server_role = "api"`) isolates publish latency and cuts memory
+on the API tier. See [server role configuration](/docs/reference/configuration#server-role)
+for setup and requirements.
+
+Expected operational behavior:
+
+| Metric | API pod | WS pod |
+| --- | --- | --- |
+| `sockudo_horizontal_broadcast_published_total` | > 0 | varies |
+| `sockudo_horizontal_broadcast_received_total` | 0 | > 0 |
+| `sockudo_horizontal_request_received_total` | 0 | > 0 |
+| WebSocket connections | 0 | > 0 |
+| Memory (100K+ connections) | ~50 MiB baseline | ~2–4 GiB |
+
+API pods report `"server_role": "api"` in `/stats` so dashboards can distinguish
+them from WS pods reporting zero connections.

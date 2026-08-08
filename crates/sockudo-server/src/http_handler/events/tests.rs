@@ -1,6 +1,29 @@
 use super::*;
 use crate::http_handler::test_support::*;
 use sockudo_protocol::messages::{ApiMessageData, PusherApiMessage};
+
+#[test]
+fn requires_realtime_counts_detects_count_requests() {
+    assert!(requires_realtime_counts(Some("user_count")));
+    assert!(requires_realtime_counts(Some("subscription_count")));
+    assert!(requires_realtime_counts(Some(
+        "user_count,subscription_count"
+    )));
+    assert!(requires_realtime_counts(Some(" cache, user_count ")));
+}
+
+#[test]
+fn requires_realtime_counts_ignores_non_count_requests() {
+    assert!(!requires_realtime_counts(Some("cache")));
+    assert!(!requires_realtime_counts(Some("")));
+    assert!(!requires_realtime_counts(None));
+}
+
+#[test]
+fn requires_realtime_counts_rejects_superstring_matches() {
+    assert!(!requires_realtime_counts(Some("subscription_counts")));
+    assert!(!requires_realtime_counts(Some("user_count_extra")));
+}
 use sockudo_push::{
     ChannelSubscription, MemoryPushQueue, MemoryPushStore, PushDeviceStore, PushProviderKind,
     PushPublishLogStore, PushSubscriptionStore,

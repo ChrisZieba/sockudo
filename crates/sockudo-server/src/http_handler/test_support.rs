@@ -268,6 +268,35 @@ pub(crate) fn test_versioned_handler_with_store(
     handler
 }
 
+pub(crate) fn test_api_role_handler_with_store(
+    max_page_size: usize,
+    version_store: Arc<dyn VersionStore + Send + Sync>,
+) -> Arc<ConnectionHandler> {
+    let app_manager = Arc::new(MemoryAppManager::new()) as Arc<dyn AppManager + Send + Sync>;
+    let adapter =
+        Arc::new(LocalAdapter::new()) as Arc<dyn sockudo_adapter::ConnectionManager + Send + Sync>;
+    let cache = Arc::new(MemoryCacheManager::new(
+        "test".to_string(),
+        MemoryCacheOptions::default(),
+    ));
+
+    let mut options = sockudo_core::options::ServerOptions::default();
+    options.versioned_messages.enabled = true;
+    options.versioned_messages.max_page_size = max_page_size;
+    options.history.enabled = true;
+    options.annotations.enabled = true;
+    options.server_role = sockudo_core::options::ServerRole::Api;
+
+    Arc::new(
+        ConnectionHandlerBuilder::new(app_manager, adapter, cache, options)
+            .history_store(Arc::new(MemoryHistoryStore::new(
+                MemoryHistoryStoreConfig::default(),
+            )))
+            .version_store(version_store)
+            .build(),
+    )
+}
+
 pub(crate) fn test_ai_versioned_handler_with_store(
     max_page_size: usize,
     version_store: Arc<dyn VersionStore + Send + Sync>,

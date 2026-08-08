@@ -70,6 +70,9 @@ struct StatsResponse {
     presence_history: PresenceHistoryStatusResponse,
     totals: GlobalStats,
     apps: Vec<AppStats>,
+    /// Present only for api-role pods.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    server_role: Option<sockudo_core::options::ServerRole>,
 }
 
 /// Records API metrics (helper async function)
@@ -224,9 +227,12 @@ pub async fn stats(
 
     app_stats.sort_by(|a, b| a.app_id.cmp(&b.app_id));
 
+    let server_role = handler.server_options().server_role;
+
     Ok((
         StatusCode::OK,
         Json(StatsResponse {
+            server_role: server_role.is_api().then_some(server_role),
             memory,
             history: HistoryStatusResponse {
                 enabled: history_status.enabled,

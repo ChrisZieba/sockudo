@@ -19,6 +19,32 @@ runtime variable parsed by the server and push subsystem.
 | `port` | Bind port for WebSocket and HTTP API. |
 | `max_connections` | Per-node WebSocket connection limit. When exceeded the server returns close code 4100 so clients reconnect with backoff. `0` disables the limit. |
 | `debug` | Enables verbose diagnostics for local development. |
+| `server_role` | Deployment topology role. `"default"` runs the full server. `"api"` runs HTTP publish, history, mutable messages, and push — without WebSocket listeners, cluster heartbeats, or presence sync. Default: `"default"`. |
+
+## Server role
+
+`server_role` controls which subsystems the process starts.
+
+```toml
+server_role = "api"
+
+[adapter]
+driver = "redis-cluster"
+fallback_to_local = false
+```
+
+API pods publish to the horizontal broadcast stream and serve HTTP endpoints
+(publish, history, mutable messages, annotations, push). They skip WebSocket
+listeners, adapter subscriptions, heartbeats, presence sync, and request/reply —
+so they never appear in peer accounting and WS pods never await replies from them.
+
+The server rejects startup when `server_role = "api"` is combined with
+`adapter.driver = "local"` or `adapter.fallback_to_local = true`.
+
+For endpoint availability details see
+[HTTP endpoints — availability by server role](/docs/reference/http-endpoints#availability-by-server-role).
+For capacity and operational metrics see
+[Capacity planning — API pod topology](/docs/deployment/capacity-planning#api-pod-topology).
 
 ## App manager
 

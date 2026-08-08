@@ -2,6 +2,45 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+/// Deployment topology role for this process.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ServerRole {
+    /// WebSocket + HTTP + cluster participation.
+    #[default]
+    Default,
+    /// HTTP publish only — no WebSocket listeners or cluster participation.
+    Api,
+}
+
+impl ServerRole {
+    pub fn is_api(&self) -> bool {
+        matches!(self, ServerRole::Api)
+    }
+}
+
+impl std::fmt::Display for ServerRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServerRole::Default => write!(f, "default"),
+            ServerRole::Api => write!(f, "api"),
+        }
+    }
+}
+
+impl std::str::FromStr for ServerRole {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "default" => Ok(ServerRole::Default),
+            "api" => Ok(ServerRole::Api),
+            _ => Err(format!(
+                "Unknown server role: {s} (expected \"default\" or \"api\")"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerOptions {
@@ -22,6 +61,7 @@ pub struct ServerOptions {
     pub max_connections: u32,
     pub metrics: MetricsConfig,
     pub mode: String,
+    pub server_role: ServerRole,
     pub port: u16,
     pub path_prefix: String,
     pub presence: PresenceConfig,
@@ -77,6 +117,7 @@ impl Default for ServerOptions {
             max_connections: 0,
             metrics: MetricsConfig::default(),
             mode: "production".to_string(),
+            server_role: ServerRole::default(),
             port: 6001,
             path_prefix: "/".to_string(),
             presence: PresenceConfig::default(),
@@ -139,6 +180,17 @@ impl ServerOptions {
             self.cache.driver,
             CacheDriver::Redis | CacheDriver::RedisCluster
         );
+        if self.server_role.is_api() {
+            if self.adapter.driver == AdapterDriver::Local {
+                return Err(
+                    "server_role=api requires a horizontal adapter; adapter.driver=local is not supported"
+                        .to_string(),
+                );
+            }
+            if self.adapter.fallback_to_local {
+                return Err("server_role=api cannot use adapter.fallback_to_local".to_string());
+            }
+        }
         if clustered && (self.ably_compat.enabled || self.idempotency.enabled) && !shared_cache {
             return Err(
                 "clustered Ably compatibility and idempotency require cache.driver=redis or redis-cluster; node-local cache cannot authorize or deduplicate across nodes"
@@ -479,5 +531,75 @@ mod tests {
             options.validate().unwrap_err(),
             "connection_recovery.max_buffer_size must be greater than 0"
         );
+    }
+
+    #[test]
+    fn server_role_defaults_to_default() {
+        assert_eq!(ServerOptions::default().server_role, ServerRole::Default);
+        assert!(!ServerOptions::default().server_role.is_api());
+    }
+
+    #[test]
+    fn server_role_parses_case_insensitive() {
+        for raw in ["api", "Api", "API"] {
+            assert_eq!(raw.parse::<ServerRole>().unwrap(), ServerRole::Api);
+        }
+        assert_eq!(
+            "default".parse::<ServerRole>().unwrap(),
+            ServerRole::Default
+        );
+    }
+
+    #[test]
+    fn server_role_rejects_unknown() {
+        assert!("ws".parse::<ServerRole>().is_err());
+        assert!("".parse::<ServerRole>().is_err());
+    }
+
+    #[test]
+    fn server_role_displays_lowercase() {
+        assert_eq!(ServerRole::Api.to_string(), "api");
+        assert_eq!(ServerRole::Default.to_string(), "default");
+    }
+
+    #[test]
+    fn api_role_rejects_local_adapter() {
+        let mut options = ServerOptions {
+            server_role: ServerRole::Api,
+            ..Default::default()
+        };
+        options.adapter.driver = AdapterDriver::Local;
+        let error = options.validate().unwrap_err();
+        assert!(error.contains("horizontal adapter"), "got: {error}");
+    }
+
+    #[test]
+    fn api_role_rejects_fallback_to_local() {
+        let mut options = ServerOptions {
+            server_role: ServerRole::Api,
+            ..Default::default()
+        };
+        options.adapter.driver = AdapterDriver::Redis;
+        options.adapter.fallback_to_local = true;
+        let error = options.validate().unwrap_err();
+        assert!(error.contains("fallback_to_local"), "got: {error}");
+    }
+
+    #[test]
+    fn api_role_accepts_redis_adapter() {
+        let mut options = ServerOptions {
+            server_role: ServerRole::Api,
+            ..Default::default()
+        };
+        options.adapter.driver = AdapterDriver::Redis;
+        options.adapter.fallback_to_local = false;
+        options.cache.driver = CacheDriver::Redis;
+        options.validate().unwrap();
+    }
+
+    #[test]
+    fn default_role_accepts_local_adapter() {
+        let options = ServerOptions::default();
+        options.validate().unwrap();
     }
 }

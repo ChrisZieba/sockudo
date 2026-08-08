@@ -1653,10 +1653,19 @@ pub trait InfoQueryParser {
     fn wants_cache(&self) -> bool;
 }
 
-impl InfoQueryParser for Option<&String> {
+fn parse_info_tokens(raw: Option<&str>) -> Vec<&str> {
+    raw.map(|s| {
+        s.split(',')
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .collect::<Vec<_>>()
+    })
+    .unwrap_or_default()
+}
+
+impl<T: AsRef<str>> InfoQueryParser for Option<T> {
     fn parse_info(&self) -> Vec<&str> {
-        self.map(|s| s.split(',').collect::<Vec<_>>())
-            .unwrap_or_default()
+        parse_info_tokens(self.as_ref().map(AsRef::as_ref))
     }
 
     fn wants_user_count(&self) -> bool {
@@ -1788,5 +1797,29 @@ mod tests {
             value["annotations"]["summary"]["reactions:distinct.v1"]["thumbsup"]["total"].as_u64(),
             Some(5)
         );
+    }
+
+    #[test]
+    fn info_query_parser_trims_and_matches_exactly() {
+        use super::InfoQueryParser;
+
+        let s = "user_count".to_string();
+        assert!(Some(&s).wants_user_count());
+        assert!(!Some(&s).wants_subscription_count());
+
+        assert!(Some("user_count").wants_user_count());
+        assert!(Some("subscription_count").wants_subscription_count());
+
+        assert!(Some(" user_count ").wants_user_count());
+        assert!(Some("cache, user_count").wants_user_count());
+
+        assert!(!Some("subscription_counts").wants_subscription_count());
+        assert!(!Some("user_count_extra").wants_user_count());
+
+        assert!(!None::<&str>.wants_user_count());
+        assert!(!None::<&str>.wants_subscription_count());
+        assert!(!None::<&str>.wants_cache());
+
+        assert!(Some("cache").wants_cache());
     }
 }

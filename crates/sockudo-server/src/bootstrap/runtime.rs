@@ -472,12 +472,13 @@ impl SockudoServer {
         self.state.running.store(false, Ordering::SeqCst);
         self.handler.shutdown_ai_workers().await;
 
-        // Tell cluster peers this node is leaving and no responses are expected
-        if let Err(e) = self
-            .state
-            .connection_manager
-            .announce_node_departure()
-            .await
+        // Tell cluster peers this node is leaving and no responses are expected.
+        if !self.config.server_role.is_api()
+            && let Err(e) = self
+                .state
+                .connection_manager
+                .announce_node_departure()
+                .await
         {
             warn!(error = %e, "failed to announce node departure");
         }

@@ -157,6 +157,11 @@ async fn resolve_mutation_actor(
     requested_socket_id: Option<&str>,
 ) -> Result<MutableMessageActor, AppError> {
     let action_metric = format!("message.{}", kind.as_verb());
+    if requested_socket_id.is_some() && handler.server_options().server_role.is_api() {
+        return Err(AppError::InvalidInput(
+            "socket_id cannot be verified in the api server role (no local WebSocket connections); omit socket_id or send the request to a WebSocket pod".to_string(),
+        ));
+    }
     if let Some(raw_socket_id) = requested_socket_id {
         let socket_id = SocketId::from_string(raw_socket_id)
             .map_err(|e| AppError::InvalidInput(format!("Invalid socket_id: {e}")))?;

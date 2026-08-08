@@ -33,6 +33,7 @@ where
             enable_socket_counting: true,     // Default to enabled
             aggregate_counts: false,          // Tier 1A: opt-in via config
             fast_presence_transitions: false, // Opt-in eventual presence transitions
+            api_only: false,                  // Publish-only, no listeners or request/reply
             #[cfg(feature = "delta")]
             delta_compression: None,
             #[cfg(feature = "delta")]
@@ -147,13 +148,18 @@ where
         self.fast_presence_transitions = enable;
     }
 
+    pub fn set_api_only(&mut self, enable: bool) {
+        self.api_only = enable;
+    }
+
     /// Publish a pre-built RequestBody and collect responses from other nodes
     pub async fn send_request_with_body(&self, request: RequestBody) -> Result<ResponseBody> {
         let app_id = request.app_id.clone();
         let request_type = request.request_type.clone();
         let request_id = request.request_id.clone();
 
-        let should_skip_horizontal = self.should_skip_horizontal_communication().await;
+        let should_skip_horizontal =
+            self.api_only || self.should_skip_horizontal_communication().await;
         let discovered_node_count = self.horizontal.get_effective_node_count().await;
         let node_count = if should_skip_horizontal {
             1

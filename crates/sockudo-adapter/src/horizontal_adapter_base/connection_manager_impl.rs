@@ -8,6 +8,11 @@ where
     async fn init(&self) {
         self.local_adapter.init().await;
 
+        if self.api_only {
+            info!("horizontal adapter initialized in api-only mode");
+            return;
+        }
+
         if let Err(e) = self.start_listeners().await {
             error!(error = %e, "failed to start transport listeners");
         }

@@ -191,16 +191,22 @@ impl TypedAdapter {
 pub struct AdapterFactory;
 
 impl AdapterFactory {
-    /// Create a connection manager without the Mutex wrapper
-    /// Use this for lock-free runtime access (all trait methods are &self)
-    #[allow(unused_variables)]
-    pub async fn create(
+    #[allow(dead_code)]
+    async fn configure_horizontal_adapter<T>(
+        adapter: &mut crate::horizontal_adapter_base::HorizontalAdapterBase<T>,
         config: &AdapterConfig,
-        db_config: &DatabaseConfig,
-    ) -> Result<Arc<dyn ConnectionManager + Send + Sync>> {
-        Self::create_with_typed(config, db_config)
-            .await
-            .map(|(adapter, _)| adapter)
+        api_only: bool,
+    ) -> Result<()>
+    where
+        T: crate::horizontal_transport::HorizontalTransport + 'static,
+        T::Config: crate::horizontal_transport::TransportConfig,
+    {
+        adapter.set_cluster_health(&config.cluster_health).await?;
+        adapter.set_socket_counting(config.enable_socket_counting);
+        adapter.set_aggregate_counts(config.aggregate_counts);
+        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
+        adapter.set_api_only(api_only);
+        Ok(())
     }
 
     /// Create a connection manager with typed adapter for configuration
@@ -211,8 +217,12 @@ impl AdapterFactory {
     pub async fn create_with_typed(
         config: &AdapterConfig,
         db_config: &DatabaseConfig,
+        api_only: bool,
     ) -> Result<(Arc<dyn ConnectionManager + Send + Sync>, TypedAdapter)> {
         info!(adapter = ?config.driver, "connection manager initializing");
+        if api_only {
+            info!(server_role = "api", "adapter configured for api-only mode");
+        }
         match config.driver {
             // Match on the enum
             #[cfg(feature = "redis")]
@@ -249,10 +259,7 @@ impl AdapterFactory {
                 };
                 match RedisAdapter::new(adapter_options).await {
                     Ok(mut adapter) => {
-                        adapter.set_cluster_health(&config.cluster_health).await?;
-                        adapter.set_socket_counting(config.enable_socket_counting);
-                        adapter.set_aggregate_counts(config.aggregate_counts);
-                        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
+                        Self::configure_horizontal_adapter(&mut adapter, config, api_only).await?;
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::Redis(adapter.clone());
                         Ok((adapter, typed))
@@ -309,10 +316,7 @@ impl AdapterFactory {
                 };
                 match RedisClusterAdapter::new(cluster_adapter_config).await {
                     Ok(mut adapter) => {
-                        adapter.set_cluster_health(&config.cluster_health).await?;
-                        adapter.set_socket_counting(config.enable_socket_counting);
-                        adapter.set_aggregate_counts(config.aggregate_counts);
-                        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
+                        Self::configure_horizontal_adapter(&mut adapter, config, api_only).await?;
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::RedisCluster(adapter.clone());
                         Ok((adapter, typed))
@@ -353,10 +357,7 @@ impl AdapterFactory {
                 };
                 match NatsAdapter::new(nats_cfg).await {
                     Ok(mut adapter) => {
-                        adapter.set_cluster_health(&config.cluster_health).await?;
-                        adapter.set_socket_counting(config.enable_socket_counting);
-                        adapter.set_aggregate_counts(config.aggregate_counts);
-                        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
+                        Self::configure_horizontal_adapter(&mut adapter, config, api_only).await?;
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::Nats(adapter.clone());
                         Ok((adapter, typed))
@@ -386,10 +387,7 @@ impl AdapterFactory {
                 };
                 match PulsarAdapter::new(pulsar_cfg).await {
                     Ok(mut adapter) => {
-                        adapter.set_cluster_health(&config.cluster_health).await?;
-                        adapter.set_socket_counting(config.enable_socket_counting);
-                        adapter.set_aggregate_counts(config.aggregate_counts);
-                        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
+                        Self::configure_horizontal_adapter(&mut adapter, config, api_only).await?;
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::Pulsar(adapter.clone());
                         Ok((adapter, typed))
@@ -419,10 +417,7 @@ impl AdapterFactory {
                 };
                 match RabbitMqAdapter::new(rabbitmq_cfg).await {
                     Ok(mut adapter) => {
-                        adapter.set_cluster_health(&config.cluster_health).await?;
-                        adapter.set_socket_counting(config.enable_socket_counting);
-                        adapter.set_aggregate_counts(config.aggregate_counts);
-                        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
+                        Self::configure_horizontal_adapter(&mut adapter, config, api_only).await?;
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::RabbitMq(adapter.clone());
                         Ok((adapter, typed))
@@ -452,10 +447,7 @@ impl AdapterFactory {
                 };
                 match GooglePubSubAdapter::new(google_pubsub_cfg).await {
                     Ok(mut adapter) => {
-                        adapter.set_cluster_health(&config.cluster_health).await?;
-                        adapter.set_socket_counting(config.enable_socket_counting);
-                        adapter.set_aggregate_counts(config.aggregate_counts);
-                        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
+                        Self::configure_horizontal_adapter(&mut adapter, config, api_only).await?;
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::GooglePubSub(adapter.clone());
                         Ok((adapter, typed))
@@ -488,10 +480,7 @@ impl AdapterFactory {
                 };
                 match KafkaAdapter::new(kafka_cfg).await {
                     Ok(mut adapter) => {
-                        adapter.set_cluster_health(&config.cluster_health).await?;
-                        adapter.set_socket_counting(config.enable_socket_counting);
-                        adapter.set_aggregate_counts(config.aggregate_counts);
-                        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
+                        Self::configure_horizontal_adapter(&mut adapter, config, api_only).await?;
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::Kafka(adapter.clone());
                         Ok((adapter, typed))
@@ -532,10 +521,7 @@ impl AdapterFactory {
                 };
                 match IggyAdapter::new(iggy_cfg).await {
                     Ok(mut adapter) => {
-                        adapter.set_cluster_health(&config.cluster_health).await?;
-                        adapter.set_socket_counting(config.enable_socket_counting);
-                        adapter.set_aggregate_counts(config.aggregate_counts);
-                        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
+                        Self::configure_horizontal_adapter(&mut adapter, config, api_only).await?;
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::Iggy(adapter.clone());
                         Ok((adapter, typed))

@@ -7,7 +7,9 @@ use sockudo_core::app::App;
 use sockudo_core::utils::{self, validate_channel_name};
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH;
-use sockudo_protocol::messages::{ApiMessageData, MessageData, PusherApiMessage, PusherMessage};
+use sockudo_protocol::messages::{
+    ApiMessageData, InfoQueryParser, MessageData, PusherApiMessage, PusherMessage,
+};
 use sonic_rs::{Value, json};
 use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, error, field, instrument, warn};
@@ -214,7 +216,7 @@ pub(super) async fn process_single_event_parallel(
                     current_channel_info_map.insert("version_serial", json!(version_serial));
                 }
 
-                if is_presence && info_for_task.as_deref().is_some_and(|s| s.contains("user_count")) {
+                if is_presence && info_for_task.as_deref().wants_user_count() {
                     match handler_clone
                         .connection_manager()
                         .get_local_channel_members(&app.id, &target_channel_str)
@@ -230,10 +232,7 @@ pub(super) async fn process_single_event_parallel(
                     }
                 }
 
-                if info_for_task
-                    .as_deref()
-                    .is_some_and(|s| s.contains("subscription_count"))
-                {
+                if info_for_task.as_deref().wants_subscription_count() {
                     let count = handler_clone
                         .connection_manager()
                         .get_channel_socket_count(&app.id, &target_channel_str)

@@ -1510,6 +1510,73 @@ impl AblyCompatRuntime {
             .layer(Extension(Arc::clone(self)))
     }
 
+    /// REST routes safe for api-role pods. If new routes here bind `socket_id`, re-evaluate.
+    pub fn rest_router_api(self: &Arc<Self>) -> axum::Router<Arc<ConnectionHandler>> {
+        use axum::{
+            Extension, Router,
+            routing::{get, post},
+        };
+
+        let router = Router::new()
+            .route("/time", get(ably_time))
+            .route("/stats", post(ably_ingest_stats))
+            .route(
+                "/keys/{keyName}/requestToken",
+                get(ably_not_found).post(ably_request_token),
+            )
+            .route("/keys/{keyName}/revokeTokens", post(ably_revoke_tokens))
+            .route("/messages", post(ably_batch_publish))
+            .route(
+                "/channels/{channelName}/messages",
+                get(ably_channel_history).post(ably_channel_publish),
+            )
+            .route(
+                "/channels/{channelName}/presence/history",
+                get(ably_channel_presence_history),
+            )
+            .route(
+                "/channels/{channelName}/messages/{messageSerial}",
+                get(ably_channel_message).patch(ably_channel_message_mutation),
+            )
+            .route(
+                "/channels/{channelName}/messages/{messageSerial}/versions",
+                get(ably_channel_message_versions),
+            )
+            .route(
+                "/channels/{channelName}/messages/{messageSerial}/annotations",
+                get(ably_channel_annotations).post(ably_publish_annotations),
+            );
+        #[cfg(feature = "push")]
+        let router = router
+            .route("/push/publish", post(ably_push_publish))
+            .route(
+                "/push/deviceRegistrations",
+                post(ably_push_save_device)
+                    .patch(ably_push_save_device)
+                    .get(ably_push_list_devices)
+                    .delete(ably_push_delete_devices),
+            )
+            .route(
+                "/push/deviceRegistrations/{deviceId}",
+                get(ably_push_get_device)
+                    .put(ably_push_put_device)
+                    .delete(ably_push_delete_device),
+            )
+            .route(
+                "/push/channelSubscriptions",
+                post(ably_push_save_subscription)
+                    .get(ably_push_list_subscriptions)
+                    .delete(ably_push_delete_subscriptions),
+            )
+            .route("/push/channels", get(ably_push_list_channels));
+        router
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(self),
+                ably_stats_api_middleware,
+            ))
+            .layer(Extension(Arc::clone(self)))
+    }
+
     pub fn router(self: &Arc<Self>) -> axum::Router<Arc<ConnectionHandler>> {
         self.realtime_router().merge(self.rest_router())
     }
