@@ -1,11 +1,9 @@
 use super::ConnectionHandler;
-use bytes::Bytes;
 use sockudo_core::error::Result;
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::ProtocolVersion;
 use sockudo_protocol::constants::PONG_TIMEOUT;
 use sockudo_protocol::messages::PusherMessage;
-use sockudo_ws::Message;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -288,9 +286,8 @@ impl ConnectionHandler {
         &self,
         socket_id: &SocketId,
         app_config: &sockudo_core::app::App,
-        payload: Bytes,
     ) -> Result<()> {
-        // Update activity and send pong
+        // sockudo-ws automatically sends the native Pong; only update activity here.
         self.update_activity_timeout(&app_config.id, socket_id)
             .await?;
 
@@ -299,8 +296,6 @@ impl ConnectionHandler {
             let mut ws = conn.inner.lock().await;
             // Reset connection status to Active when we receive a ping (client is alive)
             ws.state.status = sockudo_core::websocket::ConnectionStatus::Active;
-            // Send low-level Pong frame in response because the auto response is disabled to allow custom handling
-            ws.send_frame(Message::pong(payload))?;
         }
 
         Ok(())

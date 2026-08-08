@@ -968,7 +968,10 @@ impl ConnectionHandler {
                         }
                     }
                 }
-                Message::Ping(_) | Message::Pong(_) => {
+                Message::Ping(_) => {
+                    self.handle_ping_frame(socket_id, app_config).await?;
+                }
+                Message::Pong(_) => {
                     trace!(socket_id = %socket_id, "websocket control frame handled");
                 }
             }
