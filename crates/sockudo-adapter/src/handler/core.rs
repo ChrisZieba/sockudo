@@ -516,10 +516,8 @@ impl ConnectionHandler {
             .await
             .ok();
 
-        // Step 3: Clean up client event rate limiter (lock-free)
-        if self.client_event_limiters.remove(socket_id).is_some() {
-            debug!(socket_id = %socket_id, "client event rate limiter removed");
-        }
+        // Step 3: Clean up socket-scoped rate limiters (lock-free)
+        self.remove_socket_limiters(socket_id);
 
         // Step 3.5: MEMORY LEAK FIX - Clean up delta compression state for this socket
         #[cfg(feature = "delta")]
@@ -607,10 +605,7 @@ impl ConnectionHandler {
         self.clear_user_authentication_timeout(app_id, socket_id)
             .await?;
 
-        // Clean up client event rate limiter
-        if self.client_event_limiters.remove(socket_id).is_some() {
-            debug!(socket_id = %socket_id, "client event rate limiter removed");
-        }
+        self.remove_socket_limiters(socket_id);
 
         // MEMORY LEAK FIX: Clean up delta compression state for this socket
         #[cfg(feature = "delta")]
