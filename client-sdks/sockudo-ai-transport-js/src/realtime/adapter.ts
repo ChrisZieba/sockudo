@@ -174,8 +174,9 @@ export async function createSockudoRealtimeClient(
   appKey: string,
   options: CreateSockudoRealtimeClientOptions = {},
 ): Promise<ClientLike> {
+  const clientOptions = normalizeClientOptions(options);
   const Sockudo = await loadSockudoConstructor();
-  return adaptSockudoClient(new Sockudo(appKey, normalizeClientOptions(options)), options);
+  return adaptSockudoClient(new Sockudo(appKey, clientOptions), options);
 }
 
 /** Adapts an existing Sockudo client into the realtime seam. */
