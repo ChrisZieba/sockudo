@@ -6,6 +6,7 @@
 - Added proactive 80%-lifetime refresh scheduling for JWT tokens returned by `ClientAuthTokenProvider`; opaque and static tokens remain reactive-only and rely on `sockudo:token_expired`.
 - Hardened Protocol V2 realtime decoding for forward compatibility: integer string serials now parse without floating-point truncation, `extras.ai` and unknown extras are retained, and unknown internal presence frames no longer mutate member state.
 - Added forward-compat fixture replay coverage for realtime frames and serial boundary tests beyond 32-bit and JavaScript safe-integer limits.
+- Capability-token auth now fails closed outside Protocol V2, fetches provider tokens before reconnect, refreshes only code `40142`, and never resends static or revoked tokens.
 
 ## 0.1.0
 

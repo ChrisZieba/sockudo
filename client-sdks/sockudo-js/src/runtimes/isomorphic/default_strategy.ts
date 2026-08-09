@@ -37,6 +37,7 @@ const getDefaultStrategy = (
     echoMessages: config.echoMessages,
     wireFormat: config.wireFormat,
     appendMode: config.appendMode,
+    getAuthToken: () => config.authToken,
   });
   const wssOptions: StrategyOptions = Object.assign({}, wsOptions, {
     useTLS: true,

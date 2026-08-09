@@ -62,7 +62,7 @@ class DeltaFailure(SockudoException):
 
 
 _ALLOWED_APPEND_ROLLUP_WINDOWS = {0, 20, 40, 100, 500}
-_TOKEN_REFRESH_CODES = {40142, 40160}
+_TOKEN_REFRESH_CODES = {40142}
 
 
 class ConnectionState(str, Enum):
@@ -2484,6 +2484,12 @@ class SockudoClient:
             )
         if not options.cluster:
             raise InvalidOptions("Options must provide a cluster.")
+        if options.protocol_version < 2 and (
+            options.token is not None or options.auth_callback is not None
+        ):
+            raise InvalidOptions(
+                "Capability-token authentication requires protocol_version=2"
+            )
         if (
             options.append_rollup_window is not None
             and options.append_rollup_window not in _ALLOWED_APPEND_ROLLUP_WINDOWS
@@ -2704,7 +2710,8 @@ class SockudoClient:
                 self.dispatcher.emit(event_name, event.data)
             elif event_name == self.prefix.event("token_expired"):
                 self.dispatcher.emit(event_name, event.data)
-                await self._refresh_auth_token()
+                if self._is_token_refresh_payload(event.data):
+                    await self._refresh_auth_token()
             elif event_name == self.prefix.event("signin_success"):
                 await self.user.handle_sign_in_success(event.data)
             elif event_name == self.prefix.event("resume_failed"):
@@ -2896,11 +2903,13 @@ class SockudoClient:
         )
 
     async def _prepare_connection_auth_token(self) -> None:
-        if self.options.auth_callback is None and self.options.token is None:
+        if self.options.auth_callback is None:
             return
         await self._resolve_auth_token()
 
     async def _refresh_auth_token(self) -> None:
+        if self.options.auth_callback is None:
+            return
         token = await self._resolve_auth_token()
         if token is None:
             return
@@ -2990,6 +2999,7 @@ class SockudoClient:
         if (
             self.connection_state is not ConnectionState.CONNECTED
             or self._auth_token is None
+            or self.options.auth_callback is None
         ):
             return
         delay = self._auth_refresh_delay()

@@ -5,11 +5,13 @@ export enum ErrorCode {
   /** Malformed request or invalid wire data. */
   BadRequest = 40000,
   /** Invalid local API argument. */
-  InvalidArgument = 40003,
+  InvalidArgument = 104012,
   /** Capability token expired. */
   TokenExpired = 40142,
   /** Authentication or capability check failed. */
-  InsufficientCapability = 40160,
+  InsufficientCapability = 40003,
+  /** Capability token was revoked. */
+  TokenRevoked = 40160,
   /** Encoder recovery failed after a stream append failure. */
   EncoderRecoveryFailed = 104000,
   /** Channel subscription failed. */
@@ -104,6 +106,9 @@ export function errorInfoIs(value: unknown, code: ErrorCode | number): value is 
  * Derives an HTTP-like status code from an SDK or platform error code.
  */
 export function statusCodeForErrorCode(code: ErrorCode | number): number {
+  if (code === 104_012) {
+    return 400;
+  }
   if (code === 104_009 || code === 104_010) {
     return 504;
   }
@@ -126,8 +131,16 @@ export function toErrorInfo(value: unknown, fallback: ErrorInfoOptions): ErrorIn
   const message = data?.message;
   const error = data?.error;
   const status = readStatusCode(data);
+  const numericCode =
+    typeof code === "number" ? code : typeof code === "string" ? Number(code) : NaN;
   const mappedCode =
-    status === 401 || status === 403 ? ErrorCode.InsufficientCapability : undefined;
+    numericCode === 40_142
+      ? ErrorCode.TokenExpired
+      : numericCode === 40_160
+        ? ErrorCode.TokenRevoked
+        : status === 401 || status === 403
+          ? ErrorCode.InsufficientCapability
+          : undefined;
   if (typeof code === "number" && (typeof message === "string" || typeof error === "string")) {
     const reason = typeof message === "string" ? message : (error as string);
     return new ErrorInfo({

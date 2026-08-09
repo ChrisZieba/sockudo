@@ -184,9 +184,11 @@ val history = channel.channelHistory(ChannelHistoryParams(limit = 50, untilAttac
 println(channel.attachSerial)
 ```
 
-For JWTs returned by `authTokenProvider`, the client reads `iat` / `exp` without validating the signature and schedules a proactive refresh at 80% of the token lifetime. When the server sends `sockudo:token_expired` or error code `40142` / `40160`, the client asks `authTokenProvider` for a fresh token and sends it with `sockudo:auth`.
+For JWTs returned by `authTokenProvider`, the client reads `iat` / `exp` without validating the signature and schedules a proactive refresh at 80% of the token lifetime. When the server sends `sockudo:token_expired` or error code `40142`, the client asks `authTokenProvider` for a fresh token and sends it with `sockudo:auth`. Revocation code `40160` is surfaced without an in-place refresh.
 
-Opaque provider tokens and static `authToken` values are reactive-only and rely on `sockudo:token_expired`.
+The provider is called before every reconnect, including for opaque tokens.
+Static `authToken` values are never resent after expiry. Token auth configured
+outside Protocol V2 throws `SockudoException.InvalidOptions`.
 
 ### Mutable Messages (Release 4.3)
 

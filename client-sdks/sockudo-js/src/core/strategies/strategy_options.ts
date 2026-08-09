@@ -17,6 +17,7 @@ interface StrategyOptions {
   useTLS?: boolean;
   wireFormat?: "json" | "messagepack" | "msgpack" | "protobuf" | "proto";
   appendMode?: AppendMode;
+  getAuthToken?: () => string | undefined;
 }
 
 export default StrategyOptions;

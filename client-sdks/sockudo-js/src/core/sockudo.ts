@@ -10,11 +10,16 @@ import TimelineSender from "./timeline/timeline_sender";
 import TimelineLevel from "./timeline/level";
 import { defineTransport } from "./strategies/strategy_builder";
 import ConnectionManager from "./connection/connection_manager";
-import { PeriodicTimer } from "./utils/timers";
+import { OneOffTimer, PeriodicTimer } from "./utils/timers";
 import Defaults from "./defaults";
 import Logger, { setLoggerConfig } from "./logger";
 import Factory from "./utils/factory";
-import { Options, validateOptions } from "./options";
+import {
+  CapabilityTokenAuthData,
+  CapabilityTokenExpiredData,
+  Options,
+  validateOptions,
+} from "./options";
 import { Config, getConfig } from "./config";
 import StrategyOptions from "./strategies/strategy_options";
 import UserFacade from "./user";
@@ -37,6 +42,15 @@ import {
 } from "./protocol_prefix";
 import { setWireFormat } from "./wire_format";
 import { isWireSerial, normalizeWireSerial } from "./serial";
+import {
+  authTokenRefreshDelay,
+  NormalizedAuthToken,
+  normalizeAuthToken,
+  requestAuthToken,
+  TokenAuthError,
+  TokenExpiredError,
+  TokenRevokedError,
+} from "./token_auth";
 
 // Re-export filter types and utilities for easy access
 export { Filter, validateFilter, FilterExamples };
@@ -99,15 +113,30 @@ export default class Sockudo {
   user: UserFacade;
   deltaCompression: DeltaCompressionManager;
   messageDedup: MessageDeduplicator | null;
+  capabilityTokenAuth?: CapabilityTokenAuthData;
+  lastCapabilityTokenExpired?: CapabilityTokenExpiredData;
   private channelPositions: Map<string, RecoveryPosition> = new Map();
   private connectionRecoveryEnabled: boolean = false;
+  private readonly authOptions: Pick<Options, "authCallback" | "authUrl" | "token">;
+  private normalizedAuthToken?: NormalizedAuthToken;
+  private authTokenRequest?: Promise<void>;
+  private authRefreshTimer?: OneOffTimer;
+  private initialAuthTokenUsed = false;
   constructor(app_key: string, options: Options) {
     checkAppKey(app_key);
     validateOptions(options);
     setProtocolVersion(options.protocolVersion ?? 7);
     setWireFormat(options.wireFormat);
     this.key = app_key;
+    this.authOptions = {
+      authCallback: options.authCallback,
+      authUrl: options.authUrl,
+      token: options.token,
+    };
     this.config = getConfig(options, this);
+    if (options.token) {
+      this.normalizedAuthToken = normalizeAuthToken(options.token);
+    }
 
     this.channels = Factory.createChannels();
     this.global_emitter = new EventsDispatcher();
@@ -141,6 +170,10 @@ export default class Sockudo {
       useTLS: Boolean(this.config.useTLS),
       maxReconnectAttempts: this.config.maxReconnectAttempts,
       maxReconnectGapInSeconds: this.config.maxReconnectGapInSeconds,
+      beforeConnect:
+        options.authCallback || options.authUrl
+          ? (reason) => this.prepareCapabilityToken(reason)
+          : undefined,
     });
 
     // Initialize message deduplication (enabled by default)
@@ -162,6 +195,7 @@ export default class Sockudo {
     }
 
     this.connection.bind("connected", () => {
+      this.scheduleCapabilityTokenRefresh();
       this.subscribeAll();
       if (this.connectionRecoveryEnabled && this.channelPositions.size > 0) {
         const channelPositions: Record<string, RecoveryPosition> = {};
@@ -197,6 +231,30 @@ export default class Sockudo {
         return;
       }
       const internal = isInternalEvent(eventName);
+
+      if (eventName === prefixedEvent("auth_success")) {
+        this.capabilityTokenAuth = normalizeCapabilityTokenAuthData(event.data);
+        this.global_emitter.emit(eventName, this.capabilityTokenAuth);
+        return;
+      }
+      if (eventName === prefixedEvent("token_expired")) {
+        const expired = normalizeCapabilityTokenExpiredData(event.data);
+        this.lastCapabilityTokenExpired = expired;
+        this.global_emitter.emit(eventName, expired);
+        if (expired.code === 40142) {
+          if (this.hasAuthTokenProvider()) {
+            void this.refreshCapabilityToken("expired").catch((error) => {
+              this.global_emitter.emit("error", error);
+            });
+          } else {
+            this.global_emitter.emit("error", new TokenExpiredError(expired.reason));
+          }
+        } else if (expired.code === 40160) {
+          this.abortAuthRefreshTimer();
+          this.global_emitter.emit("error", new TokenRevokedError(expired.reason));
+        }
+        return;
+      }
 
       // Track serial per channel for connection recovery
       if (this.connectionRecoveryEnabled && event.channel && isWireSerial((event as any).serial)) {
@@ -370,11 +428,81 @@ export default class Sockudo {
 
   disconnect() {
     this.connection.disconnect();
+    this.abortAuthRefreshTimer();
 
     if (this.timelineSenderTimer) {
       this.timelineSenderTimer.ensureAborted();
       this.timelineSenderTimer = null;
     }
+  }
+
+  private hasAuthTokenProvider(): boolean {
+    return Boolean(this.authOptions.authCallback || this.authOptions.authUrl);
+  }
+
+  private async prepareCapabilityToken(reason: "initial" | "reconnect"): Promise<void> {
+    if (!this.initialAuthTokenUsed && this.authOptions.token) {
+      this.initialAuthTokenUsed = true;
+      this.normalizedAuthToken = normalizeAuthToken(this.authOptions.token);
+      this.config.authToken = this.normalizedAuthToken.token;
+      return;
+    }
+    await this.refreshCapabilityToken(reason, false);
+  }
+
+  private refreshCapabilityToken(
+    reason: "initial" | "reconnect" | "refresh" | "expired",
+    sendRefreshFrame = true,
+  ): Promise<void> {
+    if (!this.hasAuthTokenProvider()) {
+      return Promise.reject(new TokenAuthError("No capability-token provider is configured"));
+    }
+    if (this.authTokenRequest) {
+      return this.authTokenRequest;
+    }
+
+    const request = requestAuthToken(this.authOptions, {
+      socketId: this.connection?.socket_id,
+      reason,
+    }).then((token) => {
+      this.normalizedAuthToken = token;
+      this.config.authToken = token.token;
+      if (sendRefreshFrame && this.connection.state === "connected") {
+        const sent = this.send_event(prefixedEvent("auth"), { token: token.token });
+        if (!sent) {
+          throw new TokenAuthError("Unable to send the capability-token refresh frame");
+        }
+      }
+      this.scheduleCapabilityTokenRefresh();
+    });
+    this.authTokenRequest = request;
+    return request.finally(() => {
+      if (this.authTokenRequest === request) {
+        this.authTokenRequest = undefined;
+      }
+    });
+  }
+
+  private scheduleCapabilityTokenRefresh(): void {
+    this.abortAuthRefreshTimer();
+    if (!this.hasAuthTokenProvider() || !this.normalizedAuthToken) {
+      return;
+    }
+    const delay = authTokenRefreshDelay(this.normalizedAuthToken);
+    if (delay === undefined) {
+      return;
+    }
+    this.authRefreshTimer = new OneOffTimer(delay, () => {
+      this.authRefreshTimer = undefined;
+      void this.refreshCapabilityToken("refresh", this.connection.state === "connected").catch(
+        (error) => this.global_emitter.emit("error", error),
+      );
+    });
+  }
+
+  private abortAuthRefreshTimer(): void {
+    this.authRefreshTimer?.ensureAborted();
+    this.authRefreshTimer = undefined;
   }
 
   bind(event_name: string, callback: (...args: any[]) => any, context?: any): Sockudo {
@@ -623,6 +751,23 @@ function normalizeRewindCompleteData(data: any): RewindCompleteData {
     complete: Boolean(value.complete),
     truncated_by_retention: Boolean(value.truncated_by_retention),
     truncated_by_limit: Boolean(value.truncated_by_limit),
+  };
+}
+
+function normalizeCapabilityTokenAuthData(data: any): CapabilityTokenAuthData {
+  const value = typeof data === "string" ? JSON.parse(data) : (data ?? {});
+  return {
+    clientId: typeof value.client_id === "string" ? value.client_id : undefined,
+    jti: typeof value.jti === "string" ? value.jti : undefined,
+    exp: typeof value.exp === "number" ? value.exp : undefined,
+  };
+}
+
+function normalizeCapabilityTokenExpiredData(data: any): CapabilityTokenExpiredData {
+  const value = typeof data === "string" ? JSON.parse(data) : (data ?? {});
+  return {
+    code: typeof value.code === "number" ? value.code : undefined,
+    reason: typeof value.reason === "string" ? value.reason : undefined,
   };
 }
 

@@ -157,7 +157,7 @@ export interface AdaptSockudoChannelOptions extends AdaptSockudoClientOptions {
 
 /** Options for creating a Sockudo realtime client through the peer dependency. */
 export interface CreateSockudoRealtimeClientOptions extends AdaptSockudoClientOptions {
-  /** Options passed to `new Sockudo(appKey, options)`. */
+  /** Options passed to `new Sockudo(appKey, options)`, including token/authUrl/authCallback. */
   clientOptions?: Record<string, unknown>;
   /** Append delivery mode passed to `@sockudo/client` for V2 sockets. */
   appendMode?: "delta" | "full";
@@ -174,8 +174,9 @@ export async function createSockudoRealtimeClient(
   appKey: string,
   options: CreateSockudoRealtimeClientOptions = {},
 ): Promise<ClientLike> {
+  const clientOptions = normalizeClientOptions(options);
   const Sockudo = await loadSockudoConstructor();
-  return adaptSockudoClient(new Sockudo(appKey, normalizeClientOptions(options)), options);
+  return adaptSockudoClient(new Sockudo(appKey, clientOptions), options);
 }
 
 /** Adapts an existing Sockudo client into the realtime seam. */
@@ -859,6 +860,13 @@ function normalizeClientOptions(
   options: CreateSockudoRealtimeClientOptions,
 ): Record<string, unknown> {
   const clientOptions: Record<string, unknown> = Object.assign({}, options.clientOptions);
+  if (clientOptions.protocolVersion !== undefined && clientOptions.protocolVersion !== 2) {
+    throw new ErrorInfo({
+      code: ErrorCode.InvalidArgument,
+      message: "unable to create realtime client; AI Transport requires protocolVersion 2",
+    });
+  }
+  clientOptions.protocolVersion = 2;
   if (options.appendMode !== undefined) {
     validateAppendMode(options.appendMode);
     clientOptions.appendMode = options.appendMode;

@@ -500,6 +500,11 @@ data class SockudoOptions(
     val authTokenProvider: ClientAuthTokenProvider? = null,
 ) {
     init {
+        if (protocolVersion < 2 && (authToken != null || authTokenProvider != null)) {
+            throw SockudoException.InvalidOptions(
+                "Capability-token authentication requires protocolVersion 2",
+            )
+        }
         if (appendRollupWindow != null && appendRollupWindow !in allowedAppendRollupWindows) {
             throw SockudoException.InvalidOptions(
                 "appendRollupWindow must be one of ${allowedAppendRollupWindows.sorted().joinToString(", ")}",

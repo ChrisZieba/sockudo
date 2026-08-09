@@ -133,6 +133,50 @@ def test_opaque_token_without_exp_does_not_schedule_refresh() -> None:
     assert client._auth_refresh_task is None
 
 
+@pytest.mark.asyncio
+async def test_static_jwt_does_not_schedule_or_resend_on_expiry() -> None:
+    client = SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster="local", force_tls=False, token=_unsigned_jwt({"exp": 4102444800})
+        ),
+    )
+    client._update_state(ConnectionState.CONNECTED)
+
+    client._schedule_auth_refresh()
+
+    sent: list[tuple[str, object, Optional[str]]] = []
+
+    async def fake_send_event(
+        name: str, data: object, channel_name: Optional[str]
+    ) -> bool:
+        sent.append((name, data, channel_name))
+        return True
+
+    client.send_event = fake_send_event  # type: ignore[method-assign]
+    await client._handle_raw_message(
+        json.dumps(
+            {
+                "event": ProtocolPrefix(2).event("token_expired"),
+                "data": {"code": 40142},
+            }
+        )
+    )
+
+    assert client._auth_refresh_task is None
+    assert sent == []
+
+
+def test_rejects_capability_token_auth_for_protocol_v1() -> None:
+    with pytest.raises(InvalidOptions, match="protocol_version=2"):
+        SockudoClient(
+            "app-key",
+            SockudoOptions(
+                cluster="local", protocol_version=1, token="capability-token"
+            ),
+        )
+
+
 def test_socket_url_includes_append_rollup_window_for_v2_only() -> None:
     v2_client = SockudoClient(
         "app-key",
@@ -394,7 +438,7 @@ async def test_auth_callback_initial_token_and_refresh_frames() -> None:
         json.dumps(
             {
                 "event": ProtocolPrefix(2).event("token_expired"),
-                "data": {"code": 40160},
+                "data": {"code": 40142},
             }
         )
     )
@@ -403,6 +447,14 @@ async def test_auth_callback_initial_token_and_refresh_frames() -> None:
             {
                 "event": ProtocolPrefix(2).event("error"),
                 "data": {"code": 40142},
+            }
+        )
+    )
+    await client._handle_raw_message(
+        json.dumps(
+            {
+                "event": ProtocolPrefix(2).event("token_expired"),
+                "data": {"code": 40160},
             }
         )
     )

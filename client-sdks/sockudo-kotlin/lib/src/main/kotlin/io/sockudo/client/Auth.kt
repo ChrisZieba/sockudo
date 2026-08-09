@@ -26,6 +26,7 @@ data class UserAuthenticationRequest(
 
 enum class ClientAuthTokenReason {
     INITIAL,
+    RECONNECT,
     REFRESH,
     EXPIRED,
 }

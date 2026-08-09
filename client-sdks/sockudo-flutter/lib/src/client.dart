@@ -135,7 +135,8 @@ class SockudoClient {
   SockudoClient(this.key, this.options, {http.Client? httpClient})
     : _httpClient = httpClient ?? http.Client(),
       _config = ResolvedConfiguration(options, httpClient ?? http.Client()),
-      _p = ProtocolPrefix(options.protocolVersion) {
+      _p = ProtocolPrefix(options.protocolVersion),
+      _currentAuthToken = options.token {
     if (key.isEmpty) {
       throw const SockudoException(
         'You must pass your app key when you instantiate SockudoClient.',
@@ -143,6 +144,12 @@ class SockudoClient {
     }
     if (options.cluster.isEmpty) {
       throw const SockudoException('Options must provide a cluster.');
+    }
+    if (options.protocolVersion != 2 &&
+        (options.token != null || options.authCallback != null)) {
+      throw const SockudoException(
+        'Capability-token authentication requires protocolVersion 2.',
+      );
     }
     final appendRollupWindow = options.appendRollupWindow;
     if (appendRollupWindow != null &&
@@ -192,6 +199,8 @@ class SockudoClient {
   Future<void>? _authRefreshFuture;
   Timer? _authRefreshTimer;
   int _openAttempt = 0;
+  String? _currentAuthToken;
+  bool _initialAuthTokenUsed = false;
 
   final UserFacade user = UserFacade();
   final WatchlistFacade watchlist = WatchlistFacade();
@@ -421,19 +430,23 @@ class SockudoClient {
   }
 
   Future<String?> _resolveInitialCapabilityToken() async {
-    if (options.protocolVersion != 2) {
-      return null;
-    }
-    final initialToken = options.token;
-    if (initialToken != null && initialToken.isNotEmpty) {
-      _scheduleCapabilityTokenRefresh(initialToken);
-      return initialToken;
+    if (!_initialAuthTokenUsed) {
+      _initialAuthTokenUsed = true;
+      final initialToken = _currentAuthToken;
+      if (initialToken != null && initialToken.isNotEmpty) {
+        _scheduleCapabilityTokenRefresh(initialToken);
+        return initialToken;
+      }
     }
     final callback = options.authCallback;
-    final token = callback == null ? null : await callback();
-    if (token == null || token.isEmpty) {
-      return null;
+    if (callback == null) {
+      return _currentAuthToken;
     }
+    final token = await callback();
+    if (token.isEmpty) {
+      throw const SockudoException('authCallback returned an empty token');
+    }
+    _currentAuthToken = token;
     _scheduleCapabilityTokenRefresh(token);
     return token;
   }
@@ -457,6 +470,7 @@ class SockudoClient {
       if (token.isEmpty) {
         throw const SockudoException('authCallback returned an empty token');
       }
+      _currentAuthToken = token;
       final sent = _sendEvent(_p.event('auth'), <String, Object?>{
         'token': token,
       }, null);

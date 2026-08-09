@@ -40,12 +40,20 @@ class ProtocolWireFormatTest {
     }
 
     @Test
-    fun validatesAppendRollupWindowAndOmitsV2OnlyParamsForProtocolV1() {
+    fun validatesAppendRollupWindowAndRejectsV1CapabilityTokens() {
         assertFailsWith<SockudoException.InvalidOptions> {
             SockudoOptions(
                 cluster = "local",
                 appendRollupWindow = 21,
             )
+        }
+
+        assertFailsWith<SockudoException.InvalidOptions> {
+            SockudoOptions(
+                    cluster = "local",
+                    protocolVersion = 1,
+                    authToken = "ignored-token",
+                )
         }
 
         val client =
@@ -58,7 +66,6 @@ class ProtocolWireFormatTest {
                     enabledTransports = listOf(SockudoTransport.ws),
                     wsHost = "ws.example.com",
                     wsPort = 6001,
-                    authToken = "ignored-token",
                     appendRollupWindow = 100,
                 ),
             )

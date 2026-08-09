@@ -130,6 +130,8 @@ var client = new SockudoClient(
 
 JWT expiry metadata enables proactive refresh. Token expiration and revocation
 are also exposed as typed errors.
+Capability-token options require Protocol V2; V1 configuration fails during
+client construction rather than opening an unauthenticated socket.
 
 ## Presence
 

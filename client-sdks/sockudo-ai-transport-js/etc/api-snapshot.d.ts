@@ -2392,7 +2392,7 @@ export declare function reorderUnrespondedSteers<TMessage extends OrderableMessa
  * produced no output, therefore stay unresponded and get moved to the tail on
  * the next prompt build.
  */
-export declare function unrespondedSteerIds<TMessage extends OrderableMessage>(messages: readonly TMessage[], steerIds: readonly string[]): readonly string[];
+export declare function unrespondedSteerIds(messages: readonly OrderableMessage[], steerIds: readonly string[]): readonly string[];
 //# sourceMappingURL=steer-ordering.d.ts.map
 
 // via re-export: core/transport/steer.d.ts
@@ -2857,11 +2857,13 @@ export declare enum ErrorCode {
     /** Malformed request or invalid wire data. */
     BadRequest = 40000,
     /** Invalid local API argument. */
-    InvalidArgument = 40003,
+    InvalidArgument = 104012,
     /** Capability token expired. */
     TokenExpired = 40142,
     /** Authentication or capability check failed. */
-    InsufficientCapability = 40160,
+    InsufficientCapability = 40003,
+    /** Capability token was revoked. */
+    TokenRevoked = 40160,
     /** Encoder recovery failed after a stream append failure. */
     EncoderRecoveryFailed = 104000,
     /** Channel subscription failed. */
@@ -3173,7 +3175,7 @@ export interface AdaptSockudoChannelOptions extends AdaptSockudoClientOptions {
 }
 /** Options for creating a Sockudo realtime client through the peer dependency. */
 export interface CreateSockudoRealtimeClientOptions extends AdaptSockudoClientOptions {
-    /** Options passed to `new Sockudo(appKey, options)`. */
+    /** Options passed to `new Sockudo(appKey, options)`, including token/authUrl/authCallback. */
     clientOptions?: Record<string, unknown>;
     /** Append delivery mode passed to `@sockudo/client` for V2 sockets. */
     appendMode?: "delta" | "full";

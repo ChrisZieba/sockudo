@@ -7,6 +7,19 @@ wire protocol. The realtime substrate is the existing `@sockudo/client` SDK peer
 package does not duplicate connection, protocol, recovery, history, or mutation logic that belongs
 there. Only `src/realtime/` imports `@sockudo/client`.
 
+AI Transport always creates its underlying realtime connection with Protocol V2. Pass `token`,
+`authUrl`, or `authCallback` through `clientOptions`; an explicit non-V2 `protocolVersion` is
+rejected:
+
+```ts
+const client = await createSockudoRealtimeClient("app-key", {
+  clientOptions: {
+    cluster: "local",
+    authCallback: async ({ reason }) => fetchCapabilityToken(reason),
+  },
+});
+```
+
 ## Install
 
 For apps, install the published packages:

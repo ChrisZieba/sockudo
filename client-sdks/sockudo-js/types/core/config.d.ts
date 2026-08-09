@@ -23,6 +23,7 @@ export interface Config {
     appendMode?: AppendMode;
     userAuthenticator: UserAuthenticationHandler;
     channelAuthorizer: ChannelAuthorizationHandler;
+    authToken?: string;
     echoMessages?: boolean;
     forceTLS?: boolean;
     cluster?: string;

@@ -188,8 +188,9 @@ client = SockudoClient(
 ```
 
 Expiry metadata lets the SDK schedule a refresh before expiration. Opaque
-tokens without expiry metadata are refreshed after the server emits
-`sockudo:token_expired`.
+callback tokens without expiry metadata are refreshed after code `40142` and
+before reconnects. Static and revoked tokens are never resent. Token auth is
+rejected outside Protocol V2.
 
 ## Filters, event selection, and delta compression
 

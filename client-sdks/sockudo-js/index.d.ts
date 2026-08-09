@@ -10,7 +10,23 @@ export {
   ChannelAuthorizationCallback,
   UserAuthenticationCallback,
 } from './types/core/auth/options';
-export { AppendMode, Options } from './types/core/options';
+export {
+  AppendMode,
+  AuthTokenCallback,
+  AuthTokenData,
+  AuthTokenReason,
+  AuthTokenRequest,
+  AuthTokenResult,
+  CapabilityTokenAuthData,
+  CapabilityTokenExpiredData,
+  Options,
+} from './types/core/options';
+export {
+  TokenAuthError,
+  TokenExpiredError,
+  TokenRevokedError,
+  NormalizedAuthToken,
+} from './types/core/token_auth';
 export type {
   RecoveryPosition,
   ResumeFailedChannel,

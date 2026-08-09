@@ -103,6 +103,33 @@ Protocol V2 also supports `wireFormat: "messagepack"` and
 binary values. The MessagePack representation is the additive tagged variant
 `["binary", <bin>]`; existing wire variants remain unchanged.
 
+### Capability-token authentication
+
+Protocol V2 can authenticate the WebSocket with a scoped capability token.
+Use `authCallback` (or `authUrl`) when the client must refresh credentials:
+
+```ts
+const client = new Sockudo("app-key", {
+  cluster: "local",
+  protocolVersion: 2,
+  token: initialToken,
+  authCallback: async ({ socketId, reason }) => {
+    return fetchCapabilityToken({ socketId, reason });
+  },
+});
+```
+
+The optional static `token` is used for the first connection. Provider-backed
+tokens are fetched again before reconnects and refreshed in place with
+`sockudo:auth` at 80% of a JWT's `iat`–`exp` lifetime. `authUrl` receives a
+JSON `POST` containing `{ socket_id, reason }` and must return either a token
+string as JSON or an object containing `token` and optional expiry fields.
+
+Code `40142` refreshes only when a provider is configured; static tokens are
+never resent in a refresh loop. Code `40160` emits `TokenRevokedError` and is
+not retried in place. Token auth with Protocol V1 is rejected during client
+construction.
+
 ## Reconnection
 
 Unexpected disconnects emit the distinct `reconnecting` state and retry with a
