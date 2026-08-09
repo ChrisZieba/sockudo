@@ -7,6 +7,7 @@ import { getCodecHeaders, getTransportHeaders } from "../utils.js";
 import {
   adaptSockudoChannel,
   compareSerial,
+  createSockudoRealtimeClient,
   normalizeInboundMessage,
   validateAppendMode,
   validateAppendRollupWindow,
@@ -16,6 +17,21 @@ import {
 import type { InboundMessage } from "./types.js";
 
 describe("realtime adapter", () => {
+  it("requires Protocol V2 when creating the underlying realtime client", async () => {
+    try {
+      await createSockudoRealtimeClient("app-key", {
+        clientOptions: { cluster: "local", protocolVersion: 7 },
+      });
+      throw new Error("Expected Protocol V2 validation to fail");
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(ErrorInfo);
+      if (error instanceof ErrorInfo) {
+        expect(error.code).toBe(ErrorCode.InvalidArgument);
+        expect(error.message).toContain("protocolVersion 2");
+      }
+    }
+  });
+
   it("normalizes mutable messages with lazy hostile-safe header views", () => {
     const raw: SockudoRawMessage = {
       event: "sockudo:message.append",

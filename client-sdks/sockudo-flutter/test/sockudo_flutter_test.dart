@@ -427,6 +427,63 @@ void main() {
     );
   });
 
+  test('rejects capability-token auth outside protocol v2', () {
+    expect(
+      () => SockudoClient(
+        'app-key',
+        const SockudoOptions(
+          cluster: 'local',
+          protocolVersion: 7,
+          token: 'capability-token',
+        ),
+      ),
+      throwsA(isA<SockudoException>()),
+    );
+  });
+
+  test('reconnect replaces an initial static token through authCallback', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    final queries = <Map<String, String>>[];
+    var tokenCalls = 0;
+
+    unawaited(() async {
+      await for (final request in server) {
+        queries.add(request.uri.queryParameters);
+        final socket = await WebSocketTransformer.upgrade(request);
+        if (queries.length == 1) {
+          await socket.close(4201, 'retry');
+        }
+        if (queries.length == 2) {
+          break;
+        }
+      }
+    }());
+
+    final client = SockudoClient(
+      'app-key',
+      SockudoOptions(
+        cluster: 'local',
+        forceTls: false,
+        protocolVersion: 2,
+        enabledTransports: const <SockudoTransport>[SockudoTransport.ws],
+        wsHost: '127.0.0.1',
+        wsPort: server.port,
+        wssPort: server.port,
+        token: 'initial-token',
+        authCallback: () async => 'provider-token-${++tokenCalls}',
+      ),
+    );
+    addTearDown(client.close);
+
+    client.connect();
+    await _waitForValue(() => queries.length == 2 ? queries : null);
+
+    expect(queries[0]['token'], 'initial-token');
+    expect(queries[1]['token'], 'provider-token-1');
+    expect(tokenCalls, 1);
+  });
+
   test('reconnection options and state have parity defaults', () {
     const options = SockudoOptions(cluster: 'local');
 

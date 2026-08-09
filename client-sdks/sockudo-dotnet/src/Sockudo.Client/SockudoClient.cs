@@ -103,6 +103,11 @@ public sealed class SockudoClient : IAsyncDisposable
         {
             throw new SockudoException("Options must provide a cluster.");
         }
+        if (options.ProtocolVersion < 2 && options.TokenAuthentication is not null)
+        {
+            throw new UnsupportedFeature(
+                "Capability-token authentication requires ProtocolVersion 2.");
+        }
 
         Key = key;
         Options = options;

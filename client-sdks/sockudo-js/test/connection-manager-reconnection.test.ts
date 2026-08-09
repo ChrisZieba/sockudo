@@ -74,12 +74,30 @@ describe("connection manager reconnection", () => {
 
     expect(internals.reconnectAttempts).toBe(0);
   });
+
+  it("prepares a fresh token before initial and reconnect attempts", async () => {
+    vi.useFakeTimers();
+    const reasons: string[] = [];
+    const { callbacks, manager } = createManager({
+      beforeConnect: async (reason) => {
+        reasons.push(reason);
+      },
+    });
+
+    manager.connect();
+    await vi.runAllTicks();
+    callbacks[0](null, { action: "backoff" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(reasons).toEqual(["initial", "reconnect"]);
+  });
 });
 
 function createManager(
   overrides: Partial<{
     maxReconnectAttempts: number | null;
     maxReconnectGapInSeconds: number;
+    beforeConnect: (reason: "initial" | "reconnect") => Promise<void>;
   }> = {},
 ) {
   const callbacks: Array<(error: unknown, handshake: any) => void> = [];
@@ -104,6 +122,7 @@ function createManager(
     maxReconnectAttempts:
       overrides.maxReconnectAttempts === undefined ? 6 : overrides.maxReconnectAttempts,
     maxReconnectGapInSeconds: overrides.maxReconnectGapInSeconds ?? 120,
+    beforeConnect: overrides.beforeConnect,
   });
 
   return { callbacks, manager, timeline };

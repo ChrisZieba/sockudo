@@ -6,6 +6,12 @@
 
 * harden forward-compatible realtime decoding for unknown V2 frames, `extras.ai`
   passthrough, malformed presence member events, and u64 serial preservation
+* add Protocol V2 capability-token URL auth through `token`, `authUrl`, and
+  `authCallback`, including reconnect refresh, proactive JWT refresh,
+  `sockudo:auth`, and typed expiry/revocation errors
+* reject capability-token configuration under Protocol V1 and avoid resending
+  static or revoked tokens
+* synchronize checked-in declarations with the V2 event and capability-token APIs
 
 ## [1.1.0](https://github.com/sockudo/sockudo-js/compare/v1.0.0...v1.1.0) (2026-02-11)
 

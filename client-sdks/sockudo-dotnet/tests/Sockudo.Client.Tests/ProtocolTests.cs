@@ -45,27 +45,20 @@ public sealed class ProtocolTests
     }
 
     [Fact]
-    public void V1UrlOmitsV2OnlyTokenAndAppendRollupParams()
+    public void V1RejectsCapabilityTokenAuthentication()
     {
-        var client = new SockudoClient(
-            "app-key",
-            new SockudoOptions(
-                Cluster: "local",
-                ProtocolVersion: 1,
-                ForceTls: false,
-                EnabledTransports: new[] { SockudoTransport.Ws },
-                WsHost: "ws.example.com",
-                WsPort: 6001,
-                AppendRollupWindow: 40,
-                TokenAuthentication: new TokenAuthenticationOptions(Token: "static-token")
+        var exception = Assert.Throws<UnsupportedFeature>(() =>
+            new SockudoClient(
+                "app-key",
+                new SockudoOptions(
+                    Cluster: "local",
+                    ProtocolVersion: 1,
+                    TokenAuthentication: new TokenAuthenticationOptions(Token: "static-token")
+                )
             )
         );
 
-        var url = client.SocketUrl(SockudoTransport.Ws);
-
-        Assert.Contains("protocol=7", url);
-        Assert.DoesNotContain("append_rollup_window", url);
-        Assert.DoesNotContain("token=", url);
+        Assert.Contains("ProtocolVersion 2", exception.Message);
     }
 
     [Fact]

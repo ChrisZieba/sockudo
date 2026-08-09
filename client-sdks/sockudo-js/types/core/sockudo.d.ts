@@ -6,7 +6,7 @@ import Timeline from './timeline/timeline';
 import TimelineSender from './timeline/timeline_sender';
 import ConnectionManager from './connection/connection_manager';
 import { PeriodicTimer } from './utils/timers';
-import { Options } from './options';
+import { CapabilityTokenAuthData, CapabilityTokenExpiredData, Options } from './options';
 import { Config } from './config';
 import UserFacade from './user';
 import DeltaCompressionManager from './delta/manager';
@@ -43,6 +43,8 @@ export default class Pusher {
     timelineSenderTimer: PeriodicTimer;
     user: UserFacade;
     deltaCompression: DeltaCompressionManager;
+    capabilityTokenAuth?: CapabilityTokenAuthData;
+    lastCapabilityTokenExpired?: CapabilityTokenExpiredData;
     constructor(app_key: string, options: Options);
     channel(name: string): Channel;
     allChannels(): Channel[];

@@ -141,8 +141,10 @@ val client =
     )
 ```
 
-JWT expiry metadata enables proactive refresh. Opaque tokens refresh after the
-server reports expiration.
+JWT expiry metadata enables proactive refresh, and the provider is called
+before reconnects. Only expiry code `40142` refreshes in place; revocation code
+`40160` and static tokens are not resent. Token auth is rejected outside
+Protocol V2.
 
 ## Presence
 

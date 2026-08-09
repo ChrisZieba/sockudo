@@ -91,7 +91,7 @@ class PlatformPrimitiveTest {
                 client,
                 """{"event":"sockudo:connection_established","data":{"socket_id":"1.2","activity_timeout":120}}""",
             )
-            replayRaw(client, """{"event":"sockudo:token_expired","data":{"code":40160}}""")
+            replayRaw(client, """{"event":"sockudo:token_expired","data":{"code":40142}}""")
 
             waitFor { socket.textFrames.isNotEmpty() }
             val refresh = ProtocolCodec.decodeEvent(socket.textFrames.single(), SockudoWireFormat.json)
@@ -100,6 +100,28 @@ class PlatformPrimitiveTest {
             assertEquals("1.2", requests.single().socketId)
             assertEquals("sockudo:auth", refresh.event)
             assertEquals(mapOf("token" to "token-expired"), refresh.data)
+        }
+
+    @Test
+    fun revokedTokenDoesNotAttemptInPlaceRefresh() =
+        runBlocking {
+            val requests = mutableListOf<ClientAuthTokenRequest>()
+            val client =
+                testClient(
+                    authTokenProvider =
+                        ClientAuthTokenProvider { request ->
+                            requests += request
+                            "unexpected-token"
+                        },
+                )
+            val socket = CapturingWebSocket()
+            setWebSocket(client, socket)
+
+            replayRaw(client, """{"event":"sockudo:token_expired","data":{"code":40160}}""")
+            delay(50)
+
+            assertTrue(requests.isEmpty())
+            assertTrue(socket.textFrames.isEmpty())
         }
 
     @Test
@@ -133,7 +155,7 @@ class PlatformPrimitiveTest {
                 client,
                 """{"event":"sockudo:connection_established","data":{"socket_id":"1.2","activity_timeout":120}}""",
             )
-            replayRaw(client, """{"event":"sockudo:token_expired","data":{"code":40160}}""")
+            replayRaw(client, """{"event":"sockudo:token_expired","data":{"code":40142}}""")
 
             waitFor { socket.textFrames.size >= 2 }
 
@@ -165,7 +187,7 @@ class PlatformPrimitiveTest {
                 client,
                 """{"event":"sockudo:connection_established","data":{"socket_id":"1.2","activity_timeout":120}}""",
             )
-            replayRaw(client, """{"event":"sockudo:token_expired","data":{"code":40160}}""")
+            replayRaw(client, """{"event":"sockudo:token_expired","data":{"code":40142}}""")
             waitFor { socket.textFrames.size == 1 }
 
             client.disconnect()

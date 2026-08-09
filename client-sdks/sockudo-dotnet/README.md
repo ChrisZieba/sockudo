@@ -143,6 +143,10 @@ await client.ConnectAsync();
 
 When `TokenProvider` returns a JWT with `exp`, the SDK parses `iat`/`exp` without validating the signature and schedules a `sockudo:auth` refresh at 80% of the token lifetime. If `iat` is missing, the schedule is based on the current time and `exp`. Opaque tokens, unparsable tokens, and static `Token` values without a provider are reactive/manual only. When the server emits `sockudo:token_expired` with code `40142`, the SDK still calls `TokenProvider` and sends a refresh frame; code `40160` is surfaced as `TokenRevokedException`.
 
+Capability-token authentication requires Protocol V2. Configuring
+`TokenAuthentication` with a V1 protocol version throws `UnsupportedFeature`
+instead of opening an unauthenticated socket.
+
 ### Presence Channels
 
 ```csharp

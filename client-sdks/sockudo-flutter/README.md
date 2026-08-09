@@ -114,6 +114,10 @@ final client = SockudoClient(
 
 When the server emits `sockudo:token_expired` with code `40142`, `authCallback` is called and the client sends `sockudo:auth` with the fresh token. Revocation code `40160` is emitted to listeners and left to the server close path.
 
+After the optional initial `token` is used, `authCallback` supplies a fresh
+token before every reconnect. Token auth is V2-only; configuring it with any
+other protocol version throws `SockudoException`.
+
 AI append rollup can be requested for Protocol V2 connections with `appendRollupWindow`; accepted values are `0`, `20`, `40`, `100`, and `500`.
 
 ## Advanced Usage

@@ -14,7 +14,8 @@ describe("ErrorInfo", () => {
     expect(statusCodeForErrorCode(ErrorCode.BadRequest)).toBe(400);
     expect(statusCodeForErrorCode(ErrorCode.InvalidArgument)).toBe(400);
     expect(statusCodeForErrorCode(ErrorCode.TokenExpired)).toBe(401);
-    expect(statusCodeForErrorCode(ErrorCode.InsufficientCapability)).toBe(401);
+    expect(statusCodeForErrorCode(ErrorCode.InsufficientCapability)).toBe(400);
+    expect(statusCodeForErrorCode(ErrorCode.TokenRevoked)).toBe(401);
     expect(statusCodeForErrorCode(ErrorCode.EncoderRecoveryFailed)).toBe(500);
     expect(statusCodeForErrorCode(ErrorCode.SessionSubscriptionError)).toBe(500);
     expect(statusCodeForErrorCode(ErrorCode.CancelListenerError)).toBe(500);
@@ -101,8 +102,22 @@ describe("ErrorInfo", () => {
         },
       ),
     ).toMatchObject({
-      code: ErrorCode.InsufficientCapability,
+      code: ErrorCode.TokenExpired,
       message: "expired",
+      statusCode: 401,
+    });
+
+    expect(
+      toErrorInfo(
+        { code: 40160, message: "revoked", status: 401 },
+        {
+          code: ErrorCode.SessionSendFailed,
+          message: formatErrorMessage("publish", "failed"),
+        },
+      ),
+    ).toMatchObject({
+      code: ErrorCode.TokenRevoked,
+      message: "revoked",
       statusCode: 401,
     });
 
@@ -119,6 +134,16 @@ describe("ErrorInfo", () => {
       message: "expired",
       statusCode: 401,
     });
+
+    expect(
+      toErrorInfo(
+        { code: "40009", message: "too large" },
+        {
+          code: ErrorCode.SessionSendFailed,
+          message: formatErrorMessage("publish", "failed"),
+        },
+      ),
+    ).toMatchObject({ code: 40009, statusCode: 400 });
 
     expect(
       toErrorInfo(

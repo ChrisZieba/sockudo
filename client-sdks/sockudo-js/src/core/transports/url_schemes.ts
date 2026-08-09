@@ -32,6 +32,10 @@ export const ws: URLScheme = {
     if (protocolVersion() === 2 && params.appendMode) {
       queryString += "&append_mode=" + encodeURIComponent(params.appendMode);
     }
+    const authToken = protocolVersion() === 2 ? params.getAuthToken?.() : undefined;
+    if (authToken) {
+      queryString += "&token=" + encodeURIComponent(authToken);
+    }
     const path = (params.httpPath || "") + getGenericPath(key, queryString);
     return getGenericURL("ws", params, path);
   },

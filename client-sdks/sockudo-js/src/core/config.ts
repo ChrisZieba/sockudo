@@ -37,6 +37,7 @@ export interface Config {
   appendMode?: AppendMode;
   userAuthenticator: UserAuthenticationHandler;
   channelAuthorizer: ChannelAuthorizationHandler;
+  authToken?: string;
 
   // these are all optional parameters or overrrides. The customer can set these
   // but it's not strictly necessary
@@ -79,6 +80,7 @@ export function getConfig(opts: Options, sockudo): Config {
 
     userAuthenticator: buildUserAuthenticator(opts),
     channelAuthorizer: buildChannelAuthorizer(opts, sockudo),
+    authToken: opts.token,
   };
 
   if ("echoMessages" in opts) config.echoMessages = opts.echoMessages;

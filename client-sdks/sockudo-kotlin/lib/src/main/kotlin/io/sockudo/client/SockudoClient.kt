@@ -506,7 +506,7 @@ class SockudoClient(
     }
 
     private fun launchAuthRefresh(reason: ClientAuthTokenReason = ClientAuthTokenReason.REFRESH) {
-        if (options.protocolVersion < 2) {
+        if (options.protocolVersion < 2 || options.authTokenProvider == null) {
             return
         }
         scope.launch {
@@ -520,14 +520,9 @@ class SockudoClient(
         reason: ClientAuthTokenReason,
         sendRefreshFrame: Boolean,
     ) {
-        val provider = options.authTokenProvider
-        val token =
-            if (provider != null) {
-                provider.token(ClientAuthTokenRequest(socketId = socketId, reason = reason))
-            } else {
-                options.authToken
-            }
-        currentAuthToken = token?.takeIf { it.isNotBlank() }
+        val provider = options.authTokenProvider ?: return
+        val token = provider.token(ClientAuthTokenRequest(socketId = socketId, reason = reason))
+        currentAuthToken = token.takeIf { it.isNotBlank() }
         if (sendRefreshFrame && currentAuthToken != null) {
             sendEvent(p.event("auth"), mapOf("token" to currentAuthToken), null)
         }
@@ -678,7 +673,9 @@ class SockudoClient(
                 }
                 eventName == p.event("auth_success") -> dispatcher.emit(eventName, event.data)
                 eventName == p.event("token_expired") -> {
-                    launchAuthRefresh(ClientAuthTokenReason.EXPIRED)
+                    if (isTokenExpiredPayload(event.data)) {
+                        launchAuthRefresh(ClientAuthTokenReason.EXPIRED)
+                    }
                     dispatcher.emit(eventName, event.data)
                 }
                 eventName == p.event("ping") -> sendEvent(p.event("pong"), emptyMap<String, Any>(), null)
@@ -764,7 +761,7 @@ class SockudoClient(
     private fun isTokenExpiredPayload(data: Any?): Boolean {
         val map = data as? Map<*, *> ?: return false
         val code = map["code"] ?: map["status"] ?: map["error_code"]
-        return parseSockudoLong(code) in setOf(40142L, 40160L)
+        return parseSockudoLong(code) == 40142L
     }
 
     private fun stripDeltaMetadata(rawMessage: Any): String =
@@ -970,17 +967,31 @@ class SockudoClient(
                 webSocket = null
                 updateState(ConnectionState.RECONNECTING)
                 val transports = transportSequence()
-                if (currentTransport == SockudoTransport.ws && !attemptedFallback && transports.contains(
-                        SockudoTransport.wss
-                    )
-                ) {
+                val transport = if (currentTransport == SockudoTransport.ws && !attemptedFallback && transports.contains(
+                    SockudoTransport.wss
+                )) {
                     attemptedFallback = true
-                    openWebSocket(SockudoTransport.wss)
+                    SockudoTransport.wss
                 } else {
                     attemptedFallback = false
-                    openWebSocket(transports.firstOrNull() ?: SockudoTransport.wss)
+                    transports.firstOrNull() ?: SockudoTransport.wss
                 }
-                setUnavailableTimer()
+                if (options.authTokenProvider != null) {
+                    runCatching {
+                        refreshAuthToken(ClientAuthTokenReason.RECONNECT, sendRefreshFrame = false)
+                    }.onSuccess {
+                        if (!manuallyDisconnected) {
+                            openWebSocket(transport)
+                            setUnavailableTimer()
+                        }
+                    }.onFailure {
+                        dispatcher.emit("error", it)
+                        updateState(ConnectionState.FAILED)
+                    }
+                } else {
+                    openWebSocket(transport)
+                    setUnavailableTimer()
+                }
             }
     }
 

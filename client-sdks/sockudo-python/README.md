@@ -129,7 +129,7 @@ await client.connect()
 
 ### Capability Token Auth
 
-Protocol V2 connections can include an initial capability token and refresh it with the server-supported `sockudo:auth` flow. Use a static token or an async callback; callbacks may return `TokenAuthData` with expiry metadata so the client can schedule refreshes at 80% of the token lifetime. Opaque tokens without expiry metadata rely on `sockudo:token_expired`.
+Protocol V2 connections can include an initial capability token and refresh it with the server-supported `sockudo:auth` flow. Use a static token or an async callback; callbacks may return `TokenAuthData` with expiry metadata so the client can schedule refreshes at 80% of the token lifetime. Opaque callback tokens are refreshed after `sockudo:token_expired` code `40142` and before reconnects. Static tokens are never proactively or reactively resent, and revocation code `40160` is not retried in place. Token configuration with Protocol V1 raises `InvalidOptions`.
 
 ```python
 from sockudo_python import SockudoClient, SockudoOptions, TokenAuthData

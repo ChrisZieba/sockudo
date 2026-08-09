@@ -128,8 +128,10 @@ final client = SockudoClient(
 );
 ```
 
-JWTs with expiry metadata refresh proactively. Opaque tokens depend on the
-server's expiration event.
+JWTs with expiry metadata refresh proactively. After the optional initial
+token, the callback is invoked before reconnects. Expiry code `40142` can
+refresh in place; revocation code `40160` cannot. Token auth is rejected
+outside Protocol V2.
 
 ## Presence
 

@@ -4,6 +4,7 @@
 * Added `PresenceChannel.update(data)` plus inbound `sockudo_internal:presence_update` member-state handling and `sockudo:presence_update` emission.
 * Added `ChannelHistoryParams.untilAttach`, `SockudoChannel.attachSerial`, local `appendRollupWindow` validation/query support, and proxy-backed versioned message create/append/update/delete helpers returning typed `MessageAck`s with a 10s default timeout.
 * Harden realtime decoding for forward-compatible Protocol V2 frames by preserving raw extras (including `extras.ai`), retaining unsafe serials as strings, and ignoring future presence/member shapes without corrupting membership state.
+* Fail closed when capability-token auth is configured outside Protocol V2, retain refreshed tokens for reconnect, and fetch a fresh provider token after the initial static token is used.
 
 ## 2.0.0
 

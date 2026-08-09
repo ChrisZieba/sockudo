@@ -8,6 +8,7 @@ export interface URLSchemeParams {
   echoMessages?: boolean;
   wireFormat?: "json" | "messagepack" | "msgpack" | "protobuf" | "proto";
   appendMode?: AppendMode;
+  getAuthToken?: () => string | undefined;
 }
 
 interface URLScheme {

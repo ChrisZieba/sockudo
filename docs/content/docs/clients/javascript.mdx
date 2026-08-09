@@ -60,6 +60,27 @@ Specify `enabledTransports: ["ws"]` only when debugging a direct local
 connection; allowing both secure and fallback transports is safer across
 browser and mobile runtimes.
 
+## Capability-token authentication
+
+Protocol V2 can authorize the WebSocket with a scoped capability token:
+
+```ts
+const client = new Sockudo("app-key", {
+  cluster: "local",
+  protocolVersion: 2,
+  token: initialToken,
+  authCallback: async ({ socketId, reason }) =>
+    fetchCapabilityToken({ socketId, reason }),
+});
+```
+
+The optional static token is used on the first connection. The callback is
+called before reconnects and at 80% of a JWT's lifetime, then the client sends
+`sockudo:auth` without dropping the socket. `authUrl` is also supported for a
+JSON POST token endpoint. Expiry code `40142` refreshes only through a
+provider; revocation code `40160` surfaces `TokenRevokedError` without an
+in-place retry. Token auth configured outside Protocol V2 is rejected.
+
 ## Connection lifecycle
 
 Observe the connection separately from channel subscription state:

@@ -16,6 +16,7 @@ export interface ResumeRecoveredChannel {
     channel: string;
     source: string;
     replayed: number;
+    position?: RecoveryPosition;
 }
 export interface ResumeFailedChannel {
     channel: string;
@@ -37,10 +38,11 @@ export interface RewindCompleteData {
     truncated_by_retention: boolean;
     truncated_by_limit: boolean;
 }
-interface PusherEvent {
+interface SockudoEvent {
     event: string;
     channel?: string;
     data?: any;
+    name?: string;
     user_id?: string;
     stream_id?: string;
     message_id?: string;
@@ -50,4 +52,5 @@ interface PusherEvent {
     sequence?: WireSerial;
     conflation_key?: string;
 }
-export { PusherEvent };
+export { SockudoEvent };
+export type PusherEvent = SockudoEvent;

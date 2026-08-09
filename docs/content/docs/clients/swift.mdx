@@ -134,8 +134,9 @@ let client = try SockudoClient(
 )
 ```
 
-JWTs with expiry metadata refresh proactively. Opaque tokens refresh when the
-server reports expiration, provided an async provider is configured.
+JWTs with expiry metadata refresh proactively, and providers are called before
+reconnects. Only expiry code `40142` refreshes in place; revoked and static
+tokens are not resent. Token auth is rejected outside Protocol V2.
 
 ## Presence
 

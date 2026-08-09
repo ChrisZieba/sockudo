@@ -61,6 +61,8 @@ export default class ConnectionManager extends EventsDispatcher {
   handshakeCallbacks: HandshakeCallbacks;
   connectionCallbacks: ConnectionCallbacks;
   private reconnectAttempts: number;
+  private preparingConnection: boolean;
+  private connectionGeneration: number;
 
   constructor(key: string, options: ConnectionManagerOptions) {
     super();
@@ -72,6 +74,8 @@ export default class ConnectionManager extends EventsDispatcher {
     this.timeline = this.options.timeline;
     this.usingTLS = this.options.useTLS;
     this.reconnectAttempts = 0;
+    this.preparingConnection = false;
+    this.connectionGeneration = 0;
 
     this.errorCallbacks = this.buildErrorCallbacks();
     this.connectionCallbacks = this.buildConnectionCallbacks(this.errorCallbacks);
@@ -105,7 +109,7 @@ export default class ConnectionManager extends EventsDispatcher {
   }
 
   private connectWithState(state: "connecting" | "reconnecting", resetAttempts: boolean) {
-    if (this.connection || this.runner) {
+    if (this.connection || this.runner || this.preparingConnection) {
       return;
     }
     if (!this.strategy.isSupported()) {
@@ -116,8 +120,39 @@ export default class ConnectionManager extends EventsDispatcher {
       this.reconnectAttempts = 0;
     }
     this.updateState(state);
-    this.startConnecting();
-    this.setUnavailableTimer();
+    const beforeConnect = this.options.beforeConnect;
+    if (!beforeConnect) {
+      this.startConnecting();
+      this.setUnavailableTimer();
+      return;
+    }
+
+    const generation = ++this.connectionGeneration;
+    let preparation: void | Promise<void>;
+    try {
+      preparation = beforeConnect(state === "connecting" ? "initial" : "reconnect");
+    } catch (error) {
+      this.handleConnectionPreparationError(error, generation);
+      return;
+    }
+    if (!preparation || typeof (preparation as Promise<void>).then !== "function") {
+      this.startConnecting();
+      this.setUnavailableTimer();
+      return;
+    }
+
+    this.preparingConnection = true;
+    Promise.resolve(preparation).then(
+      () => {
+        if (generation !== this.connectionGeneration || !this.preparingConnection) {
+          return;
+        }
+        this.preparingConnection = false;
+        this.startConnecting();
+        this.setUnavailableTimer();
+      },
+      (error) => this.handleConnectionPreparationError(error, generation),
+    );
   }
 
   /** Sends raw data.
@@ -186,6 +221,8 @@ export default class ConnectionManager extends EventsDispatcher {
   }
 
   private disconnectInternally() {
+    this.connectionGeneration += 1;
+    this.preparingConnection = false;
     this.abortConnecting();
     this.clearRetryTimer();
     this.clearUnavailableTimer();
@@ -193,6 +230,16 @@ export default class ConnectionManager extends EventsDispatcher {
       const connection = this.abandonConnection();
       connection.close();
     }
+  }
+
+  private handleConnectionPreparationError(error: unknown, generation: number) {
+    if (generation !== this.connectionGeneration) {
+      return;
+    }
+    this.preparingConnection = false;
+    this.clearUnavailableTimer();
+    this.emit("error", error);
+    this.updateState("failed");
   }
 
   private updateStrategy() {
