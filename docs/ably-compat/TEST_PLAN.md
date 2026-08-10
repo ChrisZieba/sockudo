@@ -23,6 +23,35 @@ make ably-ai-transport-test
 make ably-ai-demo
 ```
 
+## Pull Request Latest-Upstream Gate
+
+Every pull request runs `.github/workflows/ably-upstream-compat.yml`. The workflow checks out the
+current `main` heads of `ably/ably-js` and `ably/ably-ai-transport-js` at job start, records the
+resolved commit IDs in the GitHub step summary and diagnostic artifact, and tests the pull request's
+Sockudo merge commit. No Ably credentials or long-lived test app are required. Sockudo's public
+`tests/ably-compat/upstream-sandbox.mjs` provisioner creates isolated, randomly keyed Sockudo
+children locally from the repository's own config template. This keeps the pull request workflow
+usable from forks without a private-repository token.
+
+The `ably-js` job runs every Node `test/unit`, `test/rest`, and `test/realtime` file discovered on
+upstream `main`, except:
+
+- `test/rest/liveobjects.test.js` and `test/realtime/liveobjects.test.js`, because Live Objects is
+  outside Sockudo's advertised compatibility surface;
+- `test/realtime/transports.test.js`, because Sockudo realtime is WebSocket-only;
+- the exact `node_transports` assertion, which requires the SDK's Comet inventory; and
+- two SDK-default TLS/port assertions whose expected defaults are necessarily replaced by the
+  local sandbox routing. The remaining connectivity, REST fallback, and init assertions still run.
+
+`ABLY_TEST_TRANSPORTS=web_socket` forces all parameterized realtime cases onto WebSocket. New files
+are included automatically; the file list is printed so an upstream rename cannot silently shrink
+coverage. Upstream-default pending tests remain pending, matching Ably's own Node command.
+
+The `ably-ai-transport-js` job has no test exclusions. It runs the complete unit suite followed by
+the complete integration suite against the same local Sockudo sandbox. The two jobs are deliberately
+separate from pinned release evidence: latest-upstream CI detects drift, while a release claim must
+still cite immutable source revisions and retained reports.
+
 Release evidence uses the pinned harness directly and keeps each lane separate:
 
 ```bash

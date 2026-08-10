@@ -85,6 +85,29 @@ jobs:
 
           echo "selected=${selected}" >> "$GITHUB_OUTPUT"
 
+      - name: Verify mirror token access
+        if: steps.select.outputs.selected == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SWIFT_SDK_MIRROR_TOKEN }}
+          MIRROR_REPOSITORY: ${{ matrix.mirror_repository }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "SWIFT_SDK_MIRROR_TOKEN is not configured." >&2
+            exit 1
+          fi
+
+          if ! can_push="$(gh api "repos/${MIRROR_REPOSITORY}" --jq '.permissions.push')"; then
+            echo "SWIFT_SDK_MIRROR_TOKEN is invalid, expired, or cannot access ${MIRROR_REPOSITORY}." >&2
+            exit 1
+          fi
+
+          if [ "${can_push}" != "true" ]; then
+            echo "SWIFT_SDK_MIRROR_TOKEN needs Contents: Read and write access to ${MIRROR_REPOSITORY}." >&2
+            exit 1
+          fi
+
       - name: Checkout source
         if: steps.select.outputs.selected == 'true'
         uses: actions/checkout@v6
@@ -142,7 +165,7 @@ jobs:
 
           mirror_tag="${MANUAL_MIRROR_TAG}"
           if [ "${EVENT_NAME}" = "push" ] && [ "${REF_TYPE}" = "tag" ]; then
-            mirror_tag="${REF_NAME#${TAG_PREFIX}}"
+            mirror_tag="${REF_NAME#"${TAG_PREFIX}"}"
           fi
 
           if [ -n "${mirror_tag}" ]; then

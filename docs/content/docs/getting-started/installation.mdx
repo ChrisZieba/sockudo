@@ -4,9 +4,9 @@ description: Run Sockudo locally or build a production binary with the right fea
 icon: Download
 ---
 
-The fastest way to evaluate Sockudo is Docker Compose. For a single binary, use `cargo-binstall`
-or `cargo install`. For container platforms, pull the published image from GitHub Container Registry
-or Docker Hub. The most controlled production path is a Cargo build with only the features you need.
+The fastest way to evaluate Sockudo is Docker Compose. On Linux, the release installer downloads a
+verified prebuilt binary. For container platforms, pull the published image from GitHub Container
+Registry or Docker Hub. Other operating systems can build from crates.io or source.
 
 ## Docker Compose
 
@@ -25,20 +25,33 @@ The default server listens on:
 
 Use Compose when you want Redis, local configuration, and repeatable development infrastructure without compiling Rust first.
 
-## Install a prebuilt binary
+## Install a Linux binary
 
-Use `cargo-binstall` when you want the released Sockudo binary without cloning the repository or
-compiling the server locally.
+The installer supports x86_64 and ARM64 Linux, detects GNU libc or musl, and verifies the release
+archive against its published SHA-256 checksum. It installs to `~/.local/bin` by default.
 
 ```bash
-cargo install cargo-binstall
-cargo binstall sockudo
+curl --proto '=https' --tlsv1.2 -sSfL \
+  https://sockudo.io/install.sh | sh
 ```
 
-Pin a release when your deployment needs repeatable installs:
+`sockudo.io/install.sh` is the stable public URL. It redirects to the installer attached to the
+latest GitHub release; the installer then downloads and verifies the selected version from GitHub.
+
+Pin the binary version in deployments:
 
 ```bash
-cargo binstall sockudo --version 4.7.0
+curl --proto '=https' --tlsv1.2 -sSfL \
+  https://sockudo.io/install.sh \
+  | sh -s -- --version 4.7.0
+```
+
+Choose another writable installation directory with `--bin-dir`:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSfL \
+  https://sockudo.io/install.sh \
+  | sh -s -- --bin-dir "$HOME/bin"
 ```
 
 Run the installed binary with a local configuration file:
@@ -47,9 +60,13 @@ Run the installed binary with a local configuration file:
 sockudo --config ./config/config.toml
 ```
 
+Only Linux binaries are published. `cargo binstall sockudo` remains available for the same Linux
+release assets; use a source build on macOS, Windows, and other platforms.
+
 ## Install from crates.io
 
-Use `cargo install` when you prefer building the published crate on the target host:
+Use `cargo install` when you prefer building the published crate on the target host or need a
+platform without a prebuilt binary:
 
 ```bash
 cargo install sockudo --locked

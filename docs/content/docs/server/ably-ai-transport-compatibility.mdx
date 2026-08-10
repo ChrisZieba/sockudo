@@ -27,6 +27,15 @@ no per-test exclusions. Node defaults, browser execution, strict execution of
 upstream-pending bodies, and AI Transport have separate reports and pass/fail
 states. A result from one lane is never used to claim another lane passed.
 
+Pull requests also run a moving latest-upstream gate. It resolves and records
+the current `main` commits of `ably-js` and `ably-ai-transport-js`, forces
+realtime cases to WebSocket, runs every discovered Node REST/realtime/unit file
+outside the Live Objects and multi-transport files, and runs the complete AI
+Transport unit and integration suites. Three exact SDK/harness-only assertions
+are filtered: the Comet transport inventory and two default TLS/port assertions
+that local sandbox routing overrides. This gate detects upstream drift but does
+not replace the immutable pinned reports used for release claims.
+
 Current release evidence is not fully green. The fresh Node default lane is
 575 passed with no failures, and the AIT lane is 50/50. The strict lane has four
 pinned-fixture failures before its wire assertion; Chromium, Firefox, and WebKit

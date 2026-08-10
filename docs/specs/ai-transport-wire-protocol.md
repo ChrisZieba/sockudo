@@ -159,6 +159,7 @@ Transport keys:
 | `parent` | Parent `codec-message-id` |
 | `fork-of` | Fork source `codec-message-id` |
 | `msg-regenerate` | Non-empty codec-message-id of the assistant message being regenerated |
+| `supersedes` | Non-empty `run-id` of a suspended reply replaced by a client tool-result fork; the superseded run is hidden from branch selection |
 | `stream` | `true` or `false` |
 | `stream-id` | Non-empty opaque string |
 | `status` | `streaming`, `complete`, `cancelled` |

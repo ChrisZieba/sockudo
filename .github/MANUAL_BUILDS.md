@@ -5,18 +5,16 @@
 ### For Pull Requests
 1. **Automatic Instructions**: When you create a PR, a bot comment will appear with a direct link
 2. **Click the link** in the bot comment to go to the Manual Build workflow
-3. **Select platforms** you want to build
+3. **Select Linux architectures** you want to build
 4. **Artifacts** will be posted back to the PR when complete
 
 ### For Any Branch
 1. Go to [Actions → Manual Build](../actions/workflows/manual-build.yml)
 2. Click **"Run workflow"** (green button)
 3. Select your branch from the dropdown
-4. Choose platforms to build:
-   - ☑️ **Linux x64** (GNU) - Standard Linux binary
-   - ☑️ **macOS x64** (Intel Macs) - x86_64 binary for Intel Macs
-   - ☑️ **macOS ARM64** (Apple Silicon) - Native M1/M2/M3 binary
-   - ☑️ **Windows x64** - Standard Windows executable
+4. Choose artifacts to build:
+   - ☑️ **Linux x64** (GNU + musl)
+   - ☑️ **Linux ARM64** (GNU + musl)
    - ☑️ **Docker image** - Containerized application
 5. Click **"Run workflow"**
 
@@ -29,9 +27,9 @@
 ## Artifact Downloads
 
 ### Binaries
-- **Format**: `sockudo-{platform}` (e.g., `sockudo-linux-x64`)
-- **Usage**: Direct execution after download
-- **Platforms**: Linux, macOS, Windows
+- **Format**: `sockudo-{target}` (e.g., `sockudo-x86_64-unknown-linux-gnu`)
+- **Usage**: Verify the adjacent `.sha256` file, extract, and run
+- **Platforms**: Linux x86_64 and ARM64, with GNU and musl variants
 
 ### Docker Images
 - **Format**: `sockudo-docker-{branch}-{timestamp}.tar.gz`
@@ -50,9 +48,7 @@
 | Platform | Typical Time | Cache Hit |
 |----------|--------------|-----------|
 | Linux x64 | ~8 minutes | ~3 minutes |
-| macOS x64 | ~12 minutes | ~5 minutes |
-| macOS ARM64 | ~10 minutes | ~4 minutes |
-| Windows x64 | ~15 minutes | ~6 minutes |
+| Linux ARM64 | ~8 minutes | ~3 minutes |
 | Docker | ~10 minutes | ~4 minutes |
 
 ## FAQ

@@ -550,11 +550,11 @@ class OneShotClient {
   async connect(timeoutMs = 12_000) {
     const socket = new WebSocket(`ws://127.0.0.1:${this.port}/app/${APP_KEY}?protocol=7&client=distributed-chaos&version=1.0`);
     this.socket = socket;
-    socket.addEventListener("message", (event) => this.onMessage(event.data));
+    socket.addEventListener("message", (event) => this.onMessage(event.data, socket));
     await waitFor(() => this.isSubscribed(), timeoutMs, `${this.name} subscription`);
   }
 
-  onMessage(raw) {
+  onMessage(raw, socket = this.socket) {
     const frame = parseJson(String(raw));
     if (!frame) {
       return;
@@ -568,18 +568,22 @@ class OneShotClient {
     )) {
       record("diagnostic_client_frame", { client: this.name, event, channel: frame.channel, data: frame.data });
     }
-    if (event === "connection_established") {
+    if (event === "ping") {
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ event: "pusher:pong" }));
+      }
+    } else if (event === "connection_established") {
       const socketId = frame.data?.socket_id;
       if (!socketId) {
         return;
       }
-      this.socket.send(JSON.stringify({
+      socket.send(JSON.stringify({
         event: "pusher:subscribe",
         data: this.userId
           ? presenceSubscription(socketId, this.channel, this.userId)
           : { channel: this.channel },
       }));
-    } else if (event === "subscription_succeeded" && frame.channel === this.channel) {
+    } else if (event === "subscription_succeeded" && frame.channel === this.channel && socket === this.socket) {
       this.snapshot = frame.data?.presence ?? null;
       this.currentSubscribed = true;
     } else if (frame.channel === this.channel && frame.event === EVENT_NAME) {
@@ -635,11 +639,39 @@ class ResilientClient extends OneShotClient {
         this.socket = socket;
         this.connections += 1;
         await new Promise((resolveSocket) => {
-          socket.addEventListener("message", (event) => this.onMessage(event.data));
-          socket.addEventListener("close", resolveSocket, { once: true });
-          socket.addEventListener("error", () => {}, { once: true });
+          let settled = false;
+          const finish = (reason) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            record("client_connection_ended", {
+              client: this.name,
+              connection: this.connections,
+              reason,
+            });
+            resolveSocket();
+          };
+
+          socket.addEventListener("message", (event) => this.onMessage(event.data, socket));
+          socket.addEventListener("close", () => finish("close"), { once: true });
+          socket.addEventListener("error", () => {
+            record("client_connection_error", {
+              client: this.name,
+              connection: this.connections,
+            });
+            try {
+              socket.close();
+            } catch {
+              // The failed handshake may already have closed the socket.
+            }
+            finish("error");
+          }, { once: true });
         });
-        this.currentSubscribed = false;
+        if (this.socket === socket) {
+          this.currentSubscribed = false;
+          this.socket = null;
+        }
       } catch (error) {
         record("client_connection_error", { client: this.name, message: error.message });
       }

@@ -55,3 +55,12 @@ jobs:
 
       - name: Mutation request parser smoke
         run: cargo fuzz run mutation_request -- -max_total_time=10
+
+      - name: Upload fuzz crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-${{ github.run_id }}
+          path: fuzz/artifacts/
+          if-no-files-found: warn
+          retention-days: 30
