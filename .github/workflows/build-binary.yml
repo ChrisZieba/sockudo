@@ -47,7 +47,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.git_ref || github.ref }}
 
@@ -57,7 +57,7 @@ jobs:
           targets: ${{ inputs.target_triple }}
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -123,7 +123,7 @@ jobs:
 
       - name: Upload artifact
         if: inputs.upload_artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sockudo-${{ inputs.target_triple }}
           path: |

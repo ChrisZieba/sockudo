@@ -86,10 +86,10 @@ jobs:
         working-directory: client-sdks/sockudo-js
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: https://registry.npmjs.org
@@ -135,7 +135,7 @@ jobs:
         working-directory: client-sdks/sockudo-ai-transport-js
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
@@ -144,7 +144,7 @@ jobs:
           run_install: false
 
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: https://registry.npmjs.org
@@ -183,10 +183,10 @@ jobs:
       }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -223,10 +223,10 @@ jobs:
       }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -267,10 +267,10 @@ jobs:
         working-directory: server-sdks/sockudo-http-node
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: https://registry.npmjs.org
@@ -310,10 +310,10 @@ jobs:
         working-directory: client-sdks/sockudo-dotnet
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
 
@@ -362,10 +362,10 @@ jobs:
         working-directory: server-sdks/sockudo-http-dotnet
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
 
@@ -437,7 +437,7 @@ jobs:
         working-directory: client-sdks/sockudo-kotlin
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Java
         uses: actions/setup-java@v5
@@ -486,7 +486,7 @@ jobs:
         working-directory: server-sdks/sockudo-http-java
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Java
         uses: actions/setup-java@v5
@@ -529,7 +529,7 @@ jobs:
         working-directory: client-sdks/sockudo-flutter
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -575,7 +575,7 @@ jobs:
       }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -620,7 +620,7 @@ jobs:
         working-directory: server-sdks/sockudo-http-rust
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -666,7 +666,7 @@ jobs:
         working-directory: server-sdks/sockudo-http-php
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
@@ -703,10 +703,10 @@ jobs:
         working-directory: server-sdks/sockudo-http-go
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: server-sdks/sockudo-http-go/go.mod
           cache-dependency-path: server-sdks/sockudo-http-go/go.sum
@@ -737,7 +737,7 @@ jobs:
         working-directory: client-sdks/sockudo-swift
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install SwiftLint
         run: brew install swiftlint
@@ -769,7 +769,7 @@ jobs:
         working-directory: server-sdks/sockudo-http-swift
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install SwiftLint
         run: brew install swiftlint
