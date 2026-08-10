@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
 import { createServer as createTcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -217,7 +218,13 @@ function wait(milliseconds) {
   return new Promise((resolveWait) => setTimeout(resolveWait, milliseconds));
 }
 
-export function createSandbox({ binary, configTemplate, logDirectory, childPortBase = 7100 }) {
+export function createSandbox({
+  binary,
+  configTemplate,
+  logDirectory,
+  childPortBase = 7100,
+  WebSocketImplementation = globalThis.WebSocket,
+}) {
   if (!binary || !configTemplate || !logDirectory) {
     throw new Error('binary, configTemplate, and logDirectory are required');
   }
@@ -263,9 +270,12 @@ export function createSandbox({ binary, configTemplate, logDirectory, childPortB
       (channel) => channel.name && channel.presence?.length,
     );
     if (channels.length === 0) return;
+    if (!WebSocketImplementation) {
+      throw new Error('presence fixtures require a WebSocket implementation');
+    }
 
     await new Promise((resolveSeed, reject) => {
-      const socket = new WebSocket(
+      const socket = new WebSocketImplementation(
         `ws://127.0.0.1:${child.port}/?key=${encodeURIComponent(definition.primaryKey)}&format=json&v=3`,
       );
       const pending = new Map(channels.map((channel) => [channel.name, channel]));
@@ -468,7 +478,14 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
     '--log-dir',
     process.env.SANDBOX_LOG_DIR ?? mkdtempSync(join(tmpdir(), 'sockudo-upstream-logs-')),
   );
+  const wsPackageRoot = argument('--ws-package-root', process.env.SANDBOX_WS_PACKAGE_ROOT);
   if (!binary) throw new Error('--sockudo-bin is required');
+
+  let WebSocketImplementation = globalThis.WebSocket;
+  if (!WebSocketImplementation && wsPackageRoot) {
+    const requireFromPackage = createRequire(join(resolve(wsPackageRoot), 'package.json'));
+    WebSocketImplementation = requireFromPackage('ws');
+  }
 
   const separator = listen.lastIndexOf(':');
   const host = listen.slice(0, separator) || '127.0.0.1';
@@ -477,6 +494,7 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
     binary: resolve(binary),
     configTemplate: readFileSync(resolve(configPath), 'utf8'),
     logDirectory: resolve(logDirectory),
+    WebSocketImplementation,
   });
   const address = await sandbox.listen(port, host);
   console.log(`[upstream-sandbox] listening on http://${address.address}:${address.port}`);
