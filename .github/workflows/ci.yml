@@ -530,10 +530,19 @@ jobs:
 
       - name: Confirm reported compatibility regressions
         if: steps.initial-compatibility-budget.outcome == 'failure'
+        env:
+          BASE_SHA: ${{ steps.benchmark-revisions.outputs.base-sha }}
+          HEAD_SHA: ${{ steps.benchmark-revisions.outputs.head-sha }}
         run: |
           set -euo pipefail
           cp -R target/criterion target/criterion-initial
-          cargo bench -p sockudo-ably-compat --features bench --bench compatibility_hot_paths -- --noplot --baseline pr-base
+          # Re-measure both revisions so runner load or CPU frequency drift
+          # cannot make a repeated head-only sample look reproducible.
+          git checkout --detach "$BASE_SHA"
+          rm -rf target/criterion
+          cargo bench -p sockudo-ably-compat --features bench --bench compatibility_hot_paths -- --noplot --save-baseline confirmation-base
+          git checkout --detach "$HEAD_SHA"
+          cargo bench -p sockudo-ably-compat --features bench --bench compatibility_hot_paths -- --noplot --baseline confirmation-base
 
       - name: Enforce compatibility regression budgets
         if: steps.initial-compatibility-budget.outcome == 'success'
