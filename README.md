@@ -102,6 +102,19 @@ Default local services:
 | Dashboard UI | `http://localhost:5174` |
 | Dashboard API | `http://localhost:3460` |
 
+### Linux Binary
+
+Install the latest verified x86_64 or ARM64 release into `~/.local/bin`:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSfL \
+  https://sockudo.io/install.sh | sh
+```
+
+The installer detects GNU libc or musl and verifies the archive's SHA-256 checksum. See the
+[installation guide](docs/content/docs/getting-started/installation.mdx) for version pinning and
+custom installation paths.
+
 ### From Source
 
 ```bash

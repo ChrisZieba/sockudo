@@ -1,4 +1,4 @@
-name: Reusable Build Binary Workflow
+name: Reusable Linux Binary Build
 
 on:
   workflow_call:
@@ -10,24 +10,16 @@ on:
       target_triple:
         required: true
         type: string
-        description: "Rust target triple"
+        description: "Linux Rust target triple"
       runner_os:
         required: true
         type: string
-        description: "Runner OS to use"
-      archive_ext:
-        required: true
-        type: string
-        description: "Archive extension (tgz, zip)"
-      binary_name:
-        required: true
-        type: string
-        description: "Binary filename"
-      cross_compile:
+        description: "Linux runner to use"
+      git_ref:
         required: false
-        type: boolean
-        default: false
-        description: "Whether this is a cross-compilation build"
+        type: string
+        default: ""
+        description: "Git ref to build; defaults to the triggering ref"
       version:
         required: false
         type: string
@@ -48,10 +40,16 @@ jobs:
   build:
     name: Build ${{ inputs.target_name }}
     runs-on: ${{ inputs.runner_os }}
+    env:
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "8"
+      CARGO_BUILD_JOBS: "2"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref || github.ref }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -67,18 +65,24 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-release-${{ inputs.target_triple }}-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install system dependencies (Linux x86_64 GNU)
-        if: runner.os == 'Linux' && runner.arch == 'X64' && !contains(inputs.target_triple, 'musl')
+      - name: Install GNU build dependencies
+        if: ${{ !contains(inputs.target_triple, 'musl') }}
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake protobuf-compiler libprotobuf-dev
           sudo apt-get install -y libssl-dev libcurl4-openssl-dev
 
-      - name: Build musl binary (Linux x86_64)
-        if: runner.os == 'Linux' && runner.arch == 'X64' && contains(inputs.target_triple, 'musl')
+      - name: Build musl binary
+        if: ${{ contains(inputs.target_triple, 'musl') }}
+        env:
+          TARGET_TRIPLE: ${{ inputs.target_triple }}
         run: |
           RUST_VERSION=$(grep "^rust-version" Cargo.toml | head -1 | cut -d'"' -f2)
           docker run --rm \
+            -e TARGET_TRIPLE \
+            -e CARGO_PROFILE_RELEASE_LTO \
+            -e CARGO_PROFILE_RELEASE_CODEGEN_UNITS \
+            -e CARGO_BUILD_JOBS \
             -v "$PWD":/src \
             -v "$HOME/.cargo/registry":/root/.cargo/registry \
             -v "$HOME/.cargo/git":/root/.cargo/git \
@@ -88,95 +92,41 @@ jobs:
               apk add --no-cache musl-dev pkgconf \
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev openssl-libs-static curl-dev zlib-dev zlib-static perl linux-headers protoc protobuf-dev
               mkdir -p .cargo
-              printf "[build]\nrustflags = [\"--cfg\", \"tokio_unstable\"]\n\n[target.x86_64-unknown-linux-musl]\nlinker = \"gcc\"\n" > .cargo/config.toml
+              printf "[build]\nrustflags = [\"--cfg\", \"tokio_unstable\"]\n\n[target.%s]\nlinker = \"gcc\"\n" "$TARGET_TRIPLE" > .cargo/config.toml
               export PROTOC_INCLUDE=/usr/include
-              cargo build -p sockudo --release --features full --target x86_64-unknown-linux-musl
+              cargo build -p sockudo --release --features full --target "$TARGET_TRIPLE"
             '
 
-      - name: Install system dependencies (Linux ARM64 GNU)
-        if: runner.os == 'Linux' && runner.arch == 'ARM64' && !contains(inputs.target_triple, 'musl')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake protobuf-compiler libprotobuf-dev
-          sudo apt-get install -y libssl-dev libcurl4-openssl-dev
+      - name: Build GNU binary
+        if: ${{ !contains(inputs.target_triple, 'musl') }}
+        run: cargo build -p sockudo --release --features full --target ${{ inputs.target_triple }}
 
-      - name: Install system dependencies (Windows x86_64)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          choco install protoc -y
-          $protoc = (Get-Command protoc).Source
-          "PROTOC=$protoc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Install system dependencies (macOS)
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          brew install protobuf
-          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
-
-      - name: Build musl binary (Linux ARM64)
-        if: runner.os == 'Linux' && runner.arch == 'ARM64' && contains(inputs.target_triple, 'musl')
-        run: |
-          RUST_VERSION=$(grep "^rust-version" Cargo.toml | head -1 | cut -d'"' -f2)
-          docker run --rm --platform linux/arm64 \
-            -v "$PWD":/src \
-            -v "$HOME/.cargo/registry":/root/.cargo/registry \
-            -v "$HOME/.cargo/git":/root/.cargo/git \
-            -w /src \
-            "rust:${RUST_VERSION}-alpine" \
-            sh -c '
-              apk add --no-cache musl-dev pkgconf \
-                postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev openssl-libs-static curl-dev zlib-dev zlib-static perl linux-headers protoc protobuf-dev
-              mkdir -p .cargo
-              printf "[build]\nrustflags = [\"--cfg\", \"tokio_unstable\"]\n\n[target.aarch64-unknown-linux-musl]\nlinker = \"gcc\"\n" > .cargo/config.toml
-              export PROTOC_INCLUDE=/usr/include
-              cargo build -p sockudo --release --features full --target aarch64-unknown-linux-musl
-            '
-
-      - name: Build release binary
-        if: "!contains(inputs.target_triple, 'musl')"
-        shell: bash
-        run: |
-          cargo build -p sockudo --release --features full --target ${{ inputs.target_triple }}
-
-      - name: Prepare binary and create archive
+      - name: Package binary and checksum
         id: prepare_artifact
-        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ inputs.target_triple }}
+          VERSION: ${{ inputs.version }}
         run: |
-          VERSION="${{ inputs.version }}"
-          TARGET_TRIPLE="${{ inputs.target_triple }}"
-          ARCHIVE_EXT="${{ inputs.archive_ext }}"
-          BINARY_NAME="${{ inputs.binary_name }}"
+          SOURCE_PATH="./target/${TARGET_TRIPLE}/release/sockudo"
 
-          SOURCE_PATH="./target/${TARGET_TRIPLE}/release/${BINARY_NAME}"
-
-          # Use different naming for release vs manual builds
           if [[ "$VERSION" == "dev" ]]; then
-            ARCHIVE_NAME="sockudo-${TARGET_TRIPLE}.${ARCHIVE_EXT}"
+            ARCHIVE_NAME="sockudo-${TARGET_TRIPLE}.tgz"
           else
-            ARCHIVE_NAME="sockudo-v${VERSION}-${TARGET_TRIPLE}.${ARCHIVE_EXT}"
+            ARCHIVE_NAME="sockudo-v${VERSION}-${TARGET_TRIPLE}.tgz"
           fi
 
-          # Strip binary on Unix systems
-          if [[ "$RUNNER_OS" == "Linux" || "$RUNNER_OS" == "macOS" ]]; then
-            strip "${SOURCE_PATH}" || echo "Strip failed, continuing..."
-          fi
+          strip "$SOURCE_PATH" || echo "Strip failed, continuing..."
+          tar -C "$(dirname "$SOURCE_PATH")" -czf "$ARCHIVE_NAME" sockudo
+          sha256sum "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
 
-          # Create archive
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            powershell Compress-Archive -Path "${SOURCE_PATH}" -DestinationPath "${ARCHIVE_NAME}"
-          else
-            cd $(dirname "${SOURCE_PATH}")
-            tar -czf "${GITHUB_WORKSPACE}/${ARCHIVE_NAME}" "${BINARY_NAME}"
-          fi
-
-          echo "archive_name=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
+          echo "archive_name=${ARCHIVE_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifact
         if: inputs.upload_artifact
         uses: actions/upload-artifact@v4
         with:
           name: sockudo-${{ inputs.target_triple }}
-          path: ${{ steps.prepare_artifact.outputs.archive_name }}
+          path: |
+            ${{ steps.prepare_artifact.outputs.archive_name }}
+            ${{ steps.prepare_artifact.outputs.archive_name }}.sha256
           retention-days: ${{ inputs.artifact_retention_days }}

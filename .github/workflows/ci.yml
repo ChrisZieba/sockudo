@@ -45,10 +45,15 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev cmake protobuf-compiler libprotobuf-dev
+          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev cmake protobuf-compiler libprotobuf-dev shellcheck
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      - name: Check Linux installer
+        run: |
+          sh -n install.sh
+          shellcheck install.sh
 
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
@@ -667,11 +672,9 @@ jobs:
                 `1. **Click here:** [🚀 Trigger Manual Build](${runUrl})`,
                 '2. Click **"Run workflow"** (green button)',
                 `3. Select branch: \`${branchName}\``,
-                '4. Choose platforms to build:',
-                '   - ☑️ Linux x64 (GNU)',
-                '   - ☑️ macOS x64 (Intel)',
-                '   - ☑️ macOS ARM64 (Apple Silicon)',
-                '   - ☑️ Windows x64',
+                '4. Choose artifacts to build:',
+                '   - ☑️ Linux x64 (GNU + musl)',
+                '   - ☑️ Linux ARM64 (GNU + musl)',
                 '   - ☑️ Docker image',
                 '5. Click **"Run workflow"**',
                 '',

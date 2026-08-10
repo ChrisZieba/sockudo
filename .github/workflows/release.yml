@@ -64,8 +64,14 @@ jobs:
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "prerelease=${PRERELEASE}" >> $GITHUB_OUTPUT
 
+      - name: Checkout requested release tag
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+          fetch-depth: 0
+
       - name: Verify version matches Cargo.toml
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         run: |
           TAG="${{ steps.version.outputs.tag }}"
 
@@ -103,7 +109,7 @@ jobs:
           echo "suffix=${SUFFIX}" >> $GITHUB_OUTPUT
 
   # =============================================================================
-  # Build Cross-Platform Binaries
+  # Build Linux Binaries
   # =============================================================================
   build-linux-x64-musl:
     needs: prepare
@@ -112,8 +118,7 @@ jobs:
       target_name: Linux x86_64 (musl)
       target_triple: x86_64-unknown-linux-musl
       runner_os: ubuntu-24.04
-      archive_ext: tgz
-      binary_name: sockudo
+      git_ref: ${{ needs.prepare.outputs.tag }}
       version: ${{ needs.prepare.outputs.version }}
 
   build-linux-x64-gnu:
@@ -123,8 +128,7 @@ jobs:
       target_name: Linux x86_64 (GNU)
       target_triple: x86_64-unknown-linux-gnu
       runner_os: ubuntu-24.04
-      archive_ext: tgz
-      binary_name: sockudo
+      git_ref: ${{ needs.prepare.outputs.tag }}
       version: ${{ needs.prepare.outputs.version }}
 
   build-linux-arm64-gnu:
@@ -134,8 +138,7 @@ jobs:
       target_name: Linux ARM64 (GNU)
       target_triple: aarch64-unknown-linux-gnu
       runner_os: ubuntu-24.04-arm
-      archive_ext: tgz
-      binary_name: sockudo
+      git_ref: ${{ needs.prepare.outputs.tag }}
       version: ${{ needs.prepare.outputs.version }}
 
   build-linux-arm64-musl:
@@ -145,41 +148,7 @@ jobs:
       target_name: Linux ARM64 (musl)
       target_triple: aarch64-unknown-linux-musl
       runner_os: ubuntu-24.04-arm
-      archive_ext: tgz
-      binary_name: sockudo
-      version: ${{ needs.prepare.outputs.version }}
-
-  build-macos-x64:
-    needs: prepare
-    uses: ./.github/workflows/build-binary.yml
-    with:
-      target_name: macOS x86_64
-      target_triple: x86_64-apple-darwin
-      runner_os: macos-15-intel
-      archive_ext: tgz
-      binary_name: sockudo
-      version: ${{ needs.prepare.outputs.version }}
-
-  build-macos-arm64:
-    needs: prepare
-    uses: ./.github/workflows/build-binary.yml
-    with:
-      target_name: macOS ARM64
-      target_triple: aarch64-apple-darwin
-      runner_os: macos-latest
-      archive_ext: tgz
-      binary_name: sockudo
-      version: ${{ needs.prepare.outputs.version }}
-
-  build-windows-x64:
-    needs: prepare
-    uses: ./.github/workflows/build-binary.yml
-    with:
-      target_name: Windows x86_64
-      target_triple: x86_64-pc-windows-msvc
-      runner_os: windows-latest
-      archive_ext: zip
-      binary_name: sockudo.exe
+      git_ref: ${{ needs.prepare.outputs.tag }}
       version: ${{ needs.prepare.outputs.version }}
 
   # =============================================================================
@@ -203,6 +172,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -327,15 +298,14 @@ jobs:
         build-linux-x64-gnu,
         build-linux-arm64-gnu,
         build-linux-arm64-musl,
-        build-macos-x64,
-        build-macos-arm64,
-        build-windows-x64,
       ]
     if: needs.prepare.outputs.prerelease != 'true'
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -421,9 +391,6 @@ jobs:
         build-linux-x64-gnu,
         build-linux-arm64-gnu,
         build-linux-arm64-musl,
-        build-macos-x64,
-        build-macos-arm64,
-        build-windows-x64,
         docker-manifest,
         publish-crates,
       ]
@@ -431,13 +398,17 @@ jobs:
       always() && !cancelled() &&
       needs.build-linux-x64-musl.result == 'success' &&
       needs.build-linux-x64-gnu.result == 'success' &&
-      needs.build-macos-x64.result == 'success' &&
-      needs.build-macos-arm64.result == 'success' &&
-      needs.build-windows-x64.result == 'success' &&
+      needs.build-linux-arm64-gnu.result == 'success' &&
+      needs.build-linux-arm64-musl.result == 'success' &&
       needs.docker-manifest.result == 'success' &&
       (needs.publish-crates.result == 'success' || needs.publish-crates.result == 'skipped')
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -446,7 +417,7 @@ jobs:
           merge-multiple: true
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: "Sockudo ${{ needs.prepare.outputs.tag }}"
@@ -454,9 +425,11 @@ jobs:
           body: |
             ## Installation
 
-            ### Using cargo-binstall (Recommended)
+            ### Linux installer (Recommended)
             ```bash
-            cargo binstall sockudo --version ${{ needs.prepare.outputs.version }}
+            curl --proto '=https' --tlsv1.2 -sSfL \
+              https://sockudo.io/install.sh \
+              | sh -s -- --version ${{ needs.prepare.outputs.version }}
             ```
 
             ### Using cargo
@@ -471,18 +444,18 @@ jobs:
             ```
 
             ### Direct Download
-            Download the appropriate binary for your platform from the assets below.
+            Linux archives and their SHA-256 checksums are attached below.
 
             ## Platform Support
             - ✅ Linux x86_64 (GNU)
             - ✅ Linux x86_64 (musl)
             - ✅ Linux ARM64 (GNU)
             - ✅ Linux ARM64 (musl)
-            - ✅ macOS x86_64 (Intel)
-            - ✅ macOS ARM64 (Apple Silicon)
-            - ✅ Windows x86_64
             - ✅ Docker linux/amd64
             - ✅ Docker linux/arm64
-          files: ./release-artifacts/*
+            - 🛠️ Other platforms via `cargo install sockudo`
+          files: |
+            ./release-artifacts/*
+            ./install.sh
           draft: false
           prerelease: ${{ needs.prepare.outputs.prerelease }}

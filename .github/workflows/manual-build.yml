@@ -1,4 +1,4 @@
-name: Manual Build - Cross Platform Artifacts
+name: Manual Build - Linux Artifacts
 
 on:
   workflow_dispatch:
@@ -10,21 +10,6 @@ on:
         default: false
       build_linux_arm64:
         description: "Build Linux ARM64 (GNU + musl)"
-        required: false
-        type: boolean
-        default: false
-      build_macos_x64:
-        description: "Build macOS x86_64 (Intel)"
-        required: false
-        type: boolean
-        default: false
-      build_macos_arm64:
-        description: "Build macOS ARM64 (Apple Silicon)"
-        required: false
-        type: boolean
-        default: false
-      build_windows_x64:
-        description: "Build Windows x86_64"
         required: false
         type: boolean
         default: false
@@ -54,8 +39,6 @@ jobs:
       target_name: Linux x86_64 (GNU)
       target_triple: x86_64-unknown-linux-gnu
       runner_os: ubuntu-24.04
-      archive_ext: tgz
-      binary_name: sockudo
       artifact_retention_days: 30
 
   build-linux-x64-musl:
@@ -65,8 +48,6 @@ jobs:
       target_name: Linux x86_64 (musl)
       target_triple: x86_64-unknown-linux-musl
       runner_os: ubuntu-24.04
-      archive_ext: tgz
-      binary_name: sockudo
       artifact_retention_days: 30
 
   build-linux-arm64-gnu:
@@ -76,8 +57,6 @@ jobs:
       target_name: Linux ARM64 (GNU)
       target_triple: aarch64-unknown-linux-gnu
       runner_os: ubuntu-24.04-arm
-      archive_ext: tgz
-      binary_name: sockudo
       artifact_retention_days: 30
 
   build-linux-arm64-musl:
@@ -87,41 +66,6 @@ jobs:
       target_name: Linux ARM64 (musl)
       target_triple: aarch64-unknown-linux-musl
       runner_os: ubuntu-24.04-arm
-      archive_ext: tgz
-      binary_name: sockudo
-      artifact_retention_days: 30
-
-  build-macos-x64:
-    if: inputs.build_macos_x64
-    uses: ./.github/workflows/build-binary.yml
-    with:
-      target_name: macOS x86_64
-      target_triple: x86_64-apple-darwin
-      runner_os: macos-15-intel
-      archive_ext: tgz
-      binary_name: sockudo
-      artifact_retention_days: 30
-
-  build-macos-arm64:
-    if: inputs.build_macos_arm64
-    uses: ./.github/workflows/build-binary.yml
-    with:
-      target_name: macOS ARM64
-      target_triple: aarch64-apple-darwin
-      runner_os: macos-latest
-      archive_ext: tgz
-      binary_name: sockudo
-      artifact_retention_days: 30
-
-  build-windows-x64:
-    if: inputs.build_windows_x64
-    uses: ./.github/workflows/build-binary.yml
-    with:
-      target_name: Windows x86_64
-      target_triple: x86_64-pc-windows-msvc
-      runner_os: windows-latest
-      archive_ext: zip
-      binary_name: sockudo.exe
       artifact_retention_days: 30
 
   # =============================================================================
@@ -202,9 +146,6 @@ jobs:
         build-linux-x64-musl,
         build-linux-arm64-gnu,
         build-linux-arm64-musl,
-        build-macos-x64,
-        build-macos-arm64,
-        build-windows-x64,
         docker,
       ]
     permissions:
@@ -242,9 +183,6 @@ jobs:
 
             if ('${{ inputs.build_linux_x64 }}' === 'true') artifacts.push('Linux x64 (GNU + musl)');
             if ('${{ inputs.build_linux_arm64 }}' === 'true') artifacts.push('Linux ARM64 (GNU + musl)');
-            if ('${{ inputs.build_macos_x64 }}' === 'true') artifacts.push('macOS x64');
-            if ('${{ inputs.build_macos_arm64 }}' === 'true') artifacts.push('macOS ARM64');
-            if ('${{ inputs.build_windows_x64 }}' === 'true') artifacts.push('Windows x64');
             if ('${{ inputs.build_docker }}' === 'true') artifacts.push('Docker image');
 
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;

@@ -61,6 +61,8 @@ RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook
     done && \
     mkdir -p crates/sockudo-push/examples && \
     echo "fn main() {}" > crates/sockudo-push/examples/webpush_send.rs && \
+    mkdir -p crates/sockudo-queue/examples && \
+    echo "fn main() {}" > crates/sockudo-queue/examples/queue_bench.rs && \
     mkdir -p crates/sockudo-ably-compat/benches && \
     for bench in wire_codec compatibility_hot_paths fanout_grouping realtime_retry_id stats_recording ably_vcdiff; do \
         echo "fn main() {}" > crates/sockudo-ably-compat/benches/$bench.rs; \
@@ -78,22 +80,26 @@ RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook
 RUN test -f Cargo.lock || cargo generate-lockfile
 
 ARG SOCKUDO_FEATURES=full
-ARG CARGO_PROFILE_RELEASE_LTO=true
-ARG CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+# The full feature graph exceeds the standard ARM64 runner's memory with fat LTO.
+# Thin LTO keeps cross-architecture images optimized while bounding link memory.
+ARG CARGO_PROFILE_RELEASE_LTO=thin
+ARG CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8
+ARG CARGO_BUILD_JOBS=2
 ENV CARGO_PROFILE_RELEASE_LTO=${CARGO_PROFILE_RELEASE_LTO}
 ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS}
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 
 # Set jemalloc's page size to 4KB (use 16 for 64KB-page hosts)
 ARG JEMALLOC_SYS_WITH_LG_PAGE=12
 ENV JEMALLOC_SYS_WITH_LG_PAGE=${JEMALLOC_SYS_WITH_LG_PAGE}
 
 # Build dependencies only (this layer is cached unless Cargo.toml files change)
-RUN cargo build -p sockudo --release --features "${SOCKUDO_FEATURES}" || true
+RUN cargo build -p sockudo --release --features "${SOCKUDO_FEATURES}"
 # Clean up dummy sources but keep compiled deps
 RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta push ai-transport ably-compat adapter server simulator; do \
         rm -rf crates/sockudo-$dir/src; \
     done && \
-    rm -rf crates/sockudo-push/examples && \
+    rm -rf crates/sockudo-push/examples crates/sockudo-queue/examples && \
     rm -rf crates/sockudo-ably-compat/benches && \
     rm -rf benches/ai/src benches/ai/benches && \
     rm -f target/release/deps/sockudo* target/release/deps/libsockudo* target/release/sockudo
