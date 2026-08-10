@@ -36,7 +36,12 @@ EOF
 }
 
 need_value() {
-  [ "$#" -ge 2 ] && [ -n "$2" ] || fail "$1 requires a value"
+  if [ "$#" -lt 2 ]; then
+    fail "$1 requires a value"
+  fi
+  if [ -z "$2" ]; then
+    fail "$1 requires a value"
+  fi
   case "$2" in
     -*) fail "$1 requires a value" ;;
   esac
