@@ -45,6 +45,12 @@ pub const AI_HEADER_STEER_CODEC_MESSAGE_IDS: &str = "steer-codec-message-ids";
 pub const AI_HEADER_STEP_REASON: &str = "step-reason";
 pub const AI_HEADER_STEP_CLIENT_ID: &str = "step-client-id";
 pub const AI_HEADER_MSG_REGENERATE: &str = "msg-regenerate";
+/// Run id of the suspended reply that a client tool-result fork replaces.
+///
+/// Unlike `fork-of` and `msg-regenerate`, which keep both branches navigable,
+/// `supersedes` lets clients hide the dead suspended trunk from branch
+/// selection after its tool result continues in a new run.
+pub const AI_HEADER_SUPERSEDES: &str = "supersedes";
 pub const AI_HEADER_LEGACY_TURN_ID: &str = "turn-id";
 pub const AI_HEADER_LEGACY_TURN_CLIENT_ID: &str = "turn-client-id";
 pub const AI_HEADER_LEGACY_TURN_REASON: &str = "turn-reason";
@@ -346,6 +352,11 @@ impl<'a> AiTransportHeaders<'a> {
     #[inline]
     pub fn msg_regenerate(&self) -> Option<&'a str> {
         self.get(AI_HEADER_MSG_REGENERATE)
+    }
+
+    #[inline]
+    pub fn supersedes(&self) -> Option<&'a str> {
+        self.get(AI_HEADER_SUPERSEDES)
     }
 
     #[inline]
@@ -675,6 +686,7 @@ fn validate_transport_key_domain(key: &str, value: &str) -> Result<(), AiHeaderV
         | AI_HEADER_STEP_START_SERIAL
         | AI_HEADER_STEER_CODEC_MESSAGE_IDS
         | AI_HEADER_MSG_REGENERATE
+        | AI_HEADER_SUPERSEDES
         | "error-code"
         | "model" => {
             if value.is_empty() {

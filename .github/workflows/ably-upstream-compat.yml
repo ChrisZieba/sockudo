@@ -1,0 +1,323 @@
+name: Ably upstream compatibility
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ably-upstream-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-sockudo:
+    name: Build Sockudo compatibility binary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout pull request
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      - name: Cache Rust build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-ably-upstream-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            libcurl4-openssl-dev \
+            libpq-dev \
+            libprotobuf-dev \
+            libssl-dev \
+            pkg-config \
+            protobuf-compiler
+
+      - name: Build compatibility server
+        run: >-
+          cargo build --locked -p sockudo
+          --features v2,ai-transport,ably-compat,redis,postgres,push,monolith
+
+      - name: Package server binary
+        run: |
+          ldd target/debug/sockudo
+          tar -czf sockudo-ably-compat.tar.gz target/debug/sockudo
+
+      - name: Upload server binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sockudo-ably-compat-${{ github.run_id }}
+          path: sockudo-ably-compat.tar.gz
+          compression-level: 0
+          retention-days: 1
+
+  ably-js:
+    name: ably-js main (WebSocket)
+    needs: build-sockudo
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout pull request
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Checkout latest ably-js main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ably/ably-js
+          ref: main
+          path: .upstream/ably-js
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: .upstream/ably-js/package-lock.json
+
+      - name: Download server binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sockudo-ably-compat-${{ github.run_id }}
+          path: .artifacts
+
+      - name: Test local compatibility provisioner
+        run: node --test tests/ably-compat/upstream-sandbox.test.mjs
+
+      - name: Prepare server and SDK
+        shell: bash
+        run: |
+          tar -xzf "${GITHUB_WORKSPACE}/.artifacts/sockudo-ably-compat.tar.gz" -C "${GITHUB_WORKSPACE}"
+          npm ci --ignore-scripts
+          npm run build:node
+          npm run build:push
+        working-directory: .upstream/ably-js
+
+      - name: Record source revisions
+        run: |
+          {
+            echo "# Ably upstream compatibility"
+            echo
+            echo "| Source | Revision |"
+            echo "| --- | --- |"
+            echo "| sockudo PR merge | \`${GITHUB_SHA}\` |"
+            echo "| ably/ably-js main | \`$(git -C .upstream/ably-js rev-parse HEAD)\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          {
+            echo "sockudo ${GITHUB_SHA}"
+            echo "ably-js $(git -C .upstream/ably-js rev-parse HEAD)"
+          } > "${RUNNER_TEMP}/ably-js-revisions.txt"
+
+      - name: Run latest WebSocket compatibility suite
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sandbox_log="${RUNNER_TEMP}/ably-js-sandbox.log"
+          server_log_dir="${RUNNER_TEMP}/ably-js-servers"
+          mkdir -p "${server_log_dir}"
+
+          node tests/ably-compat/upstream-sandbox.mjs \
+            --sockudo-bin "${GITHUB_WORKSPACE}/target/debug/sockudo" \
+            --config "${GITHUB_WORKSPACE}/config/config.toml" \
+            --listen 127.0.0.1:9080 \
+            --log-dir "${server_log_dir}" >"${sandbox_log}" 2>&1 &
+          sandbox_pid=$!
+          cleanup() {
+            kill "${sandbox_pid}" 2>/dev/null || true
+            wait "${sandbox_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --output /dev/null http://127.0.0.1:9080/; then
+              break
+            fi
+            if ! kill -0 "${sandbox_pid}" 2>/dev/null; then
+              tail -n 100 "${sandbox_log}"
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent --output /dev/null http://127.0.0.1:9080/ || {
+            tail -n 100 "${sandbox_log}"
+            exit 1
+          }
+
+          cd .upstream/ably-js
+          mapfile -d '' test_files < <(
+            find test/unit test/rest test/realtime \
+              -type f -name '*.test.js' \
+              ! -name 'liveobjects.test.js' \
+              ! -name 'transports.test.js' \
+              -print0 | sort -z
+          )
+          printf 'Selected %s ably-js files from main\n' "${#test_files[@]}"
+          printf '%s\n' "${test_files[@]}"
+
+          harness_only_excludes='realtime/init node_transports|rest/fallbacks Should use the primary domain as the first attempted for every connection attempt|rest/init Init without any tls key should enable tls'
+          CI=true \
+          ABLY_LOCAL_SANDBOX_URL=http://127.0.0.1:9080 \
+          ABLY_TEST_TRANSPORTS=web_socket \
+          ./node_modules/.bin/mocha \
+            --exit \
+            --grep "${harness_only_excludes}" \
+            --invert \
+            "${test_files[@]}" 2>&1 | tee "${RUNNER_TEMP}/ably-js.log"
+
+      - name: Upload compatibility diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ably-js-main-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/ably-js.log
+            ${{ runner.temp }}/ably-js-revisions.txt
+            ${{ runner.temp }}/ably-js-sandbox.log
+            ${{ runner.temp }}/ably-js-servers
+          if-no-files-found: warn
+          retention-days: 7
+
+  ably-ai-transport-js:
+    name: ably-ai-transport-js main
+    needs: build-sockudo
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout pull request
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Checkout latest ably-ai-transport-js main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ably/ably-ai-transport-js
+          ref: main
+          path: .upstream/ably-ai-transport-js
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@a15d269cd4658e1107c09f1fabf4cbd7bd1f308a # v4.4.0
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: .upstream/ably-ai-transport-js/pnpm-lock.yaml
+
+      - name: Download server binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sockudo-ably-compat-${{ github.run_id }}
+          path: .artifacts
+
+      - name: Prepare server and SDK
+        shell: bash
+        run: |
+          tar -xzf "${GITHUB_WORKSPACE}/.artifacts/sockudo-ably-compat.tar.gz" -C "${GITHUB_WORKSPACE}"
+          pnpm install --frozen-lockfile
+        working-directory: .upstream/ably-ai-transport-js
+
+      - name: Record source revisions
+        run: |
+          {
+            echo "# Ably AI Transport upstream compatibility"
+            echo
+            echo "| Source | Revision |"
+            echo "| --- | --- |"
+            echo "| sockudo PR merge | \`${GITHUB_SHA}\` |"
+            echo "| ably/ably-ai-transport-js main | \`$(git -C .upstream/ably-ai-transport-js rev-parse HEAD)\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          {
+            echo "sockudo ${GITHUB_SHA}"
+            echo "ably-ai-transport-js $(git -C .upstream/ably-ai-transport-js rev-parse HEAD)"
+          } > "${RUNNER_TEMP}/ably-ai-transport-js-revisions.txt"
+
+      - name: Run complete upstream unit suite
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm test 2>&1 | tee "${RUNNER_TEMP}/ably-ai-transport-js-unit.log"
+        working-directory: .upstream/ably-ai-transport-js
+
+      - name: Run complete upstream integration suite
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sandbox_log="${RUNNER_TEMP}/ably-ai-transport-js-sandbox.log"
+          server_log_dir="${RUNNER_TEMP}/ably-ai-transport-js-servers"
+          mkdir -p "${server_log_dir}"
+
+          node tests/ably-compat/upstream-sandbox.mjs \
+            --sockudo-bin "${GITHUB_WORKSPACE}/target/debug/sockudo" \
+            --config "${GITHUB_WORKSPACE}/config/config.toml" \
+            --listen 127.0.0.1:9080 \
+            --log-dir "${server_log_dir}" >"${sandbox_log}" 2>&1 &
+          sandbox_pid=$!
+          cleanup() {
+            kill "${sandbox_pid}" 2>/dev/null || true
+            wait "${sandbox_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --output /dev/null http://127.0.0.1:9080/; then
+              break
+            fi
+            if ! kill -0 "${sandbox_pid}" 2>/dev/null; then
+              tail -n 100 "${sandbox_log}"
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent --output /dev/null http://127.0.0.1:9080/ || {
+            tail -n 100 "${sandbox_log}"
+            exit 1
+          }
+
+          cd .upstream/ably-ai-transport-js
+          CI=true \
+          ABLY_LOCAL_SANDBOX_URL=http://127.0.0.1:9080 \
+          ABLY_TEST_TRANSPORTS=web_socket \
+          pnpm run test:integration 2>&1 | tee "${RUNNER_TEMP}/ably-ai-transport-js-integration.log"
+
+      - name: Upload compatibility diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ably-ai-transport-js-main-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/ably-ai-transport-js-integration.log
+            ${{ runner.temp }}/ably-ai-transport-js-revisions.txt
+            ${{ runner.temp }}/ably-ai-transport-js-sandbox.log
+            ${{ runner.temp }}/ably-ai-transport-js-servers
+            ${{ runner.temp }}/ably-ai-transport-js-unit.log
+          if-no-files-found: warn
+          retention-days: 7

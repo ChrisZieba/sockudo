@@ -69,12 +69,16 @@ AI Transport is additive and default-off. The server release order is:
 
 Sockudo does not claim full Ably platform compatibility. The evidence-backed wording is **Ably REST
 and WebSocket compatibility, excluding Live Objects**. The opt-in `ably-compat` surface is validated
-against pinned Node, browser, strict-upstream-pending, and AI Transport manifests in
-`sockudo-compatibility/`. Exactly the two Live Objects files and the multiple/non-WebSocket
-transport file are excluded. `testExcludes` and the selected-lane known-failure entries are empty;
-upstream-default pending results are audited and executed separately, without changing their bodies,
-assertions, or expected values. A default-lane pass is not reported as a strict-completeness or
-browser pass.
+in two layers. Pull requests fetch the current `main` heads of `ably-js` and
+`ably-ai-transport-js`, record their resolved commit IDs, and run the Node REST/WebSocket and complete
+AI Transport suites against the pull request. Realtime is forced to WebSocket; Live Objects and
+multiple/non-WebSocket transport coverage are excluded. Three named SDK/harness-only assertions are
+also excluded: the Comet inventory and two default TLS/port checks overridden by local routing.
+
+Pinned Node, browser, strict-upstream-pending, and AI Transport manifests remain the source of
+reproducible release evidence. Upstream-default pending results are audited and executed separately,
+without changing their bodies, assertions, or expected values. A latest-upstream or default-lane
+pass is not reported as a strict-completeness, browser, or immutable release-evidence pass.
 
 The current dated evidence is not release-complete: Node defaults are green at 575 passes and AIT
 is 50/50, while strict completeness and all browser release lanes remain red. The authoritative

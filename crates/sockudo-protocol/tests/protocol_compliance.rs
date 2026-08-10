@@ -5,8 +5,9 @@ use sockudo_protocol::messages::{
     AI_EVENT_RUN_START, AI_EVENT_RUN_SUSPEND, AI_HEADER_LEGACY_TURN_ID, AI_HEADER_MSG_REGENERATE,
     AI_HEADER_RUN_CLIENT_ID, AI_HEADER_RUN_CONTINUE, AI_HEADER_RUN_ID,
     AI_HEADER_STEER_CODEC_MESSAGE_IDS, AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES,
-    AI_HEADER_STEP_CLIENT_ID, AI_HEADER_STEP_START_SERIAL, AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras,
-    AiHeaderLimits, ExtrasValue, MessageData, MessageExtras, PusherMessage, is_ai_event,
+    AI_HEADER_STEP_CLIENT_ID, AI_HEADER_STEP_START_SERIAL, AI_HEADER_SUPERSEDES,
+    AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras, AiHeaderLimits, ExtrasValue, MessageData,
+    MessageExtras, PusherMessage, is_ai_event,
 };
 use sonic_rs::prelude::*;
 use sonic_rs::{Value, json};
@@ -674,6 +675,48 @@ fn test_ai_transport_msg_regenerate_rejects_empty() {
             transport: Some(HashMap::from([(
                 AI_HEADER_MSG_REGENERATE.to_string(),
                 "".to_string(),
+            )])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        extras.validate_ai_headers().unwrap_err().code,
+        AI_ERROR_INVALID_TRANSPORT_HEADER
+    );
+}
+
+#[test]
+fn test_ai_transport_supersedes_accepts_run_id() {
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([
+                (AI_HEADER_RUN_ID.to_string(), "run-fork".to_string()),
+                (AI_HEADER_SUPERSEDES.to_string(), "run-trunk".to_string()),
+            ])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+
+    assert!(extras.validate_ai_headers().is_ok());
+    assert_eq!(
+        extras
+            .ai_transport_headers()
+            .expect("transport headers")
+            .supersedes(),
+        Some("run-trunk")
+    );
+}
+
+#[test]
+fn test_ai_transport_supersedes_rejects_empty() {
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([(
+                AI_HEADER_SUPERSEDES.to_string(),
+                String::new(),
             )])),
             codec: None,
         }),
