@@ -40,7 +40,12 @@ impl RedisClusterQueueManager {
         request_timeout_ms: u64,
         reliability: QueueReliabilityConfig,
     ) -> Result<Self> {
-        let provider = ClusterRedisProvider::connect(cluster_nodes, request_timeout_ms).await?;
+        let provider = ClusterRedisProvider::connect(
+            cluster_nodes,
+            request_timeout_ms,
+            reliability.worker_poll_interval_ms,
+        )
+        .await?;
         Ok(Self {
             backend: ReliableRedisQueue::new(
                 provider,

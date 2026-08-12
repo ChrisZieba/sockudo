@@ -1,5 +1,5 @@
 use crate::redis_backend::ReliableRedisQueue;
-use crate::redis_connection::StandaloneRedisProvider;
+use crate::redis_connection::{StandaloneRedisProvider, blocking_response_timeout};
 use async_trait::async_trait;
 use sockudo_core::error::Result;
 use sockudo_core::options::{QueueReliabilityConfig, SentinelSpec};
@@ -41,7 +41,10 @@ impl RedisQueueManager {
         response_timeout_ms: u64,
         reliability: QueueReliabilityConfig,
     ) -> Result<Self> {
-        let provider = StandaloneRedisProvider::connect(redis_url, sentinel).await?;
+        let worker_response_timeout =
+            blocking_response_timeout(response_timeout_ms, reliability.worker_poll_interval_ms);
+        let provider =
+            StandaloneRedisProvider::connect(redis_url, sentinel, worker_response_timeout).await?;
         Ok(Self {
             backend: ReliableRedisQueue::new(
                 provider,
