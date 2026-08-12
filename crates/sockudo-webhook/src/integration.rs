@@ -822,13 +822,12 @@ mod tests {
     use sockudo_app::memory_app_manager::MemoryAppManager;
     use sockudo_core::app::{AppFeaturesPolicy, AppLimitsPolicy, AppPolicy};
     use sockudo_core::webhook_types::{JobData, JobPayload, Webhook, WebhookFilter};
-    use sockudo_queue::manager::QueueManagerFactory;
+    use sockudo_queue::MemoryQueueManager;
 
-    async fn create_test_queue_manager() -> Arc<QueueManager> {
-        let driver = QueueManagerFactory::create("memory", None, None, None, None)
-            .await
-            .expect("Failed to create test queue manager");
-        Arc::new(QueueManager::new(driver))
+    fn create_test_queue_manager() -> Arc<QueueManager> {
+        let driver = MemoryQueueManager::new();
+        driver.start_processing();
+        Arc::new(QueueManager::new(Box::new(driver)))
     }
 
     fn test_app() -> App {
@@ -859,7 +858,7 @@ mod tests {
         let config = WebhookConfig {
             ..Default::default()
         };
-        let queue_manager = create_test_queue_manager().await;
+        let queue_manager = create_test_queue_manager();
         let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
@@ -879,7 +878,7 @@ mod tests {
         let config = WebhookConfig {
             ..Default::default()
         };
-        let queue_manager = create_test_queue_manager().await;
+        let queue_manager = create_test_queue_manager();
         let integration = WebhookIntegration::new(config, app_manager, Some(queue_manager))
             .await
             .unwrap();
@@ -898,7 +897,7 @@ mod tests {
             ..Webhook::default()
         }]);
         let app_manager = Arc::new(MemoryAppManager::new());
-        let queue_manager = create_test_queue_manager().await;
+        let queue_manager = create_test_queue_manager();
         let integration = WebhookIntegration::new(
             WebhookConfig {
                 batching: BatchingConfig {
@@ -939,7 +938,7 @@ mod tests {
             ..Webhook::default()
         }]);
         let app_manager = Arc::new(MemoryAppManager::new());
-        let queue_manager = create_test_queue_manager().await;
+        let queue_manager = create_test_queue_manager();
         let integration =
             WebhookIntegration::new(WebhookConfig::default(), app_manager, Some(queue_manager))
                 .await
@@ -1015,7 +1014,7 @@ mod tests {
         let config = WebhookConfig {
             ..Default::default()
         };
-        let queue_manager = create_test_queue_manager().await;
+        let queue_manager = create_test_queue_manager();
         let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
@@ -1029,7 +1028,7 @@ mod tests {
             enabled: true,
             ..Default::default()
         };
-        let queue_manager = create_test_queue_manager().await;
+        let queue_manager = create_test_queue_manager();
         let integration = WebhookIntegration::new(config, app_manager, Some(queue_manager))
             .await
             .unwrap();
@@ -1071,7 +1070,7 @@ mod tests {
             ..Default::default()
         };
 
-        let queue_manager = create_test_queue_manager().await;
+        let queue_manager = create_test_queue_manager();
         let integration = WebhookIntegration::new(config, app_manager, Some(queue_manager)).await;
         assert!(integration.is_ok());
     }
@@ -1083,7 +1082,7 @@ mod tests {
         let config = WebhookConfig {
             ..Default::default()
         };
-        let queue_manager = create_test_queue_manager().await;
+        let queue_manager = create_test_queue_manager();
         let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
@@ -1108,7 +1107,7 @@ mod tests {
         let config = WebhookConfig {
             ..Default::default()
         };
-        let queue_manager = create_test_queue_manager().await;
+        let queue_manager = create_test_queue_manager();
         let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
@@ -1133,7 +1132,7 @@ mod tests {
         let config = WebhookConfig {
             ..Default::default()
         };
-        let queue_manager = create_test_queue_manager().await;
+        let queue_manager = create_test_queue_manager();
         let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
@@ -1151,7 +1150,7 @@ mod tests {
         let config = WebhookConfig {
             ..Default::default()
         };
-        let queue_manager = create_test_queue_manager().await;
+        let queue_manager = create_test_queue_manager();
         let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
@@ -1169,7 +1168,7 @@ mod tests {
         let config = WebhookConfig {
             ..Default::default()
         };
-        let queue_manager = create_test_queue_manager().await;
+        let queue_manager = create_test_queue_manager();
         let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
@@ -1187,7 +1186,7 @@ mod tests {
         let config = WebhookConfig {
             ..Default::default()
         };
-        let queue_manager = create_test_queue_manager().await;
+        let queue_manager = create_test_queue_manager();
         let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
@@ -1203,7 +1202,7 @@ mod tests {
         let config = WebhookConfig {
             ..Default::default()
         };
-        let queue_manager = create_test_queue_manager().await;
+        let queue_manager = create_test_queue_manager();
         let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
@@ -1265,7 +1264,7 @@ mod tests {
 
     async fn make_integration(enabled: bool) -> WebhookIntegration {
         let app_manager = Arc::new(MemoryAppManager::new());
-        let queue_manager = create_test_queue_manager().await;
+        let queue_manager = create_test_queue_manager();
         WebhookIntegration::new(
             WebhookConfig {
                 enabled,
