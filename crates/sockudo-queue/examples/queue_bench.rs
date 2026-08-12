@@ -25,6 +25,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|value| value.parse::<u64>())
         .transpose()?
         .unwrap_or(5_000);
+    let worker_poll_interval_ms = std::env::var("QUEUE_BENCH_WORKER_POLL_INTERVAL_MS")
+        .ok()
+        .map(|value| value.parse::<u64>())
+        .transpose()?
+        .unwrap_or(100);
+    let idle_before_enqueue_ms = std::env::var("QUEUE_BENCH_IDLE_BEFORE_ENQUEUE_MS")
+        .ok()
+        .map(|value| value.parse::<u64>())
+        .transpose()?
+        .unwrap_or_default();
     let explicit_job_ids = std::env::var("QUEUE_BENCH_EXPLICIT_JOB_IDS")
         .ok()
         .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
@@ -40,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         retry_jitter: 0.0,
         lease_duration_ms: 30_000,
         lease_renew_interval_ms: 10_000,
-        worker_poll_interval_ms: 100,
+        worker_poll_interval_ms,
         shutdown_timeout_ms: 30_000,
         completed_retention: 0,
         failed_retention: 1_000,
@@ -151,6 +161,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
+    if idle_before_enqueue_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(idle_before_enqueue_ms)).await;
+    }
+
     let end_to_end_started = Instant::now();
     let enqueue_started = Instant::now();
     let mut requests = Vec::with_capacity(jobs);
@@ -217,7 +231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let end_to_end_rate = jobs as f64 / end_to_end_elapsed.as_secs_f64();
     let deliveries = completed.load(Ordering::Acquire);
     println!(
-        "{{\"topology\":\"{}\",\"jobs\":{},\"deliveries\":{},\"duplicates\":{},\"concurrency\":{},\"batch_size\":{},\"explicit_job_ids\":{},\"callback_delay_us\":{},\"response_timeout_ms\":{},\"request_build_seconds\":{:.6},\"enqueue_seconds\":{:.6},\"enqueue_jobs_per_second\":{:.2},\"end_to_end_seconds\":{:.6},\"end_to_end_jobs_per_second\":{:.2},\"latency_ms_p50\":{},\"latency_ms_p95\":{},\"latency_ms_p99\":{},\"ready\":{},\"active\":{},\"delayed\":{},\"dead_letter\":{}}}",
+        "{{\"topology\":\"{}\",\"jobs\":{},\"deliveries\":{},\"duplicates\":{},\"concurrency\":{},\"batch_size\":{},\"explicit_job_ids\":{},\"callback_delay_us\":{},\"response_timeout_ms\":{},\"worker_poll_interval_ms\":{},\"idle_before_enqueue_ms\":{},\"request_build_seconds\":{:.6},\"enqueue_seconds\":{:.6},\"enqueue_jobs_per_second\":{:.2},\"end_to_end_seconds\":{:.6},\"end_to_end_jobs_per_second\":{:.2},\"latency_ms_p50\":{},\"latency_ms_p95\":{},\"latency_ms_p99\":{},\"ready\":{},\"active\":{},\"delayed\":{},\"dead_letter\":{}}}",
         topology,
         jobs,
         deliveries,
@@ -227,6 +241,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         explicit_job_ids,
         callback_delay_us,
         response_timeout_ms,
+        worker_poll_interval_ms,
+        idle_before_enqueue_ms,
         request_build_elapsed.as_secs_f64(),
         enqueue_elapsed.as_secs_f64(),
         enqueue_rate,

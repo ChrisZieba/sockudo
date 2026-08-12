@@ -79,12 +79,20 @@ impl RedisClient {
         }
     }
 
-    async fn build_manager(&self) -> Result<ConnectionManager> {
+    async fn build_manager_with_config(
+        &self,
+        manager_config: ConnectionManagerConfig,
+    ) -> Result<ConnectionManager> {
         self.master_client()
             .await?
-            .get_connection_manager_with_config(self.inner.manager_config.clone())
+            .get_connection_manager_with_config(manager_config)
             .await
             .map_err(|error| Error::Redis(format!("failed to connect to Redis: {error}")))
+    }
+
+    async fn build_manager(&self) -> Result<ConnectionManager> {
+        self.build_manager_with_config(self.inner.manager_config.clone())
+            .await
     }
 
     async fn get_or_build(
@@ -111,6 +119,21 @@ impl RedisClient {
     /// that may issue a blocking command.
     pub async fn fresh_connection_manager(&self) -> Result<ConnectionManager> {
         self.build_manager().await
+    }
+
+    /// Returns an independent connection manager with a caller-specific
+    /// response timeout. Blocking-command users can extend the deadline beyond
+    /// the server-side wait without changing cached command connections.
+    pub async fn fresh_connection_manager_with_response_timeout(
+        &self,
+        response_timeout: Option<Duration>,
+    ) -> Result<ConnectionManager> {
+        let manager_config = self
+            .inner
+            .manager_config
+            .clone()
+            .set_response_timeout(response_timeout);
+        self.build_manager_with_config(manager_config).await
     }
 
     /// Invalidates cached data-plane connections after a Sentinel failover.
