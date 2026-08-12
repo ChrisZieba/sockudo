@@ -139,9 +139,9 @@ defaultApp:
   maxClientEventsPerSecond: 100
 
 # -- Extra environment variables (name/value pairs)
-extraEnv: []
-  # - name: REDIS_URL
-  #   value: "redis://redis:6379"
+extraEnv:
+  - name: _RJEM_MALLOC_CONF
+    value: "background_thread:true,dirty_decay_ms:2000,muzzy_decay_ms:0,tcache_max:4096,abort_conf:true"
 
 # -- Extra environment variables from secrets/configmaps
 extraEnvFrom: []
