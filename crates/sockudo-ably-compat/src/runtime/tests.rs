@@ -1944,23 +1944,6 @@ async fn resumed_subscriber_replays_the_bounded_delivery_window_in_order() {
         false,
     );
     receiver.recv().await.expect("ATTACHED frame");
-    hub.broadcast(
-        "app",
-        channel.base(),
-        AblyProtocolMessage {
-            action: ACTION_MESSAGE,
-            channel: Some(channel.base().to_string()),
-            messages: Some(vec![AblyMessage {
-                data: Some(json!("already-delivered")),
-                ..AblyMessage::default()
-            }]),
-            ..empty_protocol_message(ACTION_MESSAGE)
-        },
-        None,
-        None,
-    );
-    receiver.recv().await.expect("active delivery");
-    hub.mark_session_subscribers_recoverable("app", "old-session");
     for index in 0..3 {
         hub.broadcast(
             "app",
@@ -1978,6 +1961,7 @@ async fn resumed_subscriber_replays_the_bounded_delivery_window_in_order() {
             None,
         );
     }
+    hub.mark_session_subscribers_recoverable("app", "old-session");
 
     let (replacement, _replacement_receiver) = AblyOutbound::channel(
         AblyFormat::Json,
@@ -1987,6 +1971,98 @@ async fn resumed_subscriber_replays_the_bounded_delivery_window_in_order() {
     let attachments = hub.resume_live_subscribers("app", "connection", "new-session", &replacement);
     assert_eq!(attachments.len(), 1);
     let (resumed, gate) = hub.take_resumed_subscriber_message("app", &channel, "new-session");
+    assert!(resumed);
+    assert!(!gate.overflowed);
+    assert_eq!(gate.messages.len(), 3);
+    for (index, message) in gate.messages.iter().enumerate() {
+        assert_eq!(
+            message.messages.as_ref().unwrap()[0].data,
+            Some(json!(format!("message-{index}")))
+        );
+    }
+}
+
+#[tokio::test]
+async fn resumed_subscriber_replays_the_shared_channel_tail_in_order() {
+    let hub = AblyCompatHub::default();
+    let channel = AblyChannelName::parse("shared-recovery-tail".to_string()).unwrap();
+    let (sender, mut receiver) = AblyOutbound::channel(
+        AblyFormat::Json,
+        OutboundLimits::default(),
+        Arc::clone(&hub.metrics),
+    );
+    hub.attach_clean(
+        "app",
+        &channel,
+        AblyAttachment {
+            connection_id: "connection",
+            session_id: "old-session",
+            sender,
+            filter: None,
+            params: HashMap::new(),
+            mode_flags: ABLY_DEFAULT_MODE_FLAGS,
+            echo: true,
+            presence: Vec::new(),
+        },
+        None,
+        Vec::new(),
+        false,
+    );
+    receiver.recv().await.expect("ATTACHED frame");
+
+    let (peer_sender, mut peer_receiver) = AblyOutbound::channel(
+        AblyFormat::MsgPack,
+        OutboundLimits::default(),
+        Arc::clone(&hub.metrics),
+    );
+    hub.attach_clean(
+        "app",
+        &channel,
+        AblyAttachment {
+            connection_id: "peer-connection",
+            session_id: "peer-session",
+            sender: peer_sender,
+            filter: None,
+            params: HashMap::new(),
+            mode_flags: ABLY_DEFAULT_MODE_FLAGS,
+            echo: true,
+            presence: Vec::new(),
+        },
+        None,
+        Vec::new(),
+        false,
+    );
+    peer_receiver.recv().await.expect("peer ATTACHED frame");
+
+    for index in 0..3 {
+        hub.broadcast(
+            "app",
+            channel.base(),
+            AblyProtocolMessage {
+                action: ACTION_MESSAGE,
+                channel: Some(channel.base().to_string()),
+                messages: Some(vec![AblyMessage {
+                    data: Some(json!(format!("message-{index}"))),
+                    ..AblyMessage::default()
+                }]),
+                ..empty_protocol_message(ACTION_MESSAGE)
+            },
+            None,
+            None,
+        );
+    }
+    hub.mark_session_subscribers_recoverable("app", "old-session");
+
+    let (replacement, _replacement_receiver) = AblyOutbound::channel(
+        AblyFormat::Json,
+        OutboundLimits::default(),
+        Arc::clone(&hub.metrics),
+    );
+    let attachments =
+        hub.resume_live_subscribers("app", "connection", "replacement-session", &replacement);
+    assert_eq!(attachments.len(), 1);
+    let (resumed, gate) =
+        hub.take_resumed_subscriber_message("app", &channel, "replacement-session");
     assert!(resumed);
     assert!(!gate.overflowed);
     assert_eq!(gate.messages.len(), 3);
