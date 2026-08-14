@@ -337,10 +337,10 @@ public sealed class SockudoClient : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await DisconnectAsync().ConfigureAwait(false);
+        CancelAuthRefreshTimer();
         _httpClient.Dispose();
         _socketGate.Dispose();
         _socketCts?.Dispose();
-        _authRefreshCts?.Dispose();
     }
 
     private SockudoChannel CreateChannel(string name)
@@ -960,11 +960,14 @@ public sealed class SockudoClient : IAsyncDisposable
 
     private void CancelAuthRefreshTimer()
     {
-        _authRefreshCts?.Cancel();
-        _authRefreshCts?.Dispose();
-        _authRefreshCts = null;
-        _authRefreshLoop?.DisposeSafe();
-        _authRefreshLoop = null;
+        var cancellation = Interlocked.Exchange(ref _authRefreshCts, null);
+        if (cancellation is not null)
+        {
+            cancellation.Cancel();
+            cancellation.Dispose();
+        }
+
+        Interlocked.Exchange(ref _authRefreshLoop, null)?.DisposeSafe();
     }
 
     private void CancelTimers()

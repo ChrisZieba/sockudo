@@ -239,6 +239,40 @@ public sealed class ProtocolTests
     }
 
     [Fact]
+    public async Task ConcurrentDisconnectsCancelScheduledTokenRefreshSafely()
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var token = TestJwt(iat: now, exp: now + 60);
+        var client = new SockudoClient(
+            "app-key",
+            new SockudoOptions(
+                Cluster: "local",
+                ForceTls: false,
+                EnabledTransports: new[] { SockudoTransport.Ws },
+                WsHost: "ws.example.com",
+                WsPort: 6001,
+                TokenAuthentication: new TokenAuthenticationOptions(
+                    TokenProvider: _ => Task.FromResult(token)
+                )
+            )
+        );
+
+        await client.RefreshAuthAsync();
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var disconnects = Enumerable.Range(0, 32)
+            .Select(async _ =>
+            {
+                await start.Task;
+                await client.DisconnectAsync();
+            })
+            .ToArray();
+
+        start.SetResult();
+        await Task.WhenAll(disconnects);
+        await client.DisposeAsync();
+    }
+
+    [Fact]
     public async Task TokenAuthEventsEmitTypedResults()
     {
         await using var client = TestClient();
