@@ -283,14 +283,21 @@ function isDataChunk(
 function inputPayload(input: ToolResult | ToolResultError | ToolApprovalResponse): unknown {
   switch (input.type) {
     case "tool-result":
-      return { output: input.output };
+      return {
+        output: input.output,
+        ...(input.forkSeed !== undefined ? { forkSeed: input.forkSeed } : {}),
+      };
     case "tool-result-error":
-      return { message: input.message };
+      return {
+        message: input.message,
+        ...(input.forkSeed !== undefined ? { forkSeed: input.forkSeed } : {}),
+      };
     case "tool-approval-response":
       return {
         approved: input.approved,
         reason: input.reason,
         approvalId: input.approvalId,
+        ...(input.forkSeed !== undefined ? { forkSeed: input.forkSeed } : {}),
       };
   }
 }

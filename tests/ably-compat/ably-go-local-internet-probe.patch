@@ -1,0 +1,14 @@
+diff --git a/ably/options.go b/ably/options.go
+index 70af054..01315c3 100644
+--- a/ably/options.go
++++ b/ably/options.go
+@@ -687,6 +687,9 @@ func (opts *clientOptions) idempotentRESTPublishing() bool {
+ 
+ // RTN17c
+ func (opts *clientOptions) hasActiveInternetConnection() bool {
++	if os.Getenv("ABLY_LOCAL_PLAINTEXT_REALTIME") == "1" {
++		return true
++	}
+ 	res, err := opts.httpclient().Get(internetCheckUrl)
+ 	if err != nil || res.StatusCode != 200 {
+ 		return false

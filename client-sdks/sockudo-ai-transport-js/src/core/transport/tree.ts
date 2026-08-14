@@ -10,6 +10,8 @@ import {
   INBOUND_LEGACY_HEADER_TURN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_ROLE,
+  HEADER_SUPERSEDES,
   HEADER_STEP_CLIENT_ID,
   HEADER_STEP_ID,
   HEADER_STEP_REASON,
@@ -241,6 +243,7 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
   private readonly codecMessageIdToRunId = new Map<string, string>();
   private readonly runCodecMessageIds = new Map<string, Set<string>>();
   private readonly headersByCodecMessageId = new Map<string, HeaderMap>();
+  private readonly headersByRunCodecMessageId = new Map<string, Map<string, HeaderMap>>();
   private readonly sortedRuns: string[] = [];
   private readonly parentIndex = new Map<string, Set<string>>();
   private readonly rootRuns = new Set<string>();
@@ -250,6 +253,8 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
   private readonly siblingCache = new Map<string, CachedNodes<TProjection>>();
   private readonly regenerateCache = new Map<string, CachedNodes<TProjection>>();
   private readonly latestContinuationInvocation = new Map<string, string>();
+  private readonly supersedesByRunId = new Map<string, string>();
+  private readonly supersedingRunIdsByTarget = new Map<string, Set<string>>();
   private version = 0;
 
   public constructor(
@@ -292,6 +297,9 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
       !isContinuationHeaders(transportHeaders),
     );
     const node = this.ensureRun(route.runId, metadata, serial);
+    if (this.recordSupersession(node.runId, transportHeaders)) {
+      this.bump();
+    }
     if (this.promoteSerial(node, serial)) {
       this.bump();
     }
@@ -457,11 +465,18 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
     if (!runId) {
       return;
     }
+    const ids = this.runCodecMessageIds.get(runId);
+    if (ids?.size === 1) {
+      this.removeRunAndDescendants(runId);
+      this.bump();
+      return;
+    }
     this.codecMessageIdToRunId.delete(codecMessageId);
     this.headersByCodecMessageId.delete(codecMessageId);
-    const ids = this.runCodecMessageIds.get(runId);
     ids?.delete(codecMessageId);
+    this.headersByRunCodecMessageId.get(runId)?.delete(codecMessageId);
     if (ids && ids.size > 0) {
+      this.restoreCodecOwner(codecMessageId);
       this.bump();
       return;
     }
@@ -540,7 +555,7 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
     const active = new Map<string, Set<string>>();
     for (const runId of this.sortedRuns) {
       const node = this.runIndex.get(runId);
-      if (!node?.clientId || !isLiveStatus(node.status)) {
+      if (!node?.clientId || this.isSuperseded(runId) || !isLiveStatus(node.status)) {
         continue;
       }
       let turns = active.get(node.clientId);
@@ -560,7 +575,7 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
   public getRunNodes(): readonly RunNode<TProjection>[] {
     return this.sortedRuns.flatMap((runId) => {
       const node = this.runIndex.get(runId);
-      return node === undefined ? [] : [node];
+      return node === undefined || this.isSuperseded(runId) ? [] : [node];
     });
   }
 
@@ -725,22 +740,40 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
 
   private attachCodecMessage(runId: string, codecMessageId: string, headers: HeaderMap): void {
     const previous = this.codecMessageIdToRunId.get(codecMessageId);
-    if (previous === runId) {
-      this.headersByCodecMessageId.set(codecMessageId, headers);
-      return;
+    let runHeaders = this.headersByRunCodecMessageId.get(runId);
+    if (runHeaders === undefined) {
+      runHeaders = new Map();
+      this.headersByRunCodecMessageId.set(runId, runHeaders);
     }
-    if (previous !== undefined) {
-      this.runCodecMessageIds.get(previous)?.delete(codecMessageId);
-    }
-    this.codecMessageIdToRunId.set(codecMessageId, runId);
-    this.headersByCodecMessageId.set(codecMessageId, headers);
+    runHeaders.set(codecMessageId, headers);
     let ids = this.runCodecMessageIds.get(runId);
     if (!ids) {
       ids = new Set();
       this.runCodecMessageIds.set(runId, ids);
     }
     ids.add(codecMessageId);
-    this.resolvePendingReferences(codecMessageId, runId);
+    if (previous === runId) {
+      this.headersByCodecMessageId.set(codecMessageId, headers);
+      return;
+    }
+    const incomingTarget = this.supersedesByRunId.get(runId);
+    const previousTarget =
+      previous === undefined ? undefined : this.supersedesByRunId.get(previous);
+    const preservePreviousClaim =
+      previous !== undefined &&
+      (incomingTarget === previous ||
+        previousTarget === runId ||
+        (incomingTarget !== undefined && incomingTarget === previousTarget));
+    if (previous !== undefined && !preservePreviousClaim) {
+      this.runCodecMessageIds.get(previous)?.delete(codecMessageId);
+      this.headersByRunCodecMessageId.get(previous)?.delete(codecMessageId);
+    }
+    const preferPrevious = previous !== undefined && previousTarget === runId;
+    if (!preferPrevious) {
+      this.codecMessageIdToRunId.set(codecMessageId, runId);
+      this.headersByCodecMessageId.set(codecMessageId, headers);
+      this.resolvePendingReferences(codecMessageId, runId);
+    }
     this.bump();
   }
 
@@ -844,11 +877,15 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
     if (node.regeneratesCodecMessageId !== undefined) {
       this.regenerateByMsgId.get(node.regeneratesCodecMessageId)?.delete(runId);
     }
-    for (const codecMessageId of this.runCodecMessageIds.get(runId) ?? []) {
-      this.codecMessageIdToRunId.delete(codecMessageId);
-      this.headersByCodecMessageId.delete(codecMessageId);
+    const codecMessageIds = Array.from(this.runCodecMessageIds.get(runId) ?? []);
+    for (const codecMessageId of codecMessageIds) {
+      if (this.codecMessageIdToRunId.get(codecMessageId) === runId) {
+        this.codecMessageIdToRunId.delete(codecMessageId);
+        this.headersByCodecMessageId.delete(codecMessageId);
+      }
     }
     this.runCodecMessageIds.delete(runId);
+    this.headersByRunCodecMessageId.delete(runId);
     this.runIndex.delete(runId);
     this.pendingParentRefByRun.delete(runId);
     this.pendingForkRefByRun.delete(runId);
@@ -858,13 +895,19 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
       this.sortedRuns.splice(index, 1);
     }
     this.latestContinuationInvocation.delete(runId);
+    this.removeSupersession(runId);
+    for (const codecMessageId of codecMessageIds) {
+      if (!this.codecMessageIdToRunId.has(codecMessageId)) {
+        this.restoreCodecOwner(codecMessageId);
+      }
+    }
   }
 
   private computeSiblingRuns(node: RunNode<TProjection>): RunNode<TProjection>[] {
     const candidateIds =
       node.parentRunId === undefined ? this.rootRuns : this.parentIndex.get(node.parentRunId);
     if (!candidateIds) {
-      return [node];
+      return this.isSuperseded(node.runId) ? [] : [node];
     }
     const candidateSet = new Set(candidateIds);
     const group = new Set<string>([node.runId]);
@@ -895,7 +938,7 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
   private computeRegenerateGroup(codecMessageId: string): RunNode<TProjection>[] {
     const nodes: RunNode<TProjection>[] = [];
     const owner = this.getNodeByCodecMessageId(codecMessageId);
-    if (owner) {
+    if (owner && !this.isSuperseded(owner.runId)) {
       nodes.push(owner);
     }
     const regenerates = this.regenerateByMsgId.get(codecMessageId);
@@ -938,7 +981,7 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
   private nodesInSortOrder(ids: Set<string>): RunNode<TProjection>[] {
     const nodes: RunNode<TProjection>[] = [];
     for (const runId of this.sortedRuns) {
-      if (ids.has(runId)) {
+      if (ids.has(runId) && !this.isSuperseded(runId)) {
         const node = this.runIndex.get(runId);
         if (node) {
           nodes.push(node);
@@ -946,6 +989,73 @@ class TreeImpl<TEvent, TProjection> implements Tree<TEvent, TProjection> {
       }
     }
     return nodes;
+  }
+
+  private recordSupersession(runId: string, headers: HeaderMap): boolean {
+    const target = headers[HEADER_SUPERSEDES];
+    if (
+      target === undefined ||
+      target === runId ||
+      headers[HEADER_ROLE] !== "assistant" ||
+      isContinuationHeaders(headers)
+    ) {
+      return false;
+    }
+    const previous = this.supersedesByRunId.get(runId);
+    if (previous === target) {
+      return false;
+    }
+    if (previous !== undefined) {
+      const previousSuperseders = this.supersedingRunIdsByTarget.get(previous);
+      previousSuperseders?.delete(runId);
+      if (previousSuperseders?.size === 0) {
+        this.supersedingRunIdsByTarget.delete(previous);
+      }
+    }
+    this.supersedesByRunId.set(runId, target);
+    let superseders = this.supersedingRunIdsByTarget.get(target);
+    if (superseders === undefined) {
+      superseders = new Set();
+      this.supersedingRunIdsByTarget.set(target, superseders);
+    }
+    superseders.add(runId);
+    return true;
+  }
+
+  private removeSupersession(runId: string): void {
+    const target = this.supersedesByRunId.get(runId);
+    if (target === undefined) {
+      return;
+    }
+    this.supersedesByRunId.delete(runId);
+    const superseders = this.supersedingRunIdsByTarget.get(target);
+    superseders?.delete(runId);
+    if (superseders?.size === 0) {
+      this.supersedingRunIdsByTarget.delete(target);
+    }
+  }
+
+  private isSuperseded(runId: string): boolean {
+    return (this.supersedingRunIdsByTarget.get(runId)?.size ?? 0) > 0;
+  }
+
+  private restoreCodecOwner(codecMessageId: string): void {
+    for (let index = this.sortedRuns.length - 1; index >= 0; index -= 1) {
+      const candidate = this.sortedRuns[index];
+      if (
+        candidate === undefined ||
+        this.isSuperseded(candidate) ||
+        !this.runCodecMessageIds.get(candidate)?.has(codecMessageId)
+      ) {
+        continue;
+      }
+      const headers = this.headersByRunCodecMessageId.get(candidate)?.get(codecMessageId);
+      this.codecMessageIdToRunId.set(codecMessageId, candidate);
+      if (headers !== undefined) {
+        this.headersByCodecMessageId.set(codecMessageId, headers);
+      }
+      return;
+    }
   }
 
   private resolveNode(id: string): RunNode<TProjection> | undefined {

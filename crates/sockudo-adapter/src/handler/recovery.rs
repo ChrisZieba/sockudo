@@ -7,7 +7,7 @@ use sockudo_core::history::{HistoryDirection, HistoryQueryBounds, HistoryReadReq
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::{MessageData, PusherMessage};
 use sonic_rs::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::warn;
 
 use crate::replay_buffer::ReplayLookup;
@@ -104,6 +104,26 @@ fn continuity_failure(
     }
 }
 
+fn recovery_window_failure(
+    position: &ResumePosition,
+    current_stream_id: Option<String>,
+    oldest_available_serial: Option<u64>,
+    newest_available_serial: Option<u64>,
+) -> ResumeFailure {
+    ResumeFailure {
+        code: "position_expired",
+        reason: "recovery_window_exceeded",
+        expected_stream_id: position.stream_id.clone(),
+        current_stream_id,
+        oldest_available_serial,
+        newest_available_serial,
+    }
+}
+
+fn exceeds_recovery_window(count: u64, max_replay_messages: usize) -> bool {
+    count > u64::try_from(max_replay_messages).unwrap_or(u64::MAX)
+}
+
 impl ConnectionHandler {
     /// Handle a `pusher:resume` event from a reconnecting client.
     ///
@@ -149,6 +169,19 @@ impl ConnectionHandler {
 
         let mut recovered = Vec::new();
         let mut failed = Vec::new();
+        let connection = self
+            .connection_manager
+            .get_connection(socket_id, &app_config.id)
+            .await;
+        let mut gated_channels = HashSet::new();
+        if let Some(connection) = connection.as_ref() {
+            for channel in channel_positions.keys() {
+                if crate::v2_broadcast::has_matching_subscription(connection, channel) {
+                    connection.start_rewind_gate(channel.clone());
+                    gated_channels.insert(channel.clone());
+                }
+            }
+        }
 
         for (channel, position) in channel_positions {
             let outcome = self
@@ -173,21 +206,14 @@ impl ConnectionHandler {
                     let delivery = match delivery {
                         Ok(delivery) => delivery,
                         Err(failure) => {
-                            self.send_resume_failed(socket_id, app_config, &channel, &failure)
-                                .await
-                                .ok();
-                            failed.push(json!({
-                                "channel": channel,
-                                "code": failure.code,
-                                "reason": failure.reason,
-                                "expected_stream_id": failure.expected_stream_id,
-                                "current_stream_id": failure.current_stream_id,
-                                "oldest_available_serial": failure.oldest_available_serial,
-                                "newest_available_serial": failure.newest_available_serial,
-                            }));
-                            if let Some(metrics) = self.metrics.as_ref() {
-                                metrics.mark_history_recovery_failure(&app_config.id, failure.code);
-                            }
+                            self.record_resume_failure(
+                                socket_id,
+                                app_config,
+                                &channel,
+                                &failure,
+                                &mut failed,
+                            )
+                            .await;
                             continue;
                         }
                     };
@@ -202,21 +228,14 @@ impl ConnectionHandler {
                     }));
                 }
                 ResumeOutcome::Failed(failure) => {
-                    self.send_resume_failed(socket_id, app_config, &channel, &failure)
-                        .await
-                        .ok();
-                    if let Some(metrics) = self.metrics.as_ref() {
-                        metrics.mark_history_recovery_failure(&app_config.id, failure.code);
-                    }
-                    failed.push(json!({
-                        "channel": channel,
-                        "code": failure.code,
-                        "reason": failure.reason,
-                        "expected_stream_id": failure.expected_stream_id,
-                        "current_stream_id": failure.current_stream_id,
-                        "oldest_available_serial": failure.oldest_available_serial,
-                        "newest_available_serial": failure.newest_available_serial,
-                    }));
+                    self.record_resume_failure(
+                        socket_id,
+                        app_config,
+                        &channel,
+                        &failure,
+                        &mut failed,
+                    )
+                    .await;
                 }
             }
         }
@@ -244,8 +263,25 @@ impl ConnectionHandler {
             delta_sequence: None,
             delta_conflation_key: None,
         };
-        self.send_message_to_socket(&app_config.id, socket_id, success_msg)
-            .await?;
+        if let Err(error) = self
+            .send_message_to_socket(&app_config.id, socket_id, success_msg)
+            .await
+        {
+            if let Some(connection) = connection.as_ref() {
+                for channel in &gated_channels {
+                    let _ = connection.finish_rewind_gate(channel).await;
+                }
+                connection.shutdown();
+            }
+            return Err(error);
+        }
+
+        if let Some(connection) = connection.as_ref() {
+            for channel in gated_channels {
+                self.drain_recovery_gate(connection, socket_id, &app_config.id, &channel)
+                    .await?;
+            }
+        }
 
         Ok(())
     }
@@ -258,6 +294,9 @@ impl ConnectionHandler {
         channel: &str,
         position: &ResumePosition,
     ) -> ResumeOutcome {
+        let max_replay_messages = app_config
+            .resolved_connection_recovery(&self.server_options().connection_recovery)
+            .max_buffer_size;
         match replay_buffer.get_messages_after_position(
             &app_config.id,
             channel,
@@ -266,6 +305,18 @@ impl ConnectionHandler {
         ) {
             ReplayLookup::Recovered(messages) => {
                 let count = messages.len();
+                if count > max_replay_messages {
+                    return ResumeOutcome::Failed(recovery_window_failure(
+                        position,
+                        position.stream_id.clone(),
+                        None,
+                        messages.last().and_then(|bytes| {
+                            sonic_rs::from_slice::<PusherMessage>(bytes)
+                                .ok()
+                                .and_then(|message| message.serial)
+                        }),
+                    ));
+                }
                 return ResumeOutcome::Recovered {
                     source: "hot",
                     count,
@@ -414,6 +465,20 @@ impl ConnectionHandler {
                 });
             }
 
+            if let Some(newest) = stream_state.newest_available_delivery_serial
+                && exceeds_recovery_window(
+                    newest.saturating_sub(position.serial),
+                    max_replay_messages,
+                )
+            {
+                return ResumeOutcome::Failed(recovery_window_failure(
+                    position,
+                    stream_state.stream_id.clone(),
+                    stream_state.oldest_available_delivery_serial,
+                    stream_state.newest_available_delivery_serial,
+                ));
+            }
+
             let replay_limit = stream_state
                 .newest_available_delivery_serial
                 .map(|newest| newest.saturating_sub(position.serial) as usize)
@@ -555,6 +620,7 @@ impl ConnectionHandler {
                 channel,
                 position,
                 history_policy.max_page_size,
+                max_replay_messages,
             )
             .await
         {
@@ -573,6 +639,7 @@ impl ConnectionHandler {
         channel: &str,
         position: &ResumePosition,
         max_page_size: usize,
+        max_replay_messages: usize,
     ) -> std::result::Result<Vec<Bytes>, ResumeFailure> {
         // Freeze the durable head before pagination. History cursors embed their query bounds, so
         // changing the end bound after page one would invalidate an otherwise healthy cursor.
@@ -656,6 +723,17 @@ impl ConnectionHandler {
         };
         if target_newest_serial == position.serial {
             return Ok(Vec::new());
+        }
+        if exceeds_recovery_window(
+            target_newest_serial.saturating_sub(position.serial),
+            max_replay_messages,
+        ) {
+            return Err(recovery_window_failure(
+                position,
+                frozen_head.stream_id,
+                frozen_head.oldest_serial,
+                frozen_head.newest_serial,
+            ));
         }
 
         let mut cursor = None;
@@ -833,6 +911,70 @@ impl ConnectionHandler {
         }
 
         Ok(recovered_messages)
+    }
+
+    async fn record_resume_failure(
+        &self,
+        socket_id: &SocketId,
+        app_config: &App,
+        channel: &str,
+        failure: &ResumeFailure,
+        failed: &mut Vec<sonic_rs::Value>,
+    ) {
+        let _ = self
+            .send_resume_failed(socket_id, app_config, channel, failure)
+            .await;
+        if let Some(metrics) = self.metrics.as_ref() {
+            metrics.mark_history_recovery_failure(&app_config.id, failure.code);
+        }
+        failed.push(json!({
+            "channel": channel,
+            "code": failure.code,
+            "reason": failure.reason,
+            "expected_stream_id": failure.expected_stream_id,
+            "current_stream_id": failure.current_stream_id,
+            "oldest_available_serial": failure.oldest_available_serial,
+            "newest_available_serial": failure.newest_available_serial,
+        }));
+    }
+
+    async fn drain_recovery_gate(
+        &self,
+        connection: &sockudo_core::websocket::WebSocketRef,
+        socket_id: &SocketId,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<()> {
+        loop {
+            let batch = connection
+                .drain_rewind_gate_batch(channel)
+                .await
+                .map_err(|error| {
+                    warn!(channel, error = %error, "recovery continuity gate failed");
+                    connection.shutdown();
+                    error
+                })?;
+            let Some(mut buffered) = batch else {
+                break;
+            };
+            buffered.sort_by_key(|message| message.serial.unwrap_or(u64::MAX));
+
+            for buffered_message in buffered {
+                let message = crate::v2_broadcast::apply_append_mode(
+                    std::sync::Arc::unwrap_or_clone(buffered_message.message),
+                    connection.append_mode,
+                );
+                self.send_message_to_socket(app_id, socket_id, message)
+                    .await
+                    .map_err(|error| {
+                        warn!(channel, error = %error, "failed to drain recovery continuity gate");
+                        connection.shutdown();
+                        error
+                    })?;
+            }
+        }
+
+        Ok(())
     }
 
     async fn send_resume_failed(
@@ -1689,6 +1831,43 @@ mod tests {
                 assert_eq!(count, 2);
             }
             other => panic!("expected cold recovery, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn durable_recovery_rejects_gap_larger_than_configured_window() {
+        let handler = build_handler(true);
+        append_history(&handler, "app", "chat", &[2, 3], "stream-1").await;
+        let mut app = test_app("app");
+        app.policy_mut().connection_recovery =
+            Some(sockudo_core::app::AppConnectionRecoveryConfig {
+                enabled: Some(true),
+                buffer_ttl_seconds: None,
+                max_buffer_size: Some(1),
+            });
+
+        let outcome = handler
+            .resume_channel(
+                &SocketId::new(),
+                &app,
+                handler.replay_buffer().unwrap(),
+                "chat",
+                &ResumePosition {
+                    serial: 1,
+                    stream_id: Some("stream-1".to_string()),
+                    last_message_id: None,
+                    legacy_serial_only: false,
+                },
+            )
+            .await;
+
+        match outcome {
+            ResumeOutcome::Failed(failure) => {
+                assert_eq!(failure.code, "position_expired");
+                assert_eq!(failure.reason, "recovery_window_exceeded");
+                assert_eq!(failure.newest_available_serial, Some(3));
+            }
+            other => panic!("expected bounded recovery failure, got {other:?}"),
         }
     }
 

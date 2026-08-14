@@ -311,6 +311,67 @@ describe("UIMessageCodec", () => {
     expect(decoded.inputs[0]?.messageId).toBe(message.id);
   });
 
+  it("decodes raw tool-result forks and reconstructs their seeded projection", () => {
+    const decoder = UIMessageCodec.createDecoder();
+    const suspended = {
+      id: "a1",
+      role: "assistant",
+      parts: [
+        {
+          type: "dynamic-tool",
+          toolName: "lookup",
+          toolCallId: "tool-1",
+          state: "input-available",
+          input: { q: "sockudo" },
+        },
+      ],
+    } satisfies AI.UIMessage;
+    const batch = decoder.decode(
+      normalizeInboundMessage({
+        event: "sockudo:message.create",
+        name: EVENT_AI_INPUT,
+        channel: "chat",
+        data: {
+          type: "tool-result",
+          toolCallId: "tool-1",
+          output: { ok: true },
+          forkSeed: { messages: [suspended] },
+        },
+        extras: {
+          ai: {
+            transport: {
+              "run-id": "run-fork",
+              "codec-message-id": suspended.id,
+              role: "assistant",
+              supersedes: "run-trunk",
+            },
+          },
+        },
+        message_serial: suspended.id,
+        history_serial: 2,
+        delivery_serial: 2,
+      } satisfies SockudoRawMessage),
+    );
+    const projection = createVercelProjection();
+    const decoded = expectDefined(batch.inputs[0]);
+
+    foldVercelEvent(projection, decoded.event, decoded.meta);
+
+    expect(projection.messages).toEqual([
+      {
+        ...suspended,
+        parts: [
+          expect.objectContaining({
+            type: "dynamic-tool",
+            toolCallId: "tool-1",
+            state: "output-available",
+            output: { ok: true },
+          }),
+        ],
+      },
+    ]);
+  });
+
   it("reduces multiplexed text, reasoning, tool states, and transient data", () => {
     const projection = createVercelProjection();
     const fold = (event: VercelOutput, serial: number): void => {

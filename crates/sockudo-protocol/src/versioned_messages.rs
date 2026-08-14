@@ -698,6 +698,19 @@ mod tests {
     }
 
     #[test]
+    fn update_request_preserves_large_json_number_across_serde_round_trip() {
+        let request: UpdateMessageRequest = serde_json::from_str(
+            r#"{"data":99999999999919999999999989999999999999999000999999999998999999999999}"#,
+        )
+        .unwrap();
+
+        let encoded = serde_json::to_vec(&request).unwrap();
+        let decoded: UpdateMessageRequest = serde_json::from_slice(&encoded).unwrap();
+
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
     fn delete_request_deserializes_string_data_via_serde_json() {
         let request: DeleteMessageRequest =
             serde_json::from_str(r#"{"data":"gone","description":"soft delete"}"#).unwrap();

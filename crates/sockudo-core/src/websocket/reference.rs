@@ -27,6 +27,7 @@ pub struct WebSocketRef {
     pub broadcast_tx: SizedMessageSenderHandle,
     pub message_sender: MessageSenderHandle,
     pub channel_state: Arc<DashMap<Arc<str>, PerChannelState>>,
+    continuity_gates: Arc<DashMap<Arc<str>, Arc<Mutex<RewindGate>>>>,
     pub socket_id: SocketId,
     pub buffer_config: WebSocketBufferConfig,
     pub byte_counter: Option<Arc<ByteCounter>>,
@@ -55,7 +56,6 @@ pub struct PerChannelState {
     pub annotation_subscribe: bool,
     /// V2 history head captured at subscription acknowledgement time.
     pub attach_serial: Option<u64>,
-    pub rewind_gate: Option<Arc<Mutex<RewindGate>>>,
 }
 
 impl WebSocketRef {
@@ -88,6 +88,7 @@ impl WebSocketRef {
             broadcast_tx,
             message_sender,
             channel_state,
+            continuity_gates: Arc::new(DashMap::new()),
             socket_id,
             buffer_config,
             byte_counter,
@@ -323,6 +324,7 @@ impl WebSocketRef {
         let mut ws = self.inner.lock().await;
         let result = ws.unsubscribe_from_channel(channel);
         self.channel_state.remove(channel);
+        self.continuity_gates.remove(channel);
         result
     }
 
@@ -365,19 +367,13 @@ impl WebSocketRef {
     }
 
     pub fn start_rewind_gate(&self, channel: String) {
-        let mut state = self
-            .channel_state
+        self.continuity_gates
             .entry(Arc::<str>::from(channel))
-            .or_default();
-        state
-            .rewind_gate
-            .get_or_insert_with(|| Arc::new(Mutex::new(RewindGate::new(self.buffer_config))));
+            .or_insert_with(|| Arc::new(Mutex::new(RewindGate::new(self.buffer_config))));
     }
 
     pub fn has_rewind_gate(&self, channel: &str) -> bool {
-        self.channel_state
-            .get(channel)
-            .is_some_and(|entry| entry.value().rewind_gate.is_some())
+        self.continuity_gates.contains_key(channel)
     }
 
     pub async fn buffer_rewind_message(
@@ -387,9 +383,9 @@ impl WebSocketRef {
         message_size: usize,
     ) -> Result<bool> {
         let Some(gate) = self
-            .channel_state
+            .continuity_gates
             .get(channel)
-            .and_then(|entry| entry.value().rewind_gate.clone())
+            .map(|entry| Arc::clone(entry.value()))
         else {
             return Ok(false);
         };
@@ -430,11 +426,7 @@ impl WebSocketRef {
     }
 
     pub async fn finish_rewind_gate(&self, channel: &str) -> Result<Vec<BufferedRewindMessage>> {
-        let Some(gate) = self
-            .channel_state
-            .get_mut(channel)
-            .and_then(|mut entry| entry.rewind_gate.take())
-        else {
+        let Some((_, gate)) = self.continuity_gates.remove(channel) else {
             return Ok(Vec::new());
         };
         let mut gate = gate.lock().await;
@@ -451,6 +443,44 @@ impl WebSocketRef {
         }
     }
 
+    /// Drain one bounded continuity-gate batch without allowing newer live
+    /// messages to overtake it. `None` means the gate was atomically closed.
+    pub async fn drain_rewind_gate_batch(
+        &self,
+        channel: &str,
+    ) -> Result<Option<Vec<BufferedRewindMessage>>> {
+        let Some(gate) = self
+            .continuity_gates
+            .get(channel)
+            .map(|entry| Arc::clone(entry.value()))
+        else {
+            return Ok(None);
+        };
+
+        let drain = {
+            let mut gate = gate.lock().await;
+            gate.drain_batch()
+        };
+        match drain {
+            RewindGateDrain::Buffered(buffered) if buffered.is_empty() => {
+                self.continuity_gates.remove(channel);
+                Ok(None)
+            }
+            RewindGateDrain::Buffered(buffered) => Ok(Some(buffered)),
+            RewindGateDrain::Overflowed(overflow) => {
+                self.continuity_gates.remove(channel);
+                Err(Error::BufferFull(format!(
+                    "continuity gate overflowed before recovery completed ({} limit: {}, buffered messages: {}, buffered bytes: {}, incoming bytes: {})",
+                    overflow.limit_kind.as_str(),
+                    overflow.limit,
+                    overflow.buffered_messages,
+                    overflow.buffered_bytes,
+                    overflow.incoming_message_bytes
+                )))
+            }
+        }
+    }
+
     fn upsert_channel_state(
         &self,
         channel: Arc<str>,
@@ -460,7 +490,6 @@ impl WebSocketRef {
         annotation_subscribe: bool,
     ) {
         let mut state = self.channel_state.entry(channel).or_default();
-        // Preserve any rewind gate started just before subscription setup.
         state.filter = filter;
         state.event_name_filter = event_name_filter;
         state.predicate = predicate;

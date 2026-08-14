@@ -1,6 +1,6 @@
 // core
 export { version } from "./version.js";
-export { EVENT_AI_CANCEL, EVENT_AI_INPUT, EVENT_AI_OUTPUT, EVENT_AI_RUN_END, EVENT_AI_RUN_RESUME, EVENT_AI_RUN_START, EVENT_AI_RUN_SUSPEND, EVENT_AI_STEP_END, EVENT_AI_STEP_START, HEADER_CODEC_MESSAGE_ID, HEADER_DISCRETE, HEADER_ERROR_CODE, HEADER_ERROR_MESSAGE, HEADER_EVENT_ID, HEADER_FORK_OF, HEADER_INPUT_CLIENT_ID, HEADER_INPUT_CODEC_MESSAGE_ID, HEADER_INVOCATION_ID, HEADER_MSG_REGENERATE, HEADER_PARENT, HEADER_ROLE, HEADER_RUN_CLIENT_ID, HEADER_RUN_ID, HEADER_RUN_REASON, HEADER_STATUS, HEADER_STEER_CODEC_MESSAGE_IDS, HEADER_STEP_CLIENT_ID, HEADER_STEP_ID, HEADER_STEP_REASON, HEADER_STEP_START_SERIAL, HEADER_STREAM, HEADER_STREAM_ID, } from "./constants.js";
+export { EVENT_AI_CANCEL, EVENT_AI_INPUT, EVENT_AI_OUTPUT, EVENT_AI_RUN_END, EVENT_AI_RUN_RESUME, EVENT_AI_RUN_START, EVENT_AI_RUN_SUSPEND, EVENT_AI_STEP_END, EVENT_AI_STEP_START, HEADER_CODEC_MESSAGE_ID, HEADER_DISCRETE, HEADER_ERROR_CODE, HEADER_ERROR_MESSAGE, HEADER_EVENT_ID, HEADER_FORK_OF, HEADER_INPUT_CLIENT_ID, HEADER_INPUT_CODEC_MESSAGE_ID, HEADER_INVOCATION_ID, HEADER_MSG_REGENERATE, HEADER_PARENT, HEADER_ROLE, HEADER_RUN_CLIENT_ID, HEADER_RUN_ID, HEADER_RUN_REASON, HEADER_STATUS, HEADER_STEER_CODEC_MESSAGE_IDS, HEADER_SUPERSEDES, HEADER_STEP_CLIENT_ID, HEADER_STEP_ID, HEADER_STEP_REASON, HEADER_STEP_START_SERIAL, HEADER_STREAM, HEADER_STREAM_ID, } from "./constants.js";
 export { ErrorCode, ErrorInfo, errorInfoIs, formatErrorMessage, statusCodeForErrorCode, toErrorInfo, type ErrorInfoOptions, } from "./errors.js";
 export { EventEmitter, type EventEmitterOptions, type EventUnsubscribe, type EventsMap, } from "./event-emitter.js";
 export { LogLevel, consoleLogger, makeLogger, redactValue, type LogContext, type LogHandler, type Logger, type MakeLoggerOptions, } from "./logger.js";
@@ -1412,6 +1412,12 @@ export declare const HEADER_PARENT = "parent";
 export declare const HEADER_FORK_OF = "fork-of";
 /** Transport header key indicating regeneration. */
 export declare const HEADER_MSG_REGENERATE = "msg-regenerate";
+/**
+ * Transport header key for the suspended run replaced by a client tool-result
+ * fork. Superseded runs remain addressable in history but are hidden from
+ * branch selection.
+ */
+export declare const HEADER_SUPERSEDES = "supersedes";
 /** Transport header key for stream error code. */
 export declare const HEADER_ERROR_CODE = "error-code";
 /** Transport header key for stream error message. */
@@ -2049,6 +2055,10 @@ export interface SendOptions {
     waitForRunStart?: boolean;
     /** Existing run id for suspended-run continuation. */
     runId?: string;
+    /** Role stamped on the input. Tool-result forks use `assistant`. */
+    role?: "user" | "assistant";
+    /** Suspended run replaced by this client tool-result fork. */
+    supersedes?: string;
     /** Message id this send replaces. */
     forkOf?: string;
     /** Parent message id. Defaults to the selected branch tail. */
@@ -3330,6 +3340,8 @@ export interface BuildTransportHeadersOptions {
     forkOf?: string;
     /** Codec message id of the assistant message this message regenerates. */
     regenerates?: string | boolean;
+    /** Run id of the suspended reply replaced by this fork. */
+    supersedes?: string;
     /** Invocation identity. */
     invocationId?: string;
     /** Verified input client identity. */
@@ -3404,7 +3416,7 @@ export { createVercelDecoder } from "./decoder.js";
 export { createVercelEncoder } from "./encoder.js";
 export { createVercelProjection, foldVercelEvent } from "./reducer.js";
 export { toolBase, transitionToolPart } from "./tool-transitions.js";
-export type { AI, MessageTrackers, ToolApprovalResponse, ToolResult, ToolResultError, VercelInput, VercelOutput, VercelProjection, } from "./events.js";
+export type { AI, ForkSeed, MessageTrackers, ToolApprovalResponse, ToolResult, ToolResultError, VercelInput, VercelOutput, VercelProjection, } from "./events.js";
 //# sourceMappingURL=index.d.ts.map
 
 // via re-export: vercel/codec/reducer.d.ts
@@ -3544,8 +3556,45 @@ export declare function deriveContinuationInputs(overlay: AI.UIMessage, treeMess
 export {};
 //# sourceMappingURL=chat-transport.d.ts.map
 
+// via re-export: vercel/transport/fork-tool-result.d.ts
+import type { SendOptions } from "../../core/transport/index.js";
+import type { AI, VercelInput } from "../codec/index.js";
+/** Successful or failed client-side tool resolution. */
+export type ToolCallResolution = {
+    output: unknown;
+} | {
+    errorMessage: string;
+};
+/** Inputs required to construct a client tool-result fork. */
+export interface CreateToolResultForkOptions {
+    /** Full message projection of the suspended run. */
+    runMessages: readonly AI.UIMessage[];
+    /** Codec message id of the suspended run's structural parent. */
+    parentCodecMessageId: string;
+    /** Tool call being resolved. */
+    toolCallId: string;
+    /** Successful output or failure message. */
+    result: ToolCallResolution;
+    /** Suspended run replaced by the fork. */
+    supersedesRunId: string;
+}
+/**
+ * Creates a tool resolution and send options for a new assistant reply fork.
+ *
+ * The fork carries the suspended run's complete projection, allowing both the
+ * client and agent reducers to reconstruct prior tool context before applying
+ * the new result. The returned send options intentionally omit `runId`, so a
+ * new run is created and the suspended trunk can be superseded.
+ */
+export declare function createToolResultFork(options: CreateToolResultForkOptions): {
+    input: VercelInput;
+    sendOptions: SendOptions;
+};
+//# sourceMappingURL=fork-tool-result.d.ts.map
+
 // via re-export: vercel/transport/index.d.ts
 export { createChatTransport, deriveContinuationInputs, type ChatTransport, type ChatTransportOptions, type ChatTransportReconnectOptions, type ChatTransportSendMessagesOptions, type PreparedSendMessagesRequest, type SendMessagesRequestContext, } from "./chat-transport.js";
+export { createToolResultFork, type CreateToolResultForkOptions, type ToolCallResolution, } from "./fork-tool-result.js";
 export { vercelRunEndReason, type VercelFinishReason } from "./run-end-reason.js";
 //# sourceMappingURL=index.d.ts.map
 

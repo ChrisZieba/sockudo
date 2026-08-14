@@ -159,6 +159,29 @@ fn publish_validation_rejects_reserved_and_unknown_fields() {
 }
 
 #[test]
+fn realtime_publish_accepts_only_its_server_assigned_connection_id() {
+    let mut matching = AblyMessage {
+        connection_id: Some("connection-1".to_string()),
+        ..AblyMessage::default()
+    };
+    normalize_realtime_message_connection_id(&mut matching, "connection-1").unwrap();
+    assert!(matching.connection_id.is_none());
+    validate_ably_publish_message(&matching, false, AiHeaderLimits::default()).unwrap();
+
+    let mut different = AblyMessage {
+        connection_id: Some("connection-2".to_string()),
+        ..AblyMessage::default()
+    };
+    let error =
+        normalize_realtime_message_connection_id(&mut different, "connection-1").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("must match the publishing connection")
+    );
+}
+
+#[test]
 fn wire_connection_key_is_not_treated_as_delivered_connection_id() {
     let message: AblyMessage =
         sonic_rs::from_str(r#"{"connectionKey":"app.key.secret","clientId":"publisher"}"#)
@@ -331,6 +354,28 @@ fn ack_count_covers_the_inbound_protocol_serial_range() {
 }
 
 #[test]
+fn multi_message_idempotency_requires_one_base_and_consecutive_serials() {
+    let valid = ["batch:0", "batch:1", "batch:2"]
+        .into_iter()
+        .map(|id| AblyMessage {
+            id: Some(id.to_string()),
+            ..AblyMessage::default()
+        })
+        .collect::<Vec<_>>();
+    validate_ably_idempotent_batch(&valid).unwrap();
+
+    let invalid = vec![
+        AblyMessage {
+            id: Some("duplicate".to_string()),
+            ..AblyMessage::default()
+        };
+        3
+    ];
+    let error = validate_ably_idempotent_batch(&invalid).unwrap_err();
+    assert!(matches!(error, AppError::Protocol { code: 40031, .. }));
+}
+
+#[test]
 fn echo_filter_only_suppresses_the_originating_connection() {
     assert!(!should_deliver_to_subscriber(
         Some("connection-a"),
@@ -498,6 +543,61 @@ fn history_link_header_includes_stable_first_and_next_relations() {
     assert!(!header.contains("secret"));
     assert!(!header.contains("access_token"));
     assert!(!header.contains("key="));
+}
+
+#[test]
+fn presence_history_link_replaces_the_final_history_segment() {
+    let links = ably_presence_link_header(
+        &AblyPresenceQuery::default(),
+        "history",
+        2,
+        Some("cursor".to_string()),
+    );
+    assert_eq!(
+        links,
+        "<./history?limit=2>; rel=\"first\", <./history?limit=2&cursor=cursor>; rel=\"next\""
+    );
+}
+
+#[test]
+fn stats_fixture_ingest_decodes_json_and_msgpack() {
+    let fixtures = vec![serde_json::json!({
+        "intervalId": "2026-08-13:18:00",
+        "inbound": {"realtime": {"messages": {"count": 2}}}
+    })];
+    let json = serde_json::to_vec(&fixtures).unwrap();
+    assert_eq!(
+        decode_ably_stats_fixtures(&json, AblyFormat::Json).unwrap(),
+        fixtures
+    );
+    let msgpack = rmp_serde::to_vec_named(&fixtures).unwrap();
+    assert_eq!(
+        decode_ably_stats_fixtures(&msgpack, AblyFormat::MsgPack).unwrap(),
+        fixtures
+    );
+}
+
+#[test]
+fn pagination_relations_are_emitted_as_separate_link_values() {
+    let mut headers = HeaderMap::new();
+    append_ably_link_headers(
+        &mut headers,
+        "<./messages?limit=1>; rel=\"first\", <./messages?limit=1&cursor=next>; rel=\"next\"",
+    )
+    .expect("valid pagination headers");
+
+    let values = headers
+        .get_all(header::LINK)
+        .iter()
+        .map(|value| value.to_str().expect("ASCII Link value"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        values,
+        vec![
+            "<./messages?limit=1>; rel=\"first\"",
+            "<./messages?limit=1&cursor=next>; rel=\"next\"",
+        ]
+    );
 }
 
 #[test]
@@ -1798,6 +1898,7 @@ async fn attach_gate_delivers_only_messages_after_captured_high_water() {
         attachment,
         Some(encode_ably_channel_serial("stream-1", 1)),
         Vec::new(),
+        false,
     );
 
     let attached = receiver.recv().await.expect("ATTACHED frame");
@@ -1814,6 +1915,196 @@ async fn attach_gate_delivers_only_messages_after_captured_high_water() {
             .and_then(|message| message.id.as_deref()),
         Some("message-2")
     );
+}
+
+#[tokio::test]
+async fn resumed_subscriber_replays_the_bounded_delivery_window_in_order() {
+    let hub = AblyCompatHub::default();
+    let (sender, mut receiver) = AblyOutbound::channel(
+        AblyFormat::Json,
+        OutboundLimits::default(),
+        Arc::clone(&hub.metrics),
+    );
+    let channel = AblyChannelName::parse("resume-window".to_string()).unwrap();
+    hub.attach_clean(
+        "app",
+        &channel,
+        AblyAttachment {
+            connection_id: "connection",
+            session_id: "old-session",
+            sender,
+            filter: None,
+            params: HashMap::new(),
+            mode_flags: ABLY_DEFAULT_MODE_FLAGS,
+            echo: true,
+            presence: Vec::new(),
+        },
+        None,
+        Vec::new(),
+        false,
+    );
+    receiver.recv().await.expect("ATTACHED frame");
+    for index in 0..3 {
+        hub.broadcast(
+            "app",
+            channel.base(),
+            AblyProtocolMessage {
+                action: ACTION_MESSAGE,
+                channel: Some(channel.base().to_string()),
+                messages: Some(vec![AblyMessage {
+                    data: Some(json!(format!("message-{index}"))),
+                    ..AblyMessage::default()
+                }]),
+                ..empty_protocol_message(ACTION_MESSAGE)
+            },
+            None,
+            None,
+        );
+    }
+    hub.mark_session_subscribers_recoverable("app", "old-session");
+
+    let (replacement, _replacement_receiver) = AblyOutbound::channel(
+        AblyFormat::Json,
+        OutboundLimits::default(),
+        Arc::clone(&hub.metrics),
+    );
+    let attachments = hub.resume_live_subscribers("app", "connection", "new-session", &replacement);
+    assert_eq!(attachments.len(), 1);
+    let (resumed, gate) = hub.take_resumed_subscriber_message("app", &channel, "new-session");
+    assert!(resumed);
+    assert!(!gate.overflowed);
+    assert_eq!(gate.messages.len(), 3);
+    for (index, message) in gate.messages.iter().enumerate() {
+        assert_eq!(
+            message.messages.as_ref().unwrap()[0].data,
+            Some(json!(format!("message-{index}")))
+        );
+    }
+}
+
+#[tokio::test]
+async fn resumed_subscriber_replays_the_shared_channel_tail_in_order() {
+    let hub = AblyCompatHub::default();
+    let channel = AblyChannelName::parse("shared-recovery-tail".to_string()).unwrap();
+    let (sender, mut receiver) = AblyOutbound::channel(
+        AblyFormat::Json,
+        OutboundLimits::default(),
+        Arc::clone(&hub.metrics),
+    );
+    hub.attach_clean(
+        "app",
+        &channel,
+        AblyAttachment {
+            connection_id: "connection",
+            session_id: "old-session",
+            sender,
+            filter: None,
+            params: HashMap::new(),
+            mode_flags: ABLY_DEFAULT_MODE_FLAGS,
+            echo: true,
+            presence: Vec::new(),
+        },
+        None,
+        Vec::new(),
+        false,
+    );
+    receiver.recv().await.expect("ATTACHED frame");
+
+    let (peer_sender, mut peer_receiver) = AblyOutbound::channel(
+        AblyFormat::MsgPack,
+        OutboundLimits::default(),
+        Arc::clone(&hub.metrics),
+    );
+    hub.attach_clean(
+        "app",
+        &channel,
+        AblyAttachment {
+            connection_id: "peer-connection",
+            session_id: "peer-session",
+            sender: peer_sender,
+            filter: None,
+            params: HashMap::new(),
+            mode_flags: ABLY_DEFAULT_MODE_FLAGS,
+            echo: true,
+            presence: Vec::new(),
+        },
+        None,
+        Vec::new(),
+        false,
+    );
+    peer_receiver.recv().await.expect("peer ATTACHED frame");
+
+    for index in 0..3 {
+        hub.broadcast(
+            "app",
+            channel.base(),
+            AblyProtocolMessage {
+                action: ACTION_MESSAGE,
+                channel: Some(channel.base().to_string()),
+                messages: Some(vec![AblyMessage {
+                    data: Some(json!(format!("message-{index}"))),
+                    ..AblyMessage::default()
+                }]),
+                ..empty_protocol_message(ACTION_MESSAGE)
+            },
+            None,
+            None,
+        );
+    }
+    hub.mark_session_subscribers_recoverable("app", "old-session");
+
+    let (replacement, _replacement_receiver) = AblyOutbound::channel(
+        AblyFormat::Json,
+        OutboundLimits::default(),
+        Arc::clone(&hub.metrics),
+    );
+    let attachments =
+        hub.resume_live_subscribers("app", "connection", "replacement-session", &replacement);
+    assert_eq!(attachments.len(), 1);
+    let (resumed, gate) =
+        hub.take_resumed_subscriber_message("app", &channel, "replacement-session");
+    assert!(resumed);
+    assert!(!gate.overflowed);
+    assert_eq!(gate.messages.len(), 3);
+    for (index, message) in gate.messages.iter().enumerate() {
+        assert_eq!(
+            message.messages.as_ref().unwrap()[0].data,
+            Some(json!(format!("message-{index}")))
+        );
+    }
+}
+
+#[tokio::test]
+async fn clean_recovered_attach_sets_the_resumed_flag() {
+    let hub = AblyCompatHub::default();
+    let (sender, mut receiver) = AblyOutbound::channel(
+        AblyFormat::Json,
+        OutboundLimits::default(),
+        Arc::clone(&hub.metrics),
+    );
+    let channel = AblyChannelName::parse("resume-flags".to_string()).unwrap();
+
+    hub.attach_clean(
+        "app",
+        &channel,
+        AblyAttachment {
+            connection_id: "recovered-connection",
+            session_id: "recovered-session",
+            sender,
+            filter: None,
+            params: HashMap::new(),
+            mode_flags: ABLY_DEFAULT_MODE_FLAGS,
+            echo: true,
+            presence: Vec::new(),
+        },
+        None,
+        Vec::new(),
+        true,
+    );
+
+    let attached = receiver.recv().await.expect("ATTACHED frame");
+    let attached = decode_protocol_bytes(attached.bytes.as_ref(), AblyFormat::Json).unwrap();
+    assert_eq!(attached.flags, Some(ABLY_DEFAULT_MODE_FLAGS | FLAG_RESUMED));
 }
 
 #[tokio::test]
@@ -1840,6 +2131,7 @@ async fn duplicate_remote_delivery_position_reaches_local_ably_subscriber_once()
         },
         None,
         Vec::new(),
+        false,
     );
     let message = PusherMessage {
         event: Some("chat.message".to_string()),
@@ -1893,6 +2185,7 @@ async fn subscriber_mode_update_stops_delivery_after_auth_downgrade() {
         },
         None,
         Vec::new(),
+        false,
     );
     receiver.recv().await.expect("ATTACHED frame");
 
@@ -1945,6 +2238,7 @@ async fn append_delivery_preserves_channel_serial_across_both_projections() {
         },
         None,
         Vec::new(),
+        false,
     );
     let attached = receiver.recv().await.expect("ATTACHED frame");
     assert_eq!(
@@ -2245,6 +2539,7 @@ async fn qualified_and_base_subscriptions_share_state_but_keep_wire_names() {
         },
         None,
         Vec::new(),
+        false,
     );
     hub.attach_clean(
         "app",
@@ -2261,6 +2556,7 @@ async fn qualified_and_base_subscriptions_share_state_but_keep_wire_names() {
         },
         None,
         Vec::new(),
+        false,
     );
     assert_eq!(
         hub.channels.len(),
@@ -2440,7 +2736,13 @@ fn embedded_jwt_verifies_signature_key_and_inner_credential() {
     let verified = verify_ably_signed_jwt(&outer, "app.key", "secret").unwrap();
     assert_eq!(verified.embedded_token.as_deref(), Some(inner.as_str()));
     assert!(verify_ably_signed_jwt(&outer, "other.key", "secret").is_err());
-    assert!(verify_ably_signed_jwt(&outer, "app.key", "wrong").is_err());
+    let invalid_signature = match verify_ably_signed_jwt(&outer, "app.key", "wrong") {
+        Ok(_) => panic!("JWT signed with the wrong secret must be rejected"),
+        Err(error) => error,
+    };
+    assert_eq!(invalid_signature.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(invalid_signature.code, 40144);
+    assert_eq!(invalid_signature.message, "invalid JWT format");
 }
 
 #[test]
@@ -2581,6 +2883,13 @@ fn rsa6_capability_intersection_preserves_equal_and_intersects_ops_and_paths() {
     let capabilities = capabilities.unwrap();
     assert!(capabilities.allows_subscribe("channel2"));
     assert!(!capabilities.allows_publish("channel2"));
+
+    let (all_qualifiers, capabilities) =
+        intersect_ably_capability(r#"{"[*]*":["*"]}"#, Some(r#"{"*":["*"]}"#)).unwrap();
+    assert_eq!(all_qualifiers, r#"{"*":["*"]}"#);
+    let capabilities = capabilities.unwrap();
+    assert!(capabilities.allows_publish("ordinary-channel"));
+    assert!(capabilities.allows_subscribe("ordinary-channel"));
 }
 
 #[test]

@@ -50,7 +50,8 @@ pub struct ConnectionRecoveryConfig {
     pub enabled: bool,
     /// How long messages stay in the replay buffer (seconds). Default: 120 (2 min).
     pub buffer_ttl_seconds: u64,
-    /// Maximum number of messages kept per channel. Default: 100.
+    /// Maximum messages kept and replayed per channel in one recovery. This
+    /// bounds both the hot buffer and durable fallback projection. Default: 100.
     pub max_buffer_size: usize,
 }
 

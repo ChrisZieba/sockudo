@@ -201,6 +201,156 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  ably-go:
+    name: ably-go main (${{ matrix.lane }})
+    needs: build-sockudo
+    runs-on: ubuntu-24.04
+    timeout-minutes: 130
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [unit, json, msgpack]
+
+    steps:
+      - name: Checkout pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checkout latest ably-go main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ably/ably-go
+          ref: main
+          path: .upstream/ably-go
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Use Go 1.26
+        uses: actions/setup-go@v7
+        with:
+          go-version: 1.26.x
+          cache-dependency-path: .upstream/ably-go/go.sum
+
+      - name: Use Node.js 24 for the local sandbox
+        if: matrix.lane != 'unit'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Download server binary
+        if: matrix.lane != 'unit'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sockudo-ably-compat-${{ github.run_id }}
+          path: .artifacts
+
+      - name: Prepare SDK and local transport adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C .upstream/ably-go apply --check "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-local-tls.patch"
+          git -C .upstream/ably-go apply "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-local-tls.patch"
+          git -C .upstream/ably-go apply --check "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-duplicate-ack.patch"
+          git -C .upstream/ably-go apply "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-duplicate-ack.patch"
+          git -C .upstream/ably-go apply --check "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-local-fallback.patch"
+          git -C .upstream/ably-go apply "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-local-fallback.patch"
+          git -C .upstream/ably-go apply --check "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-local-internet-probe.patch"
+          git -C .upstream/ably-go apply "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-local-internet-probe.patch"
+          git -C .upstream/ably-go apply --check "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-local-harness-v2.patch"
+          git -C .upstream/ably-go apply "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-local-harness-v2.patch"
+          if [ "${{ matrix.lane }}" != unit ]; then
+            tar -xzf .artifacts/sockudo-ably-compat.tar.gz
+          fi
+
+      - name: Record source revisions
+        run: |
+          {
+            echo "# Ably Go upstream compatibility (${{ matrix.lane }})"
+            echo
+            echo "| Source | Revision |"
+            echo "| --- | --- |"
+            echo "| sockudo PR merge | \`${GITHUB_SHA}\` |"
+            echo "| ably/ably-go main | \`$(git -C .upstream/ably-go rev-parse HEAD)\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          {
+            echo "sockudo ${GITHUB_SHA}"
+            echo "ably-go $(git -C .upstream/ably-go rev-parse HEAD)"
+          } > "${RUNNER_TEMP}/ably-go-${{ matrix.lane }}-revisions.txt"
+
+      - name: Run official unit suite
+        if: matrix.lane == 'unit'
+        shell: bash
+        working-directory: .upstream/ably-go
+        run: |
+          set -o pipefail
+          go test -tags=unit -count=1 ./... 2>&1 | tee "${RUNNER_TEMP}/ably-go-unit.log"
+
+      - name: Run official integration suite
+        if: matrix.lane != 'unit'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sandbox_log="${RUNNER_TEMP}/ably-go-${{ matrix.lane }}-sandbox.log"
+          server_log_dir="${RUNNER_TEMP}/ably-go-${{ matrix.lane }}-servers"
+          mkdir -p "${server_log_dir}"
+
+          node tests/ably-compat/upstream-sandbox.mjs \
+            --sockudo-bin "${GITHUB_WORKSPACE}/target/debug/sockudo" \
+            --config "${GITHUB_WORKSPACE}/config/config.toml" \
+            --listen 127.0.0.1:9080 \
+            --log-dir "${server_log_dir}" >"${sandbox_log}" 2>&1 &
+          sandbox_pid=$!
+          cleanup() {
+            kill "${sandbox_pid}" 2>/dev/null || true
+            wait "${sandbox_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --output /dev/null http://127.0.0.1:9080/; then
+              break
+            fi
+            if ! kill -0 "${sandbox_pid}" 2>/dev/null; then
+              tail -n 100 "${sandbox_log}"
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent --output /dev/null http://127.0.0.1:9080/
+
+          if [ "${{ matrix.lane }}" = json ]; then
+            protocol=application/json
+          else
+            protocol=application/x-msgpack
+          fi
+          cd .upstream/ably-go
+          ABLY_LOCAL_SANDBOX_URL=http://127.0.0.1:9080 \
+          ABLY_LOCAL_PLAINTEXT_REALTIME=1 \
+          ABLY_LOCAL_FALLBACK_HOSTS=sandbox.realtime.ably-nonprod.net,sandbox-a-fallback.ably-realtime.com,sandbox.a.fallback.ably-realtime-nonprod.com,sandbox.b.fallback.ably-realtime-nonprod.com,sandbox.c.fallback.ably-realtime-nonprod.com,sandbox.d.fallback.ably-realtime-nonprod.com,sandbox.e.fallback.ably-realtime-nonprod.com \
+          ABLY_LOCAL_REST_HOSTS=sandbox.realtime.ably-nonprod.net,rest.ably.io,internet-up.ably-realtime.com,sandbox-a-fallback.ably-realtime.com,main.a.fallback.ably-realtime.com,main.b.fallback.ably-realtime.com,main.c.fallback.ably-realtime.com,main.d.fallback.ably-realtime.com,main.e.fallback.ably-realtime.com,sandbox.a.fallback.ably-realtime-nonprod.com,sandbox.b.fallback.ably-realtime-nonprod.com,sandbox.c.fallback.ably-realtime-nonprod.com,sandbox.d.fallback.ably-realtime-nonprod.com,sandbox.e.fallback.ably-realtime-nonprod.com \
+          ABLY_LOCAL_INTERNET_ENDPOINT=127.0.0.1:9080 \
+          ABLY_LOCAL_REALTIME_ENDPOINT=127.0.0.1:7100 \
+          ABLY_CREATE_JWT_URL=https://127.0.0.1:9080/createJWT \
+          ABLY_STATS_FIXTURE_URL=http://127.0.0.1:9080/stats \
+          ABLY_PROTOCOL="${protocol}" \
+          go test -tags=integration -p 1 -race -count=1 -timeout 120m ./... \
+            2>&1 | tee "${RUNNER_TEMP}/ably-go-${{ matrix.lane }}.log"
+
+      - name: Upload compatibility diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ably-go-main-${{ matrix.lane }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/ably-go-${{ matrix.lane }}.log
+            ${{ runner.temp }}/ably-go-${{ matrix.lane }}-revisions.txt
+            ${{ runner.temp }}/ably-go-${{ matrix.lane }}-sandbox.log
+            ${{ runner.temp }}/ably-go-${{ matrix.lane }}-servers
+          if-no-files-found: warn
+          retention-days: 7
+
   ably-ai-transport-js:
     name: ably-ai-transport-js main
     needs: build-sockudo

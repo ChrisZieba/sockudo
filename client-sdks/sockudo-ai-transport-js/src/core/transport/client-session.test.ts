@@ -7,13 +7,17 @@ import {
   EVENT_AI_RUN_END,
   EVENT_AI_RUN_START,
   HEADER_CODEC_MESSAGE_ID,
+  HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
+  HEADER_PARENT,
+  HEADER_ROLE,
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
   HEADER_STEER_CODEC_MESSAGE_IDS,
+  HEADER_SUPERSEDES,
 } from "../../constants.js";
 import { ErrorCode } from "../../errors.js";
 import type { ErrorInfo } from "../../errors.js";
@@ -118,6 +122,45 @@ describe("client transport", () => {
     await expect(steer.outcome).resolves.toEqual({
       consumed: true,
       runTerminalReason: "complete",
+    });
+  });
+
+  it("stamps assistant tool-result forks with supersession metadata", async () => {
+    const client = createMockClient({ clientId: "client-1" });
+    const channel = client.getMockChannel("chat");
+    const published: PublishMessage[] = [];
+    const inner = MockChannel.prototype.publish.bind(channel);
+    vi.spyOn(channel, "publish").mockImplementation((message) => {
+      published.push(message);
+      return inner(message);
+    });
+    const session = createClientSession({
+      channel,
+      codec: testCodec(),
+      api: "https://agent.test/run",
+      idProvider: fixedIds(),
+      runStartDeadlineMs: 0,
+      fetch: okFetch(),
+      messages: [{ id: "assistant-1", text: "waiting" }],
+    });
+
+    await session.view.sendInput(
+      { id: "assistant-1", text: "resolved" },
+      {
+        role: "assistant",
+        parent: "user-1",
+        forkOf: "assistant-1",
+        messageId: "assistant-1",
+        supersedes: "turn-1",
+      },
+    );
+
+    expect(getTransportHeaders(published[0]?.extras)).toMatchObject({
+      [HEADER_RUN_ID]: "turn-2",
+      [HEADER_ROLE]: "assistant",
+      [HEADER_PARENT]: "user-1",
+      [HEADER_FORK_OF]: "assistant-1",
+      [HEADER_SUPERSEDES]: "turn-1",
     });
   });
 

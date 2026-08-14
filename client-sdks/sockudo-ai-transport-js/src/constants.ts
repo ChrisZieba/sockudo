@@ -108,6 +108,12 @@ export const HEADER_PARENT = "parent";
 export const HEADER_FORK_OF = "fork-of";
 /** Transport header key indicating regeneration. */
 export const HEADER_MSG_REGENERATE = "msg-regenerate";
+/**
+ * Transport header key for the suspended run replaced by a client tool-result
+ * fork. Superseded runs remain addressable in history but are hidden from
+ * branch selection.
+ */
+export const HEADER_SUPERSEDES = "supersedes";
 /** Transport header key for stream error code. */
 export const HEADER_ERROR_CODE = "error-code";
 /** Transport header key for stream error message. */

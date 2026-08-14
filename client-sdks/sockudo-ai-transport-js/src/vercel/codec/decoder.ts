@@ -9,7 +9,7 @@ import { createDecoderCore, type DecoderStreamTracker } from "../../core/codec/d
 import type { DecodedEvent, Decoder } from "../../core/codec/index.js";
 import type { InboundMessage } from "../../realtime/index.js";
 import type { HeaderMap } from "../../utils.js";
-import type { AI, VercelInput, VercelOutput } from "./events.js";
+import type { AI, ForkSeed, VercelInput, VercelOutput } from "./events.js";
 import { chunkType, normalizeVercelHeaders, readJsonHeader } from "./headers.js";
 
 /** Creates the inverse Vercel wire decoder. */
@@ -44,7 +44,8 @@ export function createVercelDecoder(): Decoder<VercelInput, VercelOutput> {
 
 function decodeInput(message: InboundMessage): DecodedEvent<VercelInput>[] {
   const headers = normalizeVercelHeaders(message.getCodecHeaders());
-  const type = chunkType(headers);
+  const payload = record(message.data);
+  const type = chunkType(headers) ?? stringValue(payload.type);
   const messageId = headers.messageId ?? message.messageSerial;
   const rawMessage = userMessagePayload(message.data);
   if (!type && rawMessage) {
@@ -74,38 +75,48 @@ function decodeInput(message: InboundMessage): DecodedEvent<VercelInput>[] {
     ];
   }
   if (type === "tool-result") {
+    const forkSeed = forkSeedValue(payload.forkSeed);
     return [
       decoded(
         {
           type: "tool-result",
-          toolCallId: headers.toolCallId ?? "",
-          output: record(message.data).output,
+          toolCallId: headers.toolCallId ?? stringValue(payload.toolCallId) ?? "",
+          output: payload.output,
+          ...(forkSeed !== undefined ? { forkSeed } : {}),
         },
         message,
       ),
     ];
   }
   if (type === "tool-result-error") {
+    const forkSeed = forkSeedValue(payload.forkSeed);
     return [
       decoded(
         {
           type: "tool-result-error",
-          toolCallId: headers.toolCallId ?? "",
-          message: stringValue(record(message.data).message) ?? "",
+          toolCallId: headers.toolCallId ?? stringValue(payload.toolCallId) ?? "",
+          message: stringValue(payload.message) ?? "",
+          ...(forkSeed !== undefined ? { forkSeed } : {}),
         },
         message,
       ),
     ];
   }
   if (type === "tool-approval-response") {
+    const reason = headers.reason ?? stringValue(payload.reason);
+    const approvalId = headers.approvalId ?? stringValue(payload.approvalId);
+    const forkSeed = forkSeedValue(payload.forkSeed);
     return [
       decoded(
         {
           type: "tool-approval-response",
-          toolCallId: headers.toolCallId ?? "",
-          approved: headers.approved === "true",
-          ...(headers.reason !== undefined ? { reason: headers.reason } : {}),
-          ...(headers.approvalId !== undefined ? { approvalId: headers.approvalId } : {}),
+          toolCallId: headers.toolCallId ?? stringValue(payload.toolCallId) ?? "",
+          approved:
+            headers.approved === "true" ||
+            (headers.approved === undefined && payload.approved === true),
+          ...(reason !== undefined ? { reason } : {}),
+          ...(approvalId !== undefined ? { approvalId } : {}),
+          ...(forkSeed !== undefined ? { forkSeed } : {}),
         },
         message,
       ),
@@ -124,6 +135,17 @@ function decodeInput(message: InboundMessage): DecodedEvent<VercelInput>[] {
     ];
   }
   return [];
+}
+
+function forkSeedValue(value: unknown): ForkSeed | undefined {
+  const seed = record(value);
+  if (
+    !Array.isArray(seed.messages) ||
+    !seed.messages.every((message) => userMessagePayload(message))
+  ) {
+    return undefined;
+  }
+  return { messages: seed.messages as AI.UIMessage[] };
 }
 
 function decodeOutputDiscrete(message: InboundMessage): DecodedEvent<VercelOutput>[] {

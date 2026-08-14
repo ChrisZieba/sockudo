@@ -517,7 +517,8 @@ pub(super) fn capability_operations(
 }
 
 pub(super) fn capability_resource_matches(key_pattern: &str, requested_resource: &str) -> bool {
-    ConnectionCapabilities::matches_any(&[key_pattern.to_string()], requested_resource)
+    key_pattern == "[*]*"
+        || ConnectionCapabilities::matches_any(&[key_pattern.to_string()], requested_resource)
         || key_pattern == requested_resource
 }
 
@@ -1234,7 +1235,7 @@ pub(super) fn verify_ably_signed_jwt(
         &DecodingKey::from_secret(secret.as_bytes()),
         &validation,
     )
-    .map_err(|_| AblyAuthError::invalid_credentials())?;
+    .map_err(|_| AblyAuthError::invalid_jwt_format())?;
     let mut claims = decoded.claims;
     let embedded_token = header
         .embedded_token

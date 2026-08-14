@@ -49,6 +49,15 @@ Recovery is two-tier:
 2. Durable recovery uses `HistoryStore` when `stream_id`, serial bounds, and retention prove
    continuity.
 
+Both tiers enforce `connection_recovery.max_buffer_size` for each recovered
+channel. A larger gap fails with `position_expired` and
+`reason: "recovery_window_exceeded"` before Sockudo builds or partially sends an
+unbounded replay. When the SDK has already reattached a subscription, a bounded
+continuity gate holds concurrent live messages until replay has been enqueued;
+the aggregate `resume_success` is enqueued before those live messages are
+released. Gate overflow closes that connection instead of delivering frames out
+of order.
+
 Both tiers replay the Protocol V2 wire message, not Sockudo's durable storage
 wrapper. Durable rows are decoded through the shared history projection first,
 so recovery and ordinary history reads preserve the same IDs, publisher fields,
@@ -60,11 +69,12 @@ second serial. Recovery validates every serial in the returned range; a missing
 position or mixed stream generation falls through to durable recovery and then
 fails closed if the durable tier cannot prove the same continuity.
 
-The native V2 attach gate registers the subscriber before capturing the durable
-high-water mark. Concurrent publishes are held in a count-and-byte-bounded gate,
-shared across subscribers with immutable message references, then drained after
-rewind without a lock held across delivery. Overflow closes the affected
-connection because the live-plus-replay sequence can no longer be proven.
+The native V2 attach and resume gates register the subscriber before capturing
+the durable high-water mark. Concurrent publishes are held in a count-and-byte-
+bounded gate, shared across subscribers with immutable message references, then
+drained in ordered batches without a lock held across delivery. Overflow closes
+the affected connection because the live-plus-replay sequence can no longer be
+proven.
 
 If the durable stream is degraded or reset-required, Sockudo fails closed instead of pretending the
 stream is continuous.

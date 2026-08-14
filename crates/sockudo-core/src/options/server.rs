@@ -199,6 +199,28 @@ impl ServerOptions {
             return Err(format!("Invalid cleanup configuration: {}", e));
         }
 
+        if self.idempotency.enabled {
+            if self.idempotency.ttl_seconds == 0 {
+                return Err("idempotency.ttl_seconds must be greater than 0".to_string());
+            }
+            if self.idempotency.max_key_length == 0 {
+                return Err("idempotency.max_key_length must be greater than 0".to_string());
+            }
+        }
+
+        if self.connection_recovery.enabled {
+            if self.connection_recovery.buffer_ttl_seconds == 0 {
+                return Err(
+                    "connection_recovery.buffer_ttl_seconds must be greater than 0".to_string(),
+                );
+            }
+            if self.connection_recovery.max_buffer_size == 0 {
+                return Err(
+                    "connection_recovery.max_buffer_size must be greater than 0".to_string()
+                );
+            }
+        }
+
         if self.history.enabled {
             if self.history.max_page_size == 0 {
                 return Err("history.max_page_size must be greater than 0".to_string());
@@ -422,5 +444,40 @@ mod tests {
                 .validate()
                 .unwrap_or_else(|error| panic!("{driver:?} was rejected: {error}"));
         }
+    }
+
+    #[test]
+    fn enabled_idempotency_requires_nonzero_limits() {
+        let mut options = ServerOptions::default();
+        options.idempotency.ttl_seconds = 0;
+        assert_eq!(
+            options.validate().unwrap_err(),
+            "idempotency.ttl_seconds must be greater than 0"
+        );
+
+        options.idempotency.ttl_seconds = 120;
+        options.idempotency.max_key_length = 0;
+        assert_eq!(
+            options.validate().unwrap_err(),
+            "idempotency.max_key_length must be greater than 0"
+        );
+    }
+
+    #[test]
+    fn enabled_connection_recovery_requires_a_nonzero_window() {
+        let mut options = ServerOptions::default();
+        options.connection_recovery.enabled = true;
+        options.connection_recovery.buffer_ttl_seconds = 0;
+        assert_eq!(
+            options.validate().unwrap_err(),
+            "connection_recovery.buffer_ttl_seconds must be greater than 0"
+        );
+
+        options.connection_recovery.buffer_ttl_seconds = 120;
+        options.connection_recovery.max_buffer_size = 0;
+        assert_eq!(
+            options.validate().unwrap_err(),
+            "connection_recovery.max_buffer_size must be greater than 0"
+        );
     }
 }

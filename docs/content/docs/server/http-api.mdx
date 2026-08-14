@@ -92,6 +92,11 @@ Content-Type: application/json
 ```
 
 Batching reduces HTTP overhead, but do not use it to hide unbounded payloads. Keep per-event data compact.
+`X-Idempotency-Key` identifies the whole batch request, while an
+`idempotency_key` inside an item identifies only that logical event. The two key
+domains do not collide. Every per-event key is validated with the same non-empty
+and maximum-length rules as a single-event publish before any item is accepted,
+then atomically claimed so concurrent batches cannot publish that event twice.
 
 When Cargo feature and runtime option `ably-compat` are enabled, the root REST
 router also exposes Ably-compatible batch operations:

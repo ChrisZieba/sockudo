@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import {
   closeSync,
   mkdirSync,
@@ -23,6 +23,36 @@ const PRESENCE_ENTER = 2;
 
 function token(bytes) {
   return randomBytes(bytes).toString('base64url');
+}
+
+function encodedJson(value) {
+  return Buffer.from(JSON.stringify(value)).toString('base64url');
+}
+
+export function createJwt(url) {
+  const keyName = url.searchParams.get('keyName');
+  const keySecret = url.searchParams.get('keySecret');
+  const expiresInText = url.searchParams.get('expiresIn') ?? '3600';
+  if (!keyName || Buffer.byteLength(keyName) > 512) throw new Error('invalid JWT key name');
+  if (!keySecret || Buffer.byteLength(keySecret) > 4096) throw new Error('invalid JWT key secret');
+  if (!/^\d+$/.test(expiresInText)) throw new Error('invalid JWT expiry');
+  const expiresIn = Number(expiresInText);
+  if (!Number.isSafeInteger(expiresIn) || expiresIn < 1 || expiresIn > 86_400) {
+    throw new Error('invalid JWT expiry');
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const claims = { iat: now, exp: now + expiresIn };
+  for (const [queryName, claimName] of [
+    ['clientId', 'x-ably-clientId'],
+    ['capability', 'x-ably-capability'],
+    ['revocationKey', 'x-ably-revocation-key'],
+  ]) {
+    const value = url.searchParams.get(queryName);
+    if (value) claims[claimName] = value;
+  }
+  const signingInput = `${encodedJson({ typ: 'JWT', alg: 'HS256', kid: keyName })}.${encodedJson(claims)}`;
+  const signature = createHmac('sha256', keySecret).update(signingInput).digest('base64url');
+  return `${signingInput}.${signature}`;
 }
 
 function tomlString(value) {
@@ -427,9 +457,14 @@ export function createSandbox({
 
   const server = createServer(async (request, response) => {
     try {
-      const path = new URL(request.url, 'http://127.0.0.1').pathname;
+      const url = new URL(request.url, 'http://127.0.0.1');
+      const path = url.pathname;
       if (request.method === 'GET' && path === '/') {
         sendText(response, 200, 'ready');
+      } else if (request.method === 'GET' && path === '/is-the-internet-up.txt') {
+        sendText(response, 200, 'yes');
+      } else if (request.method === 'GET' && path === '/createJWT') {
+        sendText(response, 200, createJwt(url));
       } else if (request.method === 'POST' && path === '/apps') {
         await createApp(request, response);
       } else if (request.method === 'DELETE' && path.startsWith('/apps/')) {

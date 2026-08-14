@@ -539,6 +539,7 @@ max_event_name_length = 200
 [connection_recovery]
 enabled = true
 buffer_ttl_seconds = 120
+# Bounds both the per-channel hot buffer and one durable fallback replay.
 max_buffer_size = 100
 
 [history]

@@ -705,6 +705,66 @@ async fn finish_rewind_gate_drains_buffered_messages() {
 }
 
 #[tokio::test]
+async fn batched_gate_drain_stays_open_until_an_empty_atomic_pass() {
+    let ws_ref =
+        create_websocket_ref_with_buffer_config(WebSocketBufferConfig::with_message_limit(2, true))
+            .await;
+    ws_ref.start_rewind_gate("presence-room".to_string());
+
+    assert!(
+        buffer_test_rewind_message(
+            &ws_ref,
+            "presence-room",
+            create_test_pong_message("presence-room", 1, "msg-1"),
+        )
+        .await
+        .expect("first gate admission should succeed")
+    );
+    let first = ws_ref
+        .drain_rewind_gate_batch("presence-room")
+        .await
+        .expect("first batch should drain")
+        .expect("first batch should remain open");
+    assert_eq!(first.len(), 1);
+    assert!(ws_ref.has_rewind_gate("presence-room"));
+
+    assert!(
+        buffer_test_rewind_message(
+            &ws_ref,
+            "presence-room",
+            create_test_pong_message("presence-room", 2, "msg-2"),
+        )
+        .await
+        .expect("admission between drain batches should remain gated")
+    );
+    let second = ws_ref
+        .drain_rewind_gate_batch("presence-room")
+        .await
+        .expect("second batch should drain")
+        .expect("second batch should remain open");
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].message_id.as_deref(), Some("msg-2"));
+
+    assert!(
+        ws_ref
+            .drain_rewind_gate_batch("presence-room")
+            .await
+            .expect("empty pass should close the gate")
+            .is_none()
+    );
+    assert!(!ws_ref.has_rewind_gate("presence-room"));
+    assert!(
+        !buffer_test_rewind_message(
+            &ws_ref,
+            "presence-room",
+            create_test_pong_message("presence-room", 3, "msg-3"),
+        )
+        .await
+        .expect("closed gate should return to live delivery")
+    );
+}
+
+#[tokio::test]
 async fn rewind_gate_message_overflow_shuts_down_connection() {
     let ws_ref = create_websocket_ref_with_buffer_config(
         WebSocketBufferConfig::with_message_limit(2, false),

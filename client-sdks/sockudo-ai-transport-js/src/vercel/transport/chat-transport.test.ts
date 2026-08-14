@@ -5,8 +5,12 @@ import {
   EVENT_AI_RUN_END,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
+  HEADER_FORK_OF,
+  HEADER_PARENT,
+  HEADER_ROLE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_SUPERSEDES,
 } from "../../constants.js";
 import type { InvocationIdProvider } from "../../core/transport/index.js";
 import { createMockClient, type MockChannel } from "../../realtime/mocks.js";
@@ -200,6 +204,45 @@ describe("Vercel ChatTransport", () => {
     });
   });
 
+  it("forks a client tool result and supersedes the suspended trunk", async () => {
+    const treeAssistant = assistantWithTool("a1", "input-available");
+    const overlay = assistantWithTool("a1", "output-available", {
+      output: { ok: true },
+    });
+    const firstUser = user("u1", "ask");
+    const { chat, fetch, published, session } = setup({
+      messages: [firstUser, treeAssistant],
+    });
+
+    await chat.sendMessages({
+      trigger: "submit-message",
+      chatId: "chat-1",
+      messages: [firstUser, overlay],
+    });
+
+    expect(published[0]?.data).toMatchObject({
+      type: "tool-result",
+      toolCallId: "tool-1",
+      output: { ok: true },
+      forkSeed: { messages: [treeAssistant] },
+    });
+    expect(transportHeaders(published[0])).toMatchObject({
+      [HEADER_RUN_ID]: "turn-3",
+      [HEADER_ROLE]: "assistant",
+      [HEADER_PARENT]: "u1",
+      [HEADER_FORK_OF]: "a1",
+      [HEADER_SUPERSEDES]: "turn-2",
+    });
+    expect(bodyOf(fetch)).toMatchObject({
+      runId: "turn-3",
+      parent: "u1",
+      forkOf: "a1",
+    });
+    expect(session.tree.getRunNode("turn-2")).toBeDefined();
+    expect(session.tree.getRunNodes().map((node) => node.runId)).not.toContain("turn-2");
+    expect(session.view.getMessages()).toEqual([firstUser, overlay]);
+  });
+
   it("derives tool result and error continuation inputs", () => {
     const tree = assistantWithTool("a1", "input-available");
     const overlay: AI.UIMessage = {
@@ -302,6 +345,7 @@ function setup(
   channel: MockChannel;
   fetch: ReturnType<typeof okFetch>;
   published: PublishMessage[];
+  session: ReturnType<typeof createClientSession>;
 } {
   const client = createMockClient({ clientId: "client-1" });
   const channel = client.getMockChannel("chat");
@@ -328,6 +372,7 @@ function setup(
     channel,
     fetch,
     published,
+    session,
   };
 }
 

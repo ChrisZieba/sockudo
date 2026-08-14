@@ -42,20 +42,28 @@ fn resolve_idempotency_key(
     });
 
     if let Some(ref k) = key {
-        if k.is_empty() {
-            return Err(AppError::InvalidInput(
-                "Idempotency key must not be empty".to_string(),
-            ));
-        }
-        if k.len() > config.max_key_length {
-            return Err(AppError::InvalidInput(format!(
-                "Idempotency key exceeds maximum length of {} characters",
-                config.max_key_length
-            )));
-        }
+        validate_idempotency_key(k, config)?;
     }
 
     Ok(key)
+}
+
+fn validate_idempotency_key(
+    key: &str,
+    config: &sockudo_core::options::IdempotencyConfig,
+) -> Result<(), AppError> {
+    if key.is_empty() {
+        return Err(AppError::InvalidInput(
+            "Idempotency key must not be empty".to_string(),
+        ));
+    }
+    if key.len() > config.max_key_length {
+        return Err(AppError::InvalidInput(format!(
+            "Idempotency key exceeds maximum length of {} characters",
+            config.max_key_length
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "push")]
@@ -69,6 +77,13 @@ fn push_rule_target_channels(event: &PusherApiMessage) -> Vec<String> {
 /// Build the cache key used for idempotency storage.
 fn idempotency_cache_key(app_id: &str, key: &str) -> String {
     format!("app:{}:idempotency:{}", app_id, key)
+}
+
+/// Batch request keys are separate from logical per-event keys. Otherwise a
+/// batch header equal to one event's body key makes that event look duplicated
+/// by the batch's own in-progress claim.
+fn batch_idempotency_cache_key(app_id: &str, key: &str) -> String {
+    format!("app:{}:batch-idempotency:{}", app_id, key)
 }
 
 pub(super) fn idempotency_ttl(app: &App, handler: &ConnectionHandler) -> u64 {
@@ -372,15 +387,37 @@ pub async fn batch_events(
 
     let body_bytes = sonic_rs::to_vec(&batch_message_payload)?;
 
-    // Batch-level idempotency: check X-Idempotency-Key header
     let idempotency_config = app_config.resolved_idempotency(&handler.server_options().idempotency);
+    let batch_len = batch_message_payload.batch.len();
+    tracing::Span::current().record("batch_len", batch_len);
+    debug!(event_count = batch_len, "batch events request received");
+
+    if let Some(max_batch) = app_config.event_batch_size_limit()
+        && batch_len > max_batch as usize
+    {
+        return Err(AppError::LimitExceeded(format!(
+            "Batch size ({batch_len}) exceeds limit ({max_batch})"
+        )));
+    }
+
+    if idempotency_config.enabled {
+        for event in &batch_message_payload.batch {
+            if let Some(key) = event.idempotency_key.as_deref() {
+                validate_idempotency_key(key, &idempotency_config)?;
+            }
+        }
+    }
+
+    // Batch-level idempotency: check X-Idempotency-Key header only after the
+    // complete request has passed validation, so invalid batches do not leave
+    // an in-progress claim behind.
     let idempotency_key = resolve_idempotency_key(&None, &headers, &idempotency_config)?;
 
     if let Some(ref key) = idempotency_key {
         if let Some(metrics_arc) = handler.metrics() {
             metrics_arc.mark_idempotency_publish(&app_id);
         }
-        let cache_key = idempotency_cache_key(&app_id, key);
+        let cache_key = batch_idempotency_cache_key(&app_id, key);
         let ttl = idempotency_config.ttl_seconds;
         match handler.cache_manager().get(&cache_key).await {
             Ok(Some(cached)) if cached != "__processing__" => {
@@ -463,20 +500,9 @@ pub async fn batch_events(
     }
 
     let batch_events_vec = batch_message_payload.batch;
-    let batch_len = batch_events_vec.len();
-    tracing::Span::current().record("batch_len", batch_len);
-    debug!(event_count = batch_len, "batch events request received");
 
     for (i, _) in batch_events_vec.iter().enumerate().take(3) {
         debug!(batch_index = i, "processing batch event");
-    }
-
-    if let Some(max_batch) = app_config.event_batch_size_limit()
-        && batch_len > max_batch as usize
-    {
-        return Err(AppError::LimitExceeded(format!(
-            "Batch size ({batch_len}) exceeds limit ({max_batch})"
-        )));
     }
 
     let incoming_request_size_bytes = body_bytes.len();
@@ -501,7 +527,6 @@ pub async fn batch_events(
         // Per-event idempotency: skip events whose idempotency key has already been seen
         if let Some(ref evt_key) = single_event_message.idempotency_key
             && idempotency_config.enabled
-            && !evt_key.is_empty()
         {
             if let Some(metrics_arc) = handler.metrics() {
                 metrics_arc.mark_idempotency_publish(&app_id);
@@ -516,7 +541,31 @@ pub async fn batch_events(
                     processed_event_data.push((single_event_message, HashMap::new()));
                     continue;
                 }
-                Ok(None) => {}
+                Ok(None) => match handler
+                    .cache_manager()
+                    .set_if_not_exists(
+                        &evt_cache_key,
+                        "__processing__",
+                        idempotency_config.ttl_seconds,
+                    )
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        if let Some(metrics_arc) = handler.metrics() {
+                            metrics_arc.mark_idempotency_duplicate(&app_id);
+                        }
+                        debug!(idempotency_key = %evt_key, "Skipping concurrently claimed batch event");
+                        processed_event_data.push((single_event_message, HashMap::new()));
+                        continue;
+                    }
+                    Err(error) => {
+                        warn!(idempotency_key = %evt_key, %error, "Failed to claim event idempotency key; rejecting batch");
+                        return Err(AppError::ServiceUnavailable(
+                            "Idempotency coordination is temporarily unavailable".to_string(),
+                        ));
+                    }
+                },
                 Err(error) => {
                     warn!(idempotency_key = %evt_key, %error, "Failed to check event idempotency cache; rejecting batch");
                     return Err(AppError::ServiceUnavailable(
@@ -604,7 +653,6 @@ pub async fn batch_events(
         // Store per-event idempotency key
         if let Some(ref evt_key) = single_event_message.idempotency_key
             && idempotency_config.enabled
-            && !evt_key.is_empty()
         {
             let evt_cache_key = idempotency_cache_key(&app_id, evt_key);
             let _ = handler
@@ -645,7 +693,7 @@ pub async fn batch_events(
 
     // Store batch response in idempotency cache
     if let Some(ref key) = idempotency_key {
-        let cache_key = idempotency_cache_key(&app_id, key);
+        let cache_key = batch_idempotency_cache_key(&app_id, key);
         let ttl = idempotency_config.ttl_seconds;
         if let Ok(serialized) = sonic_rs::to_string(&final_response_payload)
             && let Err(e) = handler
