@@ -59,6 +59,8 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
     /// When true, first-join/last-leave presence transition checks use the
     /// replicated presence registry instead of request/reply.
     pub fast_presence_transitions: bool,
+    /// API-only mode: publish-only, no listeners or request/reply.
+    api_only: bool,
     #[cfg(feature = "delta")]
     // Delta compression manager for bandwidth optimization
     delta_compression: Option<Arc<sockudo_delta::DeltaCompressionManager>>,
@@ -94,6 +96,9 @@ impl<T: HorizontalTransport> HorizontalAdapterBase<T> {
     /// This is determined by checking if cluster health is enabled and
     /// if the effective node count is 1 or less.
     pub async fn should_skip_horizontal_communication(&self) -> bool {
+        if self.api_only {
+            return false;
+        }
         should_skip_horizontal_communication_impl(self.cluster_health_enabled, &self.horizontal)
             .await
     }

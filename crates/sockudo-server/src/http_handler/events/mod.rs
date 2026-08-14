@@ -10,7 +10,9 @@ use axum::{
 use sockudo_adapter::ConnectionHandler;
 use sockudo_core::app::App;
 use sockudo_core::auth::EventQuery;
-use sockudo_protocol::messages::{BatchPusherApiMessage, PusherApiMessage, is_ai_event};
+use sockudo_protocol::messages::{
+    BatchPusherApiMessage, InfoQueryParser, PusherApiMessage, is_ai_event,
+};
 use sonic_rs::{Value, json};
 use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, field, instrument, warn};
@@ -91,6 +93,10 @@ pub(super) fn idempotency_ttl(app: &App, handler: &ConnectionHandler) -> u64 {
         .ttl_seconds
 }
 
+fn requires_realtime_counts(info: Option<&str>) -> bool {
+    info.wants_user_count() || info.wants_subscription_count()
+}
+
 /// Merge per-app idempotency overrides with the global config.
 /// Only fields explicitly set at the app level take precedence.
 /// POST /apps/{app_id}/events
@@ -117,8 +123,16 @@ pub async fn events(
         .as_nanos() as f64
         / 1_000_000.0;
 
-    let incoming_request_size_bytes = sonic_rs::to_vec(&event_payload)?.len();
+    // Checked before the idempotency claim so a rejected request never poisons the key slot.
+    if handler.server_options().server_role.is_api()
+        && requires_realtime_counts(event_payload.info.as_deref())
+    {
+        return Err(AppError::InvalidInput(
+            "user_count and subscription_count are unavailable in api server role".to_string(),
+        ));
+    }
 
+    let incoming_request_size_bytes = sonic_rs::to_vec(&event_payload)?.len();
     let idempotency_config = app.resolved_idempotency(&handler.server_options().idempotency);
     let idempotency_key = resolve_idempotency_key(
         &event_payload.idempotency_key,
@@ -385,8 +399,21 @@ pub async fn batch_events(
         .as_nanos() as f64
         / 1_000_000.0;
 
-    let body_bytes = sonic_rs::to_vec(&batch_message_payload)?;
+    // Checked before the idempotency claim so a rejected request never poisons the key slot.
+    if handler.server_options().server_role.is_api()
+        && batch_message_payload
+            .batch
+            .iter()
+            .any(|single_event_message| {
+                requires_realtime_counts(single_event_message.info.as_deref())
+            })
+    {
+        return Err(AppError::InvalidInput(
+            "user_count and subscription_count are unavailable in api server role".to_string(),
+        ));
+    }
 
+    let body_bytes = sonic_rs::to_vec(&batch_message_payload)?;
     let idempotency_config = app_config.resolved_idempotency(&handler.server_options().idempotency);
     let batch_len = batch_message_payload.batch.len();
     tracing::Span::current().record("batch_len", batch_len);

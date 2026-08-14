@@ -96,3 +96,6 @@ mod async_disconnect_cleanup_tests;
 
 #[cfg(test)]
 mod user_socket_index_regression_tests;
+
+#[cfg(test)]
+mod server_role_tests;

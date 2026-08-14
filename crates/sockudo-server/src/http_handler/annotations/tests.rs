@@ -520,3 +520,143 @@ async fn annotation_delete_any_allows_moderator() {
 
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn annotation_publish_rejects_socket_id_in_api_role() {
+    let store = Arc::new(MemoryVersionStore::new());
+    let handler = test_api_role_handler_with_store(100, store.clone());
+    let app = test_annotation_app();
+
+    store
+        .append_version(test_versioned_record(
+            "msg:1",
+            "00000000000000000001:test:00000000000000000001",
+            10,
+            1,
+            "hello",
+        ))
+        .await
+        .unwrap();
+
+    let response = match publish_annotation(
+        Path(VersionMutationPath {
+            app_id: "app-1".to_string(),
+            channel_name: "versioned-room".to_string(),
+            message_serial: "msg:1".to_string(),
+        }),
+        Extension(app),
+        State(handler),
+        Json(PublishAnnotationRequest {
+            annotation_type: "reactions:total.v1".to_string(),
+            name: None,
+            client_id: None,
+            socket_id: Some("socket-123".to_string()),
+            count: None,
+            data: None,
+            encoding: None,
+        }),
+    )
+    .await
+    {
+        Err(err) => err.into_response(),
+        Ok(_) => panic!("expected socket_id rejection in api role"),
+    };
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("omit socket_id"));
+}
+
+#[tokio::test]
+async fn annotation_delete_rejects_socket_id_in_api_role() {
+    let store = Arc::new(MemoryVersionStore::new());
+    let handler = test_api_role_handler_with_store(100, store.clone());
+    let app = test_annotation_app();
+
+    store
+        .append_version(test_versioned_record(
+            "msg:1",
+            "00000000000000000001:test:00000000000000000001",
+            10,
+            1,
+            "hello",
+        ))
+        .await
+        .unwrap();
+
+    let response = match delete_annotation(
+        Path(AnnotationMutationPath {
+            app_id: "app-1".to_string(),
+            channel_name: "versioned-room".to_string(),
+            message_serial: "msg:1".to_string(),
+            annotation_serial: "ann:1".to_string(),
+        }),
+        Query(HashMap::from([(
+            "socket_id".to_string(),
+            "socket-123".to_string(),
+        )])),
+        Extension(app),
+        State(handler),
+    )
+    .await
+    {
+        Err(err) => err.into_response(),
+        Ok(_) => panic!("expected socket_id rejection in api role"),
+    };
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("omit socket_id"));
+}
+
+#[tokio::test]
+async fn annotation_subscribe_rejects_socket_id_in_api_role() {
+    let store = Arc::new(MemoryVersionStore::new());
+    let handler = test_api_role_handler_with_store(100, store.clone());
+    let app = test_annotation_app();
+
+    store
+        .append_version(test_versioned_record(
+            "msg:1",
+            "00000000000000000001:test:00000000000000000001",
+            10,
+            1,
+            "hello",
+        ))
+        .await
+        .unwrap();
+
+    let response = match channel_message_annotations(
+        Path(VersionMutationPath {
+            app_id: "app-1".to_string(),
+            channel_name: "versioned-room".to_string(),
+            message_serial: "msg:1".to_string(),
+        }),
+        Query(AnnotationEventsQuery {
+            annotation_type: None,
+            limit: None,
+            from_serial: None,
+            socket_id: Some("socket-123".to_string()),
+        }),
+        Extension(app),
+        State(handler),
+    )
+    .await
+    {
+        Err(err) => err.into_response(),
+        Ok(_) => panic!("expected socket_id rejection in api role"),
+    };
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("omit socket_id"));
+}

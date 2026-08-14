@@ -94,6 +94,8 @@ The path and body serial must identify the same logical message.
 
 Mutation bodies may include `socket_id` and `client_id` to bind the operation to a connected V2
 actor. Without `socket_id`, signed app-key HTTP requests are privileged server operations.
+In `server_role = "api"` mode, `socket_id` cannot be verified (no local WebSocket connections)
+and the request is rejected with HTTP 400. See [Server role](/docs/reference/configuration#server-role).
 
 ## Authorization
 

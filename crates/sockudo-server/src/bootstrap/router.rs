@@ -211,15 +211,6 @@ impl SockudoServer {
             "configuring http body limit"
         );
 
-        let mut websocket_router = Router::new().route("/app/{appKey}", get(handle_ws_upgrade));
-        #[cfg(feature = "ably-compat")]
-        {
-            websocket_router = websocket_router.merge(self.ably_compat.realtime_router());
-        }
-        if let Some(middleware) = websocket_rate_limiter_middleware_layer {
-            websocket_router = websocket_router.layer(middleware);
-        }
-
         let mut api_router = Router::new()
             .route(
                 "/apps/{appId}/events",
@@ -238,20 +229,6 @@ impl SockudoServer {
             .route(
                 "/apps/{appId}/revocations",
                 post(revoke_capability_tokens).route_layer(axum_middleware::from_fn_with_state(
-                    self.handler.clone(),
-                    pusher_api_auth_middleware,
-                )),
-            )
-            .route(
-                "/apps/{appId}/channels",
-                get(channels).route_layer(axum_middleware::from_fn_with_state(
-                    self.handler.clone(),
-                    pusher_api_auth_middleware,
-                )),
-            )
-            .route(
-                "/apps/{appId}/channels/{channelName}",
-                get(channel).route_layer(axum_middleware::from_fn_with_state(
                     self.handler.clone(),
                     pusher_api_auth_middleware,
                 )),
@@ -368,32 +345,57 @@ impl SockudoServer {
                     self.handler.clone(),
                     pusher_api_auth_middleware,
                 )),
-            )
-            .route(
-                "/apps/{appId}/channels/{channelName}/users",
-                get(channel_users).route_layer(axum_middleware::from_fn_with_state(
-                    self.handler.clone(),
-                    pusher_api_auth_middleware,
-                )),
-            )
-            .route(
-                "/apps/{appId}/users/{userId}/terminate_connections",
-                post(terminate_user_connections).route_layer(axum_middleware::from_fn_with_state(
-                    self.handler.clone(),
-                    pusher_api_auth_middleware,
-                )),
-            )
-            .route(
-                "/apps/{appId}/users/{userId}/force_reconnect",
-                post(force_reconnect_user).route_layer(axum_middleware::from_fn_with_state(
-                    self.handler.clone(),
-                    pusher_api_auth_middleware,
-                )),
             );
+
+        // Routes that require local socket state (channels, users, terminate, force-reconnect).
+        if !self.config.server_role.is_api() {
+            api_router = api_router
+                .route(
+                    "/apps/{appId}/channels",
+                    get(channels).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                )
+                .route(
+                    "/apps/{appId}/channels/{channelName}",
+                    get(channel).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                )
+                .route(
+                    "/apps/{appId}/channels/{channelName}/users",
+                    get(channel_users).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                )
+                .route(
+                    "/apps/{appId}/users/{userId}/terminate_connections",
+                    post(terminate_user_connections).route_layer(
+                        axum_middleware::from_fn_with_state(
+                            self.handler.clone(),
+                            pusher_api_auth_middleware,
+                        ),
+                    ),
+                )
+                .route(
+                    "/apps/{appId}/users/{userId}/force_reconnect",
+                    post(force_reconnect_user).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                );
+        }
 
         #[cfg(feature = "ably-compat")]
         {
-            api_router = api_router.merge(self.ably_compat.rest_router());
+            if self.config.server_role.is_api() {
+                api_router = api_router.merge(self.ably_compat.rest_router_api());
+            } else {
+                api_router = api_router.merge(self.ably_compat.rest_router());
+            }
         }
 
         #[cfg(feature = "push")]
@@ -569,8 +571,21 @@ impl SockudoServer {
             api_router = api_router.layer(middleware);
         }
 
-        let mut router = Router::new()
-            .merge(websocket_router)
+        let mut router = Router::new();
+
+        if !self.config.server_role.is_api() {
+            let mut websocket_router = Router::new().route("/app/{appKey}", get(handle_ws_upgrade));
+            #[cfg(feature = "ably-compat")]
+            {
+                websocket_router = websocket_router.merge(self.ably_compat.realtime_router());
+            }
+            if let Some(middleware) = websocket_rate_limiter_middleware_layer {
+                websocket_router = websocket_router.layer(middleware);
+            }
+            router = router.merge(websocket_router);
+        }
+
+        let mut router = router
             .merge(api_router)
             .route("/up", get(up))
             .route("/up/{appId}", get(up))

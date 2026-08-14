@@ -102,6 +102,7 @@ url = "${REDIS_URL:-redis://localhost:6379}"
 | `USER_AUTHENTICATION_TIMEOUT` | Timeout used by user authentication flows. |
 | `SOCKUDO_MAX_CONNECTIONS` | Per-node WebSocket connection limit. `0` disables. |
 | `WEBSOCKET_MAX_PAYLOAD_KB` | Legacy maximum WebSocket payload size in KiB. |
+| `SOCKUDO_SERVER_ROLE` | Deployment topology role. `"default"` or `"api"`. Overrides `server_role` in the config file. |
 | `INSTANCE_PROCESS_ID` | Stable node/process identity used by clustering and Iggy consumers. |
 | `HOSTNAME` | Fallback node identity for Iggy when `INSTANCE_PROCESS_ID` is not set. |
 | `HEALTH_CHECK_TIMEOUT_MS` | Per-dependency timeout for `/up` health checks in milliseconds. Defaults to `2000`. |

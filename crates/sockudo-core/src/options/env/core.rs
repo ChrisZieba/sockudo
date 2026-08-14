@@ -29,6 +29,9 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
     if let Ok(id) = std::env::var("INSTANCE_PROCESS_ID") {
         options.instance.process_id = id;
     }
+    if let Ok(server_role) = std::env::var("SOCKUDO_SERVER_ROLE") {
+        options.server_role = server_role.parse().map_err(|e: String| e)?;
+    }
 
     Ok(())
 }

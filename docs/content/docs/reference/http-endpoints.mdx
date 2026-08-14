@@ -12,6 +12,20 @@ Sockudo exposes three endpoint groups:
 
 Every route under `/apps/{appId}` requires Pusher-compatible signed query authentication. Push routes also evaluate the push capability headers described below.
 
+## Availability by server role
+
+With `server_role = "api"` (see [Configuration](/docs/reference/configuration#server-role)),
+endpoints that depend on live socket state return 404: channels, channel users,
+terminate/force-reconnect, and the WebSocket upgrade. All publish, history, mutable-message,
+annotation, revocation, and push endpoints remain available.
+
+Additional restrictions in API mode:
+
+- `info` values `user_count` and `subscription_count` are rejected with HTTP 400.
+- `socket_id` on mutation and annotation requests is rejected with HTTP 400.
+- When built with `ably-compat`, Ably live-state routes (presence, channel detail)
+  return 404; the REST publish surface is available.
+
 ## WebSocket
 
 | Method | Path | Auth | Purpose |
