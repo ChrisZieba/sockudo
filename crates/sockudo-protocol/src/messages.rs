@@ -878,11 +878,70 @@ impl<'de> Deserialize<'de> for MessageData {
     }
 }
 
-fn serde_json_value_to_sonic(value: JsonValue) -> Result<Value, String> {
+fn serde_json_value_to_sonic(mut value: JsonValue) -> Result<Value, String> {
+    stabilize_serde_sonic_floats(&mut value)?;
     let encoded = serde_json::to_string(&value)
         .map_err(|err| format!("failed to encode json value for MessageData: {err}"))?;
     sonic_rs::from_str(&encoded)
         .map_err(|err| format!("failed to decode json value for MessageData: {err}"))
+}
+
+fn stabilize_serde_sonic_floats(value: &mut JsonValue) -> Result<(), String> {
+    match value {
+        JsonValue::Number(number) if number.is_f64() => {
+            // The two parsers can choose adjacent f64 values for the same extreme decimal.
+            // Canonicalizing their (usually one-step) cycle keeps mixed-library round trips stable.
+            let mut current = number
+                .as_f64()
+                .ok_or_else(|| "MessageData contains an invalid JSON number".to_string())?;
+            let mut representations = Vec::with_capacity(8);
+            for _ in 0..64 {
+                representations.push(current.to_bits());
+                let serde_encoded = serde_json::to_string(&current)
+                    .map_err(|err| format!("failed to encode floating-point MessageData: {err}"))?;
+                let sonic_number: f64 = sonic_rs::from_str(&serde_encoded)
+                    .map_err(|err| format!("failed to decode floating-point MessageData: {err}"))?;
+                let sonic_encoded = sonic_rs::to_string(&sonic_number).map_err(|err| {
+                    format!("failed to normalize floating-point MessageData: {err}")
+                })?;
+                let next = serde_json::from_str::<f64>(&sonic_encoded).map_err(|err| {
+                    format!("failed to normalize floating-point MessageData: {err}")
+                })?;
+                if let Some(cycle_start) = representations
+                    .iter()
+                    .position(|bits| *bits == next.to_bits())
+                {
+                    let canonical_bits = representations[cycle_start..]
+                        .iter()
+                        .copied()
+                        .min()
+                        .ok_or_else(|| {
+                            "MessageData float normalization produced an empty cycle".to_string()
+                        })?;
+                    let canonical = f64::from_bits(canonical_bits);
+                    *number = serde_json::Number::from_f64(canonical).ok_or_else(|| {
+                        "MessageData contains a non-finite JSON number".to_string()
+                    })?;
+                    return Ok(());
+                }
+                current = next;
+            }
+            Err("floating-point MessageData normalization exceeded its iteration limit".to_string())
+        }
+        JsonValue::Array(values) => {
+            for value in values {
+                stabilize_serde_sonic_floats(value)?;
+            }
+            Ok(())
+        }
+        JsonValue::Object(values) => {
+            for value in values.values_mut() {
+                stabilize_serde_sonic_floats(value)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

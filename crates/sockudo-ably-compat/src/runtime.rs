@@ -564,7 +564,6 @@ struct AblySubscriberKey {
     requested_channel: Arc<str>,
 }
 
-#[derive(Clone)]
 struct AblySubscriber {
     connection_id: Arc<str>,
     sender: AblySender,
@@ -574,8 +573,27 @@ struct AblySubscriber {
     #[cfg(feature = "delta")]
     delta: Option<AblyDeltaState>,
     attach_gate: Option<AblyAttachGate>,
-    recovery_gate: AblyAttachGate,
     recoverable: bool,
+}
+
+struct AblyDeliverySubscriber {
+    sender: AblySender,
+    filter: Option<Arc<AblyMessageFilter>>,
+    #[cfg(feature = "delta")]
+    delta: Option<AblyDeltaState>,
+    recoverable: bool,
+}
+
+impl AblySubscriber {
+    fn delivery_snapshot(&self) -> AblyDeliverySubscriber {
+        AblyDeliverySubscriber {
+            sender: Arc::clone(&self.sender),
+            filter: self.filter.clone(),
+            #[cfg(feature = "delta")]
+            delta: self.delta.clone(),
+            recoverable: self.recoverable,
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -879,6 +897,7 @@ struct AblyRecoveryFailure {
 #[derive(Default)]
 struct AblyChannelState {
     subscribers: HashMap<AblySubscriberKey, AblySubscriber>,
+    recovery_gates: HashMap<AblySubscriberKey, AblyAttachGate>,
     current_stream_id: Option<String>,
     attach_position: Option<AblyChannelPosition>,
     delivery_frontier: u64,
@@ -1258,7 +1277,6 @@ impl AblyCompatRuntime {
                 #[cfg(feature = "delta")]
                 delta: None,
                 attach_gate: None,
-                recovery_gate: AblyAttachGate::default(),
                 recoverable: false,
             },
         );
@@ -2221,10 +2239,18 @@ impl AblyCompatHub {
                 }
             }
             let subscriber_count = state.subscribers.len();
-            state.subscribers.retain(|_, subscriber| {
-                !subscriber.recoverable
-                    || !expired_connection_ids.contains(subscriber.connection_id.as_ref())
+            let mut expired_subscribers = Vec::new();
+            state.subscribers.retain(|key, subscriber| {
+                let retain = !subscriber.recoverable
+                    || !expired_connection_ids.contains(subscriber.connection_id.as_ref());
+                if !retain {
+                    expired_subscribers.push(key.clone());
+                }
+                retain
             });
+            for key in expired_subscribers {
+                state.recovery_gates.remove(&key);
+            }
             if subscriber_count > 0 && state.subscribers.is_empty() {
                 state.attach_position = None;
                 expired_channels.push(entry.key().clone());
@@ -2566,7 +2592,6 @@ impl AblyCompatHub {
                     #[cfg(feature = "delta")]
                     delta: ably_delta_state(&attachment.params),
                     attach_gate: Some(AblyAttachGate::default()),
-                    recovery_gate: AblyAttachGate::default(),
                     recoverable: false,
                 },
             );
@@ -2690,7 +2715,6 @@ impl AblyCompatHub {
                 #[cfg(feature = "delta")]
                 delta: ably_delta_state(&attachment.params),
                 attach_gate: Some(AblyAttachGate::default()),
-                recovery_gate: AblyAttachGate::default(),
                 recoverable: false,
             });
         if let Some(position) = channel_serial
@@ -2753,10 +2777,9 @@ impl AblyCompatHub {
         };
         let should_close = {
             let mut state = lock_channel_state(&state);
-            let removed = state
-                .subscribers
-                .remove(&subscriber_key(session_id, channel.requested()))
-                .is_some();
+            let subscriber_key = subscriber_key(session_id, channel.requested());
+            let removed = state.subscribers.remove(&subscriber_key).is_some();
+            state.recovery_gates.remove(&subscriber_key);
             let should_close = removed && state.subscribers.is_empty();
             if should_close {
                 state.attach_position = None;
@@ -2801,11 +2824,12 @@ impl AblyCompatHub {
                 let Some(mut subscriber) = state.subscribers.remove(&key) else {
                     continue;
                 };
+                let recovery_gate = state.recovery_gates.remove(&key);
                 let Ok(channel) = AblyChannelName::parse(key.requested_channel.to_string()) else {
                     continue;
                 };
                 subscriber.sender = sender.clone();
-                replay_count += subscriber.recovery_gate.messages.len();
+                replay_count += recovery_gate.as_ref().map_or(0, |gate| gate.messages.len());
                 attachments.insert(
                     channel.requested().to_string(),
                     AblyConnectionAttachment {
@@ -2819,9 +2843,11 @@ impl AblyCompatHub {
                         has_presence: false,
                     },
                 );
-                state
-                    .subscribers
-                    .insert(subscriber_key(session_id, channel.requested()), subscriber);
+                let resumed_key = subscriber_key(session_id, channel.requested());
+                if let Some(gate) = recovery_gate {
+                    state.recovery_gates.insert(resumed_key.clone(), gate);
+                }
+                state.subscribers.insert(resumed_key, subscriber);
             }
         }
         debug!(
@@ -2845,17 +2871,15 @@ impl AblyCompatHub {
             return (false, AblyAttachGate::default());
         };
         let mut state = lock_channel_state(state.value());
-        let Some(subscriber) = state
-            .subscribers
-            .get_mut(&subscriber_key(session_id, channel.requested()))
-        else {
+        let key = subscriber_key(session_id, channel.requested());
+        let Some(subscriber) = state.subscribers.get_mut(&key) else {
             return (false, AblyAttachGate::default());
         };
         if !subscriber.recoverable {
             return (false, AblyAttachGate::default());
         }
         subscriber.recoverable = false;
-        (true, std::mem::take(&mut subscriber.recovery_gate))
+        (true, state.recovery_gates.remove(&key).unwrap_or_default())
     }
 
     fn mark_session_subscribers_recoverable(&self, app_id: &str, session_id: &str) {
@@ -2864,10 +2888,18 @@ impl AblyCompatHub {
                 continue;
             }
             let mut state = lock_channel_state(entry.value());
-            for (key, subscriber) in &mut state.subscribers {
-                if key.session_id.as_ref() == session_id {
-                    subscriber.recoverable = true;
-                }
+            let recovery_keys = state
+                .subscribers
+                .iter_mut()
+                .filter_map(|(key, subscriber)| {
+                    (key.session_id.as_ref() == session_id).then(|| {
+                        subscriber.recoverable = true;
+                        key.clone()
+                    })
+                })
+                .collect::<Vec<_>>();
+            for key in recovery_keys {
+                state.recovery_gates.entry(key).or_default();
             }
         }
     }
@@ -2975,7 +3007,7 @@ impl AblyCompatHub {
                         gate.messages.push(message.clone());
                     }
                 } else {
-                    ready.push((key.clone(), subscriber.clone()));
+                    ready.push((key.clone(), subscriber.delivery_snapshot()));
                 }
             }
             ready
@@ -2994,7 +3026,7 @@ impl AblyCompatHub {
         #[cfg(feature = "delta")]
         let mut delta_groups = HashMap::<
             (AblyFormat, Arc<str>, Option<Arc<str>>),
-            Vec<(AblySubscriberKey, AblySubscriber)>,
+            Vec<(AblySubscriberKey, AblyDeliverySubscriber)>,
         >::new();
         #[cfg(feature = "delta")]
         let delta_now = Instant::now();
@@ -3054,7 +3086,7 @@ impl AblyCompatHub {
                             delivered_messages = delivered_messages.saturating_add(1);
                             delivered_bytes = delivered_bytes.saturating_add(byte_count);
                             delta_updates.push((subscriber_key.clone(), next_state.clone()));
-                            if projected.action == ACTION_MESSAGE {
+                            if subscriber.recoverable && projected.action == ACTION_MESSAGE {
                                 recovery_updates.push((subscriber_key, projected.clone()));
                             }
                         } else if subscriber.recoverable {
@@ -3072,8 +3104,10 @@ impl AblyCompatHub {
             }
         }
 
-        let mut grouped =
-            HashMap::<(AblyFormat, Arc<str>), Vec<(AblySubscriberKey, AblySubscriber)>>::new();
+        let mut grouped = HashMap::<
+            (AblyFormat, Arc<str>),
+            Vec<(AblySubscriberKey, AblyDeliverySubscriber)>,
+        >::new();
         for (key, subscriber) in subscribers {
             grouped
                 .entry((subscriber.sender.format(), key.requested_channel.clone()))
@@ -3121,7 +3155,7 @@ impl AblyCompatHub {
                     self.metrics.fanout.fetch_add(1, Ordering::Relaxed);
                     delivered_messages = delivered_messages.saturating_add(1);
                     delivered_bytes = delivered_bytes.saturating_add(encoded_bytes);
-                    if projected.action == ACTION_MESSAGE {
+                    if subscriber.recoverable && projected.action == ACTION_MESSAGE {
                         recovery_updates.push((subscriber_key, projected.clone()));
                     }
                 }
@@ -3156,8 +3190,8 @@ impl AblyCompatHub {
         if !recovery_updates.is_empty() {
             let mut state = lock_channel_state(&state);
             for (key, delivered) in recovery_updates {
-                if let Some(subscriber) = state.subscribers.get_mut(&key) {
-                    push_bounded_recovery_message(&mut subscriber.recovery_gate, delivered);
+                if let Some(gate) = state.recovery_gates.get_mut(&key) {
+                    push_bounded_recovery_message(gate, delivered);
                 }
             }
         }
@@ -3166,6 +3200,7 @@ impl AblyCompatHub {
             let mut state = lock_channel_state(&state);
             for subscriber in stale {
                 state.subscribers.remove(&subscriber);
+                state.recovery_gates.remove(&subscriber);
             }
         }
     }
@@ -3193,7 +3228,6 @@ impl AblyCompatHub {
                 #[cfg(feature = "delta")]
                 delta: ably_delta_state(&attachment.params),
                 attach_gate: Some(AblyAttachGate::default()),
-                recovery_gate: AblyAttachGate::default(),
                 recoverable: false,
             });
         if state
@@ -3309,7 +3343,6 @@ impl AblyCompatHub {
                 #[cfg(feature = "delta")]
                 delta: ably_delta_state(&attachment.params),
                 attach_gate: None,
-                recovery_gate: AblyAttachGate::default(),
                 recoverable: false,
             },
         );

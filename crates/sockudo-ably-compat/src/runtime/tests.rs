@@ -1944,6 +1944,23 @@ async fn resumed_subscriber_replays_the_bounded_delivery_window_in_order() {
         false,
     );
     receiver.recv().await.expect("ATTACHED frame");
+    hub.broadcast(
+        "app",
+        channel.base(),
+        AblyProtocolMessage {
+            action: ACTION_MESSAGE,
+            channel: Some(channel.base().to_string()),
+            messages: Some(vec![AblyMessage {
+                data: Some(json!("already-delivered")),
+                ..AblyMessage::default()
+            }]),
+            ..empty_protocol_message(ACTION_MESSAGE)
+        },
+        None,
+        None,
+    );
+    receiver.recv().await.expect("active delivery");
+    hub.mark_session_subscribers_recoverable("app", "old-session");
     for index in 0..3 {
         hub.broadcast(
             "app",
@@ -1961,7 +1978,6 @@ async fn resumed_subscriber_replays_the_bounded_delivery_window_in_order() {
             None,
         );
     }
-    hub.mark_session_subscribers_recoverable("app", "old-session");
 
     let (replacement, _replacement_receiver) = AblyOutbound::channel(
         AblyFormat::Json,
