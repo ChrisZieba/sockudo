@@ -452,6 +452,16 @@ make ably-ai-transport-test
 make ably-ai-demo
 ```
 
+Pinned cross-SDK and released-binary evidence:
+
+```bash
+cd sockudo-compatibility
+make conformance strict-completeness browser-conformance browser-strict
+make go-conformance ait-conformance
+# After publishing a tag with detached checksum assets:
+SOCKUDO_RELEASE_TAG=vX.Y.Z make release-verify
+```
+
 The opt-in Ably targets exercise the pinned Ably REST and WebSocket surface, excluding Live Objects
 and all non-WebSocket realtime transports, using local Sockudo as the endpoint. The compatibility
 runtime lives in `crates/sockudo-ably-compat` and reuses native Sockudo auth, publish, history,
@@ -460,6 +470,10 @@ and AI Transport are independent evidence lanes; a pass in one is not a pass in 
 release status and scope limits are in the compatibility scorecard under
 [`docs/ably-compat/`](docs/ably-compat/) and the reports under `sockudo-compatibility/`. Do not use
 these targets to claim full Ably platform compatibility.
+
+Sockudo and this compatibility layer are community-built and community-maintained. They are not
+Ably products, and Ably does not provide support for them. Use Sockudo's issue tracker, discussions,
+Discord, or other support channels listed below for help.
 
 Docs checks:
 

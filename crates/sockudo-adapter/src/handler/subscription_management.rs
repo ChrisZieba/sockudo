@@ -603,13 +603,21 @@ impl ConnectionHandler {
                 .await?;
         }
 
-        let buffered = connection.finish_rewind_gate(&request.channel).await?;
-        let live_messages =
-            filter_buffered_rewind_messages(buffered, history_head_serial, &delivered_message_ids);
-        let live_count = live_messages.len();
-        for message in live_messages {
-            self.send_message_to_socket(&app_config.id, socket_id, message)
-                .await?;
+        let mut live_count = 0usize;
+        loop {
+            let Some(buffered) = connection.drain_rewind_gate_batch(&request.channel).await? else {
+                break;
+            };
+            let live_messages = filter_buffered_rewind_messages(
+                buffered,
+                history_head_serial,
+                &delivered_message_ids,
+            );
+            live_count = live_count.saturating_add(live_messages.len());
+            for message in live_messages {
+                self.send_message_to_socket(&app_config.id, socket_id, message)
+                    .await?;
+            }
         }
 
         let truncated_by_limit = rewind.limit() > max_page_size
@@ -914,10 +922,14 @@ impl ConnectionHandler {
             return Ok(());
         };
 
-        let buffered = connection.finish_rewind_gate(channel).await?;
-        for message in filter_buffered_attach_messages(buffered) {
-            self.send_message_to_socket(&app_config.id, socket_id, message)
-                .await?;
+        loop {
+            let Some(buffered) = connection.drain_rewind_gate_batch(channel).await? else {
+                break;
+            };
+            for message in filter_buffered_attach_messages(buffered) {
+                self.send_message_to_socket(&app_config.id, socket_id, message)
+                    .await?;
+            }
         }
         Ok(())
     }

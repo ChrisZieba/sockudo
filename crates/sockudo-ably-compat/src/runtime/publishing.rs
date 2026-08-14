@@ -48,12 +48,16 @@ pub(super) async fn handle_ably_publish(
         return Ok(());
     }
 
-    let messages = inbound.messages.clone().unwrap_or_default();
+    let mut messages = inbound.messages.clone().unwrap_or_default();
     let message_count = u64::try_from(messages.len()).unwrap_or(u64::MAX);
     let message_bytes = sonic_rs::to_vec(&messages)
         .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
         .unwrap_or_default();
-    for message in &messages {
+    for message in &mut messages {
+        if let Err(error) = normalize_realtime_message_connection_id(message, connection_id) {
+            send_publish_nack(sender, &inbound, 40000, error.to_string());
+            return Ok(());
+        }
         if let Err(error) = validate_ably_publish_message(
             message,
             false,
@@ -128,6 +132,21 @@ pub(super) async fn handle_ably_publish(
             ..empty_protocol_message(ACTION_ACK)
         },
     );
+    Ok(())
+}
+
+pub(super) fn normalize_realtime_message_connection_id(
+    message: &mut AblyMessage,
+    connection_id: &str,
+) -> Result<(), AppError> {
+    if let Some(message_connection_id) = message.connection_id.as_deref()
+        && message_connection_id != connection_id
+    {
+        return Err(AppError::InvalidInput(
+            "message.connectionId must match the publishing connection".to_string(),
+        ));
+    }
+    message.connection_id = None;
     Ok(())
 }
 

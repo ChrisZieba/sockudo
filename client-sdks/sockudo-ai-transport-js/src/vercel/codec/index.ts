@@ -66,6 +66,7 @@ export { createVercelProjection, foldVercelEvent } from "./reducer.js";
 export { toolBase, transitionToolPart } from "./tool-transitions.js";
 export type {
   AI,
+  ForkSeed,
   MessageTrackers,
   ToolApprovalResponse,
   ToolResult,

@@ -310,6 +310,29 @@ impl RewindGate {
         }
     }
 
+    /// Take the current batch while keeping the gate open. Once a drain finds
+    /// no buffered messages, it atomically closes the gate so subsequent live
+    /// fanout can proceed only after every earlier batch has been enqueued.
+    pub(super) fn drain_batch(&mut self) -> RewindGateDrain {
+        match self.state {
+            RewindGateState::Open if self.buffered.is_empty() => {
+                self.state = RewindGateState::Closed;
+                self.buffered_bytes = 0;
+                RewindGateDrain::Buffered(Vec::new())
+            }
+            RewindGateState::Open => {
+                self.buffered_bytes = 0;
+                RewindGateDrain::Buffered(std::mem::take(&mut self.buffered))
+            }
+            RewindGateState::Closed => RewindGateDrain::Buffered(Vec::new()),
+            RewindGateState::Overflowed(overflow) => {
+                self.buffered.clear();
+                self.buffered_bytes = 0;
+                RewindGateDrain::Overflowed(overflow)
+            }
+        }
+    }
+
     fn invalidate(&mut self, overflow: RewindGateOverflow) -> RewindGateAdmission {
         self.buffered.clear();
         self.buffered_bytes = 0;

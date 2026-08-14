@@ -56,6 +56,10 @@ export interface SendOptions {
   waitForRunStart?: boolean;
   /** Existing run id for suspended-run continuation. */
   runId?: string;
+  /** Role stamped on the input. Tool-result forks use `assistant`. */
+  role?: "user" | "assistant";
+  /** Suspended run replaced by this client tool-result fork. */
+  supersedes?: string;
   /** Message id this send replaces. */
   forkOf?: string;
   /** Parent message id. Defaults to the selected branch tail. */
@@ -542,6 +546,8 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
       optimisticMsgIds.push(messageId);
       const headers = this.inputHeaders({
         runId,
+        ...(sendOptions.role !== undefined ? { role: sendOptions.role } : {}),
+        ...(sendOptions.supersedes !== undefined ? { supersedes: sendOptions.supersedes } : {}),
         invocationId,
         inputEventId: eventIds[index] ?? inputEventId,
         codecMessageId: messageId,
@@ -589,6 +595,10 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
             ai: {
               transport: this.inputHeaders({
                 runId,
+                ...(sendOptions.role !== undefined ? { role: sendOptions.role } : {}),
+                ...(sendOptions.supersedes !== undefined
+                  ? { supersedes: sendOptions.supersedes }
+                  : {}),
                 invocationId,
                 inputEventId: eventIds[index] ?? inputEventId,
                 ...(inputCodecMessageId !== undefined
@@ -969,6 +979,8 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
 
   private inputHeaders(options: {
     runId: string;
+    role?: "user" | "assistant";
+    supersedes?: string;
     invocationId: string;
     inputEventId: string;
     codecMessageId?: string;
@@ -978,7 +990,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
     regenerates?: string | boolean;
   }): HeaderMap {
     const headers = buildTransportHeaders({
-      role: "user",
+      role: options.role ?? "user",
       runId: options.runId,
       invocationId: options.invocationId,
       inputEventId: options.inputEventId,
@@ -990,6 +1002,7 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
       ...(options.forkOf !== undefined ? { forkOf: options.forkOf } : {}),
       ...(options.runContinue !== undefined ? { runContinue: options.runContinue } : {}),
       ...(options.regenerates !== undefined ? { regenerates: options.regenerates } : {}),
+      ...(options.supersedes !== undefined ? { supersedes: options.supersedes } : {}),
     });
     return headers;
   }
@@ -1018,9 +1031,9 @@ class DefaultClientSession<TInput, TOutput, TProjection, TMessage> implements Cl
         ...(this.clientId !== undefined ? { runClientId: this.clientId } : {}),
       });
       this.tree.applyMessage(
-        [decodedEvent<TInput | TOutput>(message as unknown as TInput | TOutput, msgId, "seed")],
+        [decodedEvent<TInput | TOutput>(message as unknown as TInput | TOutput, msgId, 0)],
         headers,
-        "seed",
+        0,
       );
       parent = msgId;
     }

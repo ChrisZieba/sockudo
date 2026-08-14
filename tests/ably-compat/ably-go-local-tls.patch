@@ -1,0 +1,150 @@
+diff --git a/ably/websocket.go b/ably/websocket.go
+index 48e6fe5..3702986 100644
+--- a/ably/websocket.go
++++ b/ably/websocket.go
+@@ -4,8 +4,10 @@ import (
+ 	"context"
+ 	"encoding/json"
+ 	"errors"
++	"fmt"
+ 	"net/http"
+ 	"net/url"
++	"os"
+ 	"strings"
+ 	"time"
+ 
+@@ -103,6 +105,14 @@ func dialWebsocket(proto string, u *url.URL, timeout time.Duration, agents map[s
+ 	default:
+ 		return nil, errors.New(`invalid protocol "` + proto + `"`)
+ 	}
++	if os.Getenv("ABLY_LOCAL_PLAINTEXT_REALTIME") == "1" {
++		if hostname := u.Hostname(); hostname != "127.0.0.1" && hostname != "localhost" && hostname != "::1" {
++			return nil, fmt.Errorf("refusing plaintext realtime test transport for non-loopback host %q", hostname)
++		}
++		localURL := *u
++		localURL.Scheme = "ws"
++		u = &localURL
++	}
+ 	// Starts a raw websocket connection with server
+ 	conn, resp, err := dialWebsocketTimeout(u.String(), "https://"+u.Host, timeout, agents)
+ 	if err != nil {
+diff --git a/internal/ablytest/ablytest.go b/internal/ablytest/ablytest.go
+index b137324..3d79465 100644
+--- a/internal/ablytest/ablytest.go
++++ b/internal/ablytest/ablytest.go
+@@ -104,6 +104,9 @@ func init() {
+ 	if s := os.Getenv("ABLY_LOCAL_SANDBOX_URL"); s != "" {
+ 		LocalSandboxURL = strings.TrimRight(s, "/")
+ 	}
++	if s := os.Getenv("ABLY_CREATE_JWT_URL"); s != "" {
++		CREATE_JWT_URL = s
++	}
+ }
+ 
+ func MergeOptions(opts ...[]ably.ClientOption) []ably.ClientOption {
+diff --git a/internal/ablytest/recorders.go b/internal/ablytest/recorders.go
+index af50443..e8def4b 100644
+--- a/internal/ablytest/recorders.go
++++ b/internal/ablytest/recorders.go
+@@ -14,7 +14,7 @@ import (
+ // RoundTripRecorder is a http.Transport wrapper which records
+ // HTTP request/response pairs.
+ type RoundTripRecorder struct {
+-	*http.Transport
++	http.RoundTripper
+ 
+ 	mtx     sync.Mutex
+ 	reqs    []*http.Request
+@@ -77,7 +77,7 @@ func (rec *RoundTripRecorder) RoundTrip(req *http.Request) (*http.Response, erro
+ 	if atomic.LoadInt32(&rec.stopped) == 0 {
+ 		return rec.roundTrip(req)
+ 	}
+-	return rec.Transport.RoundTrip(req)
++	return rec.RoundTripper.RoundTrip(req)
+ }
+ 
+ // Stop makes the recorder stop recording new requests/responses.
+@@ -85,11 +85,9 @@ func (rec *RoundTripRecorder) Stop() {
+ 	atomic.StoreInt32(&rec.stopped, 1)
+ }
+ 
+-// Hijack injects http.Transport into the wrapper.
++// Hijack injects an HTTP transport into the wrapper.
+ func (rec *RoundTripRecorder) Hijack(rt http.RoundTripper) http.RoundTripper {
+-	if tr, ok := rt.(*http.Transport); ok {
+-		rec.Transport = tr
+-	}
++	rec.RoundTripper = rt
+ 	return rec
+ }
+ 
+@@ -106,7 +104,7 @@ func (rec *RoundTripRecorder) roundTrip(req *http.Request) (*http.Response, erro
+ 	if req.Body != nil {
+ 		req.Body = io.NopCloser(io.TeeReader(req.Body, &buf))
+ 	}
+-	resp, err := rec.Transport.RoundTrip(req)
++	resp, err := rec.RoundTripper.RoundTrip(req)
+ 	req.Body = body(buf.Bytes())
+ 	buf.Reset()
+ 	if resp != nil && resp.Body != nil {
+diff --git a/internal/ablytest/sandbox.go b/internal/ablytest/sandbox.go
+index 6c19d87..8272008 100644
+--- a/internal/ablytest/sandbox.go
++++ b/internal/ablytest/sandbox.go
+@@ -146,6 +146,21 @@ type Sandbox struct {
+ 	local bool
+ }
+ 
++type localPlaintextTransport struct {
++	base http.RoundTripper
++}
++
++func (transport localPlaintextTransport) RoundTrip(request *http.Request) (*http.Response, error) {
++	hostname := request.URL.Hostname()
++	ip := net.ParseIP(hostname)
++	if hostname != "localhost" && (ip == nil || (!ip.IsLoopback() && !ip.IsUnspecified())) {
++		return nil, fmt.Errorf("refusing plaintext REST test transport for non-loopback host %q", hostname)
++	}
++	request = request.Clone(request.Context())
++	request.URL.Scheme = "http"
++	return transport.base.RoundTrip(request)
++}
++
+ func NewRealtime(opts ...ably.ClientOption) (*Sandbox, *ably.Realtime) {
+ 	app := MustSandbox()
+ 	client, err := ably.NewRealtime(app.Options(opts...)...)
+@@ -253,6 +268,9 @@ func provisionSandbox(endpoint string) (*Sandbox, error) {
+ 			if err := json.NewDecoder(resp.Body).Decode(app.Config); err != nil {
+ 				return nil, err
+ 			}
++			if app.local && !app.Config.LocalTLS {
++				app.client.Transport = localPlaintextTransport{base: app.client.Transport}
++			}
+ 			return app, nil
+ 		}
+ 	}
+@@ -332,6 +350,9 @@ func (app *Sandbox) Options(opts ...ably.ClientOption) []ably.ClientOption {
+ 		Hijack(http.RoundTripper) http.RoundTripper
+ 	}
+ 	appHTTPClient := NewHTTPClient()
++	if app.local && !app.Config.LocalTLS {
++		appHTTPClient.Transport = localPlaintextTransport{base: appHTTPClient.Transport}
++	}
+ 	appOpts := []ably.ClientOption{
+ 		ably.WithKey(app.Key()),
+ 		ably.WithEndpoint(app.Endpoint),
+@@ -346,12 +367,10 @@ func (app *Sandbox) Options(opts ...ably.ClientOption) []ably.ClientOption {
+ 	if app.local {
+ 		appOpts = append(appOpts,
+ 			ably.WithEndpoint(app.Config.LocalEndpoint),
+-			ably.WithTLS(app.Config.LocalTLS),
++			ably.WithTLS(true),
+ 			ably.WithPort(app.Config.LocalPort),
++			ably.WithTLSPort(app.Config.LocalPort),
+ 		)
+-		if !app.Config.LocalTLS {
+-			appOpts = append(appOpts, ably.WithInsecureAllowBasicAuthWithoutTLS())
+-		}
+ 	}
+ 
+ 	// If opts want to record round trips inject the recording transport

@@ -1326,6 +1326,106 @@ async fn rewind_handoff_has_no_gap_and_suppresses_duplicates_e2e() {
 }
 
 #[tokio::test]
+async fn resume_success_precedes_live_messages_published_during_replay_e2e() {
+    let mut options = ServerOptions::default();
+    options.history.enabled = true;
+    options.connection_recovery.enabled = true;
+    options.history.max_page_size = 100;
+    let harness = build_harness(options).await;
+
+    for (serial, message_id, event) in [
+        (1, "history-msg-1", "history-1"),
+        (2, "history-msg-2", "history-2"),
+    ] {
+        append_history_message(
+            &harness.history_store,
+            &harness.app.id,
+            "resume-order",
+            "stream-1",
+            serial,
+            message_id,
+            event,
+        )
+        .await;
+    }
+
+    let (socket_id, mut reader) = connect_v2_socket(&harness).await;
+    subscribe_v2(&harness, &socket_id, &mut reader, "resume-order", None).await;
+
+    let (started_rx, continue_tx) = harness.history_store.arm_gate().await;
+    let handler = harness.handler.clone();
+    let app = harness.app.clone();
+    let resume_task = tokio::spawn(async move {
+        handler
+            .handle_resume(
+                &socket_id,
+                &app,
+                &PusherMessage {
+                    event: Some("sockudo:resume".to_string()),
+                    channel: None,
+                    data: Some(MessageData::Json(sonic_rs::json!({
+                        "channel_positions": {
+                            "resume-order": {
+                                "stream_id": "stream-1",
+                                "serial": 1,
+                                "last_message_id": "history-msg-1",
+                            }
+                        }
+                    }))),
+                    name: None,
+                    user_id: None,
+                    tags: None,
+                    sequence: None,
+                    conflation_key: None,
+                    message_id: None,
+                    stream_id: None,
+                    serial: None,
+                    idempotency_key: None,
+                    extras: None,
+                    delta_sequence: None,
+                    delta_conflation_key: None,
+                },
+            )
+            .await
+            .unwrap();
+    });
+
+    started_rx.await.unwrap();
+    harness
+        .handler
+        .broadcast_to_channel(
+            &harness.app,
+            "resume-order",
+            live_message("resume-order", "live-during-resume", "live-msg-3"),
+            None,
+        )
+        .await
+        .unwrap();
+    let _ = continue_tx.send(());
+    resume_task.await.unwrap();
+
+    let replayed = recv_message(&mut reader).await;
+    let resumed = recv_message(&mut reader).await;
+    let live = recv_message(&mut reader).await;
+
+    assert_eq!(replayed.event.as_deref(), Some("history-2"));
+    assert_eq!(replayed.serial, Some(2));
+    assert_eq!(resumed.event.as_deref(), Some("sockudo:resume_success"));
+    assert_eq!(live.event.as_deref(), Some("live-during-resume"));
+    assert_eq!(live.serial, Some(3));
+
+    let resumed_data = match resumed.data.as_ref().unwrap() {
+        MessageData::String(data) => sonic_rs::from_str::<sonic_rs::Value>(data).unwrap(),
+        MessageData::Json(value) => value.clone(),
+        other => panic!("unexpected resume aggregate payload: {other:?}"),
+    };
+    assert_eq!(
+        resumed_data["recovered"][0]["position"]["serial"].as_u64(),
+        Some(2)
+    );
+}
+
+#[tokio::test]
 async fn hot_recovery_replays_real_deliveries_e2e() {
     let mut options = ServerOptions::default();
     options.history.enabled = true;

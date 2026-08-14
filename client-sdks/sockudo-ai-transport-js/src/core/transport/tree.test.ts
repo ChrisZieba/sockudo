@@ -13,6 +13,7 @@ import {
   HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_SUPERSEDES,
 } from "../../constants.js";
 import type { HeaderMap } from "../../utils.js";
 import { createTree } from "./tree.js";
@@ -200,6 +201,60 @@ describe("conversation tree", () => {
     expect(tree.getRunNodes().map((node) => node.runId)).toEqual(["early", "late"]);
   });
 
+  it("hides superseded trunks while retaining lookup and visible concurrent forks", () => {
+    const tree = createTestTree();
+
+    createRunNode(tree, "parent", "msg-parent", 1);
+    createRunNode(tree, "trunk", "msg-trunk", 2, { parent: "msg-parent" });
+    createRunNode(tree, "fork-a", "msg-fork-a", 3, {
+      role: "assistant",
+      forkOf: "msg-trunk",
+      supersedes: "trunk",
+    });
+    createRunNode(tree, "fork-b", "msg-fork-b", 4, {
+      role: "assistant",
+      forkOf: "msg-trunk",
+      supersedes: "trunk",
+    });
+
+    expect(tree.getRunNode("trunk")?.runId).toBe("trunk");
+    expect(tree.getRunNodes().map((node) => node.runId)).toEqual(["parent", "fork-a", "fork-b"]);
+    expect(tree.getSiblingNodes("fork-a").map((node) => node.runId)).toEqual(["fork-a", "fork-b"]);
+  });
+
+  it("applies supersession before the trunk arrives and restores it when the fork is deleted", () => {
+    const tree = createTestTree();
+
+    createRunNode(tree, "fork", "msg-shared", 2, {
+      role: "assistant",
+      supersedes: "trunk",
+    });
+    createRunNode(tree, "trunk", "msg-shared", 1);
+
+    expect(tree.getRunNodes().map((node) => node.runId)).toEqual(["fork"]);
+    expect(tree.getNodeByCodecMessageId("msg-shared")?.runId).toBe("fork");
+    tree.delete("msg-shared");
+    expect(tree.getRunNodes().map((node) => node.runId)).toEqual(["trunk"]);
+    expect(tree.getNodeByCodecMessageId("msg-shared")?.runId).toBe("trunk");
+  });
+
+  it("ignores supersedes on user inputs and suspended-run continuations", () => {
+    const tree = createTestTree();
+
+    createRunNode(tree, "trunk", "msg-trunk", 1);
+    createRunNode(tree, "user", "msg-user", 2, {
+      role: "user",
+      supersedes: "trunk",
+    });
+    createRunNode(tree, "resume", "msg-resume", 3, {
+      role: "assistant",
+      runContinue: true,
+      supersedes: "trunk",
+    });
+
+    expect(tree.getRunNodes().map((node) => node.runId)).toEqual(["trunk", "user", "resume"]);
+  });
+
   it("deletes unreachable turns and descendants by codec message id", () => {
     const tree = createTestTree();
 
@@ -282,6 +337,7 @@ interface HeaderOptions {
   inputClientId?: string;
   invocationId?: string;
   runContinue?: boolean;
+  supersedes?: string;
   runReason?: RunEndReason;
 }
 
@@ -313,6 +369,7 @@ function headers(options: HeaderOptions): HeaderMap {
   set(map, HEADER_INPUT_CLIENT_ID, options.inputClientId);
   set(map, HEADER_INVOCATION_ID, options.invocationId);
   set(map, HEADER_RUN_CONTINUE, bool(options.runContinue));
+  set(map, HEADER_SUPERSEDES, options.supersedes);
   set(map, HEADER_RUN_REASON, options.runReason);
   return map;
 }

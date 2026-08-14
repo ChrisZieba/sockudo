@@ -24,6 +24,7 @@ import {
   HEADER_ROLE,
   HEADER_RUN_CONTINUE,
   HEADER_STATUS,
+  HEADER_SUPERSEDES,
   HEADER_STEP_CLIENT_ID,
   HEADER_STEP_ID,
   HEADER_STEP_REASON,
@@ -80,6 +81,7 @@ describe("constants", () => {
       HEADER_PARENT,
       HEADER_FORK_OF,
       HEADER_MSG_REGENERATE,
+      HEADER_SUPERSEDES,
       HEADER_ERROR_CODE,
       HEADER_ERROR_MESSAGE,
       HEADER_INPUT_CLIENT_ID,
@@ -103,6 +105,7 @@ describe("constants", () => {
       "parent",
       "fork-of",
       "msg-regenerate",
+      "supersedes",
       "error-code",
       "error-message",
       "input-client-id",
@@ -188,6 +191,7 @@ describe("header utilities", () => {
       parent: "parent-1",
       forkOf: "fork-1",
       regenerates: true,
+      supersedes: "turn-old",
       invocationId: "inv-1",
       inputClientId: "client-2",
       inputEventId: "event-1",
@@ -202,6 +206,7 @@ describe("header utilities", () => {
     expect(reader.string(HEADER_PARENT)).toBe("parent-1");
     expect(reader.string(HEADER_FORK_OF)).toBe("fork-1");
     expect(reader.string(HEADER_MSG_REGENERATE)).toBe("fork-1");
+    expect(reader.string(HEADER_SUPERSEDES)).toBe("turn-old");
     expect(reader.string(HEADER_INVOCATION_ID)).toBe("inv-1");
     expect(reader.string(HEADER_INPUT_CLIENT_ID)).toBe("client-2");
     expect(reader.string(HEADER_EVENT_ID)).toBe("event-1");

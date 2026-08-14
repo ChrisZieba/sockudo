@@ -1,5 +1,12 @@
 import type { ReducerMeta, Regenerate, UserMessage } from "../../core/codec/index.js";
-import type { AI, MessageTrackers, VercelInput, VercelOutput, VercelProjection } from "./events.js";
+import type {
+  AI,
+  ForkSeed,
+  MessageTrackers,
+  VercelInput,
+  VercelOutput,
+  VercelProjection,
+} from "./events.js";
 import { transitionToolPart } from "./tool-transitions.js";
 
 /** Creates an empty Vercel projection. */
@@ -38,6 +45,10 @@ export function foldVercelEvent(
   event: VercelInput | VercelOutput,
   meta: ReducerMeta,
 ): VercelProjection {
+  const forkSeed = forkSeedOf(event);
+  if (forkSeed !== undefined && projection.messages.length === 0) {
+    seedForkProjection(projection, forkSeed);
+  }
   if (isUserMessage(event)) {
     const message = userMessagePayload(event);
     if (message) {
@@ -72,6 +83,35 @@ export function foldVercelEvent(
   }
   retryPendingToolResolutions(projection);
   return projection;
+}
+
+function forkSeedOf(event: VercelInput | VercelOutput): ForkSeed | undefined {
+  return "forkSeed" in event ? event.forkSeed : undefined;
+}
+
+function seedForkProjection(projection: VercelProjection, seed: ForkSeed): void {
+  for (const source of seed.messages) {
+    const message: AI.UIMessage = {
+      ...source,
+      parts: source.parts.map((part) => ({ ...part })),
+    };
+    projection.messages.push(message);
+    for (let partIndex = 0; partIndex < message.parts.length; partIndex += 1) {
+      const part = message.parts[partIndex];
+      if (part?.type !== "dynamic-tool") {
+        continue;
+      }
+      projection.trackers.tools.set(part.toolCallId, {
+        messageId: message.id,
+        partIndex,
+        inputText: "",
+      });
+      const approvalId = part.approval?.id ?? part.approval?.approvalId;
+      if (approvalId !== undefined) {
+        projection.trackers.approvals.set(approvalId, part.toolCallId);
+      }
+    }
+  }
 }
 
 function foldUserMessage(

@@ -1,4 +1,4 @@
-use super::{batch_events, events, idempotency_cache_key};
+use super::{batch_events, batch_idempotency_cache_key, events, idempotency_cache_key};
 use crate::http_handler::test_support::{empty_event_query, test_app};
 #[cfg(feature = "push")]
 use crate::http_handler::test_support::{test_push_admission, test_push_queue, test_push_store};
@@ -185,4 +185,166 @@ async fn batch_publish_fails_closed_when_idempotency_cache_is_unavailable() {
     };
     let response = error.into_response();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn batch_publish_rejects_empty_per_event_idempotency_key() {
+    let cache = Arc::new(MemoryCacheManager::new(
+        "batch-empty-key".to_string(),
+        MemoryCacheOptions::default(),
+    ));
+    let result = batch_events(
+        Path("app-1".to_string()),
+        Query(empty_event_query()),
+        Extension(test_app()),
+        #[cfg(feature = "push")]
+        test_push_store(),
+        #[cfg(feature = "push")]
+        test_push_queue(),
+        #[cfg(feature = "push")]
+        test_push_admission(),
+        State(handler_with_cache(cache)),
+        HeaderMap::new(),
+        Uri::from_static("/apps/app-1/batch_events"),
+        RawQuery(None),
+        Json(BatchPusherApiMessage {
+            batch: vec![event("")],
+        }),
+    )
+    .await;
+
+    let error = match result {
+        Ok(_) => panic!("empty per-event key must be rejected"),
+        Err(error) => error,
+    };
+    assert_eq!(error.into_response().status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn batch_publish_rejects_overlength_per_event_idempotency_key() {
+    let cache = Arc::new(MemoryCacheManager::new(
+        "batch-long-key".to_string(),
+        MemoryCacheOptions::default(),
+    ));
+    let overlength_key = "x".repeat(ServerOptions::default().idempotency.max_key_length + 1);
+    let result = batch_events(
+        Path("app-1".to_string()),
+        Query(empty_event_query()),
+        Extension(test_app()),
+        #[cfg(feature = "push")]
+        test_push_store(),
+        #[cfg(feature = "push")]
+        test_push_queue(),
+        #[cfg(feature = "push")]
+        test_push_admission(),
+        State(handler_with_cache(cache)),
+        HeaderMap::new(),
+        Uri::from_static("/apps/app-1/batch_events"),
+        RawQuery(None),
+        Json(BatchPusherApiMessage {
+            batch: vec![event(&overlength_key)],
+        }),
+    )
+    .await;
+
+    let error = match result {
+        Ok(_) => panic!("overlength per-event key must be rejected"),
+        Err(error) => error,
+    };
+    assert_eq!(error.into_response().status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn batch_request_key_does_not_shadow_matching_event_key() {
+    let cache = Arc::new(MemoryCacheManager::new(
+        "batch-key-domains".to_string(),
+        MemoryCacheOptions::default(),
+    ));
+    let mut headers = HeaderMap::new();
+    headers.insert("x-idempotency-key", "shared-key".parse().unwrap());
+
+    let response = batch_events(
+        Path("app-1".to_string()),
+        Query(empty_event_query()),
+        Extension(test_app()),
+        #[cfg(feature = "push")]
+        test_push_store(),
+        #[cfg(feature = "push")]
+        test_push_queue(),
+        #[cfg(feature = "push")]
+        test_push_admission(),
+        State(handler_with_cache(cache.clone())),
+        headers,
+        Uri::from_static("/apps/app-1/batch_events"),
+        RawQuery(None),
+        Json(BatchPusherApiMessage {
+            batch: vec![event("shared-key")],
+        }),
+    )
+    .await
+    .expect("batch should publish")
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        cache
+            .get(&idempotency_cache_key("app-1", "shared-key"))
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("1")
+    );
+    assert_eq!(
+        cache
+            .get(&batch_idempotency_cache_key("app-1", "shared-key"))
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("{}")
+    );
+}
+
+#[tokio::test]
+async fn oversized_batch_is_rejected_before_its_idempotency_key_is_claimed() {
+    let cache = Arc::new(MemoryCacheManager::new(
+        "batch-validation-before-claim".to_string(),
+        MemoryCacheOptions::default(),
+    ));
+    let mut app = test_app();
+    app.policy_mut().limits.max_event_batch_size = Some(1);
+    let mut headers = HeaderMap::new();
+    headers.insert("x-idempotency-key", "oversized-batch".parse().unwrap());
+
+    let result = batch_events(
+        Path("app-1".to_string()),
+        Query(empty_event_query()),
+        Extension(app),
+        #[cfg(feature = "push")]
+        test_push_store(),
+        #[cfg(feature = "push")]
+        test_push_queue(),
+        #[cfg(feature = "push")]
+        test_push_admission(),
+        State(handler_with_cache(cache.clone())),
+        headers,
+        Uri::from_static("/apps/app-1/batch_events"),
+        RawQuery(None),
+        Json(BatchPusherApiMessage {
+            batch: vec![event("first"), event("second")],
+        }),
+    )
+    .await;
+
+    let error = match result {
+        Ok(_) => panic!("oversized batch must be rejected"),
+        Err(error) => error,
+    };
+    assert_eq!(error.into_response().status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        cache
+            .get(&batch_idempotency_cache_key("app-1", "oversized-batch"))
+            .await
+            .unwrap(),
+        None
+    );
 }

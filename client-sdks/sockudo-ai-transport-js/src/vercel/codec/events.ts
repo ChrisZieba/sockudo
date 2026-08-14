@@ -249,6 +249,12 @@ export namespace AI {
     | { type: `data-${string}`; id?: string; data: unknown; transient?: boolean };
 }
 
+/** Full suspended-run projection carried into a client tool-result fork. */
+export interface ForkSeed {
+  /** Messages copied into the fork before its tool resolution is folded. */
+  messages: readonly AI.UIMessage[];
+}
+
 /** Tool result input from client-side tool execution. */
 export interface ToolResult {
   /** Discriminator. */
@@ -257,6 +263,8 @@ export interface ToolResult {
   toolCallId: string;
   /** Tool output. */
   output: unknown;
+  /** Suspended-run projection used when this result opens a new fork. */
+  forkSeed?: ForkSeed;
 }
 
 /** Tool result error input from client-side tool execution. */
@@ -267,6 +275,8 @@ export interface ToolResultError {
   toolCallId: string;
   /** Error message. */
   message: string;
+  /** Suspended-run projection used when this result opens a new fork. */
+  forkSeed?: ForkSeed;
 }
 
 /** Tool approval response input. */
@@ -281,6 +291,8 @@ export interface ToolApprovalResponse {
   approved: boolean;
   /** Optional denial reason. */
   reason?: string;
+  /** Suspended-run projection used when this response accompanies a fork. */
+  forkSeed?: ForkSeed;
 }
 
 /** Client-to-agent Vercel transport input. */

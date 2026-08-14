@@ -7,6 +7,7 @@ import type {
 } from "../../core/transport/index.js";
 import type {
   AI,
+  ForkSeed,
   ToolApprovalResponse,
   ToolResult,
   ToolResultError,
@@ -306,14 +307,40 @@ class SockudoChatTransport implements ChatTransport {
       const treeMessage = messageById(this.session.view.getMessages(), last.id);
       const metadata = this.session.view.getMessageMetadata(last.id);
       if (treeMessage && metadata) {
-        const inputs = deriveContinuationInputs(last, treeMessage);
+        const baseInputs = deriveContinuationInputs(last, treeMessage);
+        const parent = predecessorId(options.messages, last.id);
+        const trunk = this.session.tree.getRunNode(metadata.runId);
+        const shouldFork = baseInputs.some(isToolResultInput);
+        if (shouldFork && parent !== undefined && trunk !== undefined) {
+          const forkSeed: ForkSeed = { messages: trunk.projection.messages };
+          const inputs = withForkSeed(baseInputs, forkSeed);
+          return {
+            history: options.messages,
+            messages: [],
+            parent,
+            forkOf: last.id,
+            active: this.session.view.sendInput(
+              inputs,
+              this.sendOptions(options, {
+                messageId: metadata.codecMessageId,
+                role: "assistant",
+                supersedes: metadata.runId,
+                parent,
+                forkOf: last.id,
+                trigger: "submit-message",
+                messages: [],
+                history: options.messages,
+              }),
+            ) as Promise<ClientRun<VercelInput, VercelOutput>>,
+          };
+        }
         return {
           history: options.messages,
           messages: [],
           parent: last.id,
           forkOf: last.id,
           active: this.session.view.sendInput(
-            inputs,
+            baseInputs,
             this.sendOptions(options, {
               messageId: metadata.codecMessageId,
               runId: metadata.runId,
@@ -360,7 +387,11 @@ class SockudoChatTransport implements ChatTransport {
 
   private sendOptions(
     options: ChatTransportSendMessagesOptions,
-    context: SendMessagesRequestContext & { runId?: string },
+    context: SendMessagesRequestContext & {
+      role?: "user" | "assistant";
+      runId?: string;
+      supersedes?: string;
+    },
   ): SendOptions {
     const preparedContext = stripRunId({
       ...context,
@@ -386,7 +417,9 @@ class SockudoChatTransport implements ChatTransport {
       body,
       headers,
       waitForRunStart: false,
+      ...(context.role !== undefined ? { role: context.role } : {}),
       ...(context.runId !== undefined ? { runId: context.runId } : {}),
+      ...(context.supersedes !== undefined ? { supersedes: context.supersedes } : {}),
       ...(context.parent !== undefined ? { parent: context.parent } : {}),
       ...(context.forkOf !== undefined ? { forkOf: context.forkOf } : {}),
       trigger: context.trigger,
@@ -445,7 +478,11 @@ class SockudoChatTransport implements ChatTransport {
 }
 
 function stripRunId(
-  context: SendMessagesRequestContext & { runId?: string },
+  context: SendMessagesRequestContext & {
+    role?: "user" | "assistant";
+    runId?: string;
+    supersedes?: string;
+  },
 ): SendMessagesRequestContext {
   const result: SendMessagesRequestContext = {
     trigger: context.trigger,
@@ -465,6 +502,14 @@ function stripRunId(
     result.forkOf = context.forkOf;
   }
   return result;
+}
+
+function isToolResultInput(input: VercelInput): boolean {
+  return "type" in input && (input.type === "tool-result" || input.type === "tool-result-error");
+}
+
+function withForkSeed(inputs: readonly VercelInput[], forkSeed: ForkSeed): VercelInput[] {
+  return inputs.map((input) => ("type" in input ? { ...input, forkSeed } : input));
 }
 
 function forkOnUnresolvedTool(

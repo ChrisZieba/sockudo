@@ -372,6 +372,7 @@ pub(super) async fn run_ably_realtime_socket(
         AblyOutbound::channel(format, OutboundLimits::default(), Arc::clone(&hub.metrics));
     let (peer_close_tx, mut peer_close_rx) = crossfire::oneshot::oneshot();
     let mut peer_close_tx = Some(peer_close_tx);
+    let (writer_shutdown_tx, mut writer_shutdown_rx) = crossfire::oneshot::oneshot();
     let writer_task = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -380,6 +381,27 @@ pub(super) async fn run_ably_realtime_socket(
                         // Reading the peer close schedules the required close
                         // response in sockudo-ws. Flush it immediately so the
                         // browser does not wait for session cleanup.
+                        let _ = writer.flush().await;
+                        return;
+                    }
+                    break;
+                }
+                shutdown = &mut writer_shutdown_rx => {
+                    if shutdown.is_ok() {
+                        // A protocol CLOSE may leave sender clones in recovery
+                        // state. Drain everything already accepted before
+                        // closing the WebSocket instead of waiting for every
+                        // clone to be dropped.
+                        while let Some(frame) = outbound.try_recv() {
+                            let frame = match format {
+                                AblyFormat::Json => Message::Text((*frame.bytes).clone()),
+                                AblyFormat::MsgPack => Message::Binary((*frame.bytes).clone()),
+                            };
+                            if writer.send(frame).await.is_err() {
+                                return;
+                            }
+                        }
+                        let _ = writer.close(1000, "Ably session closed").await;
                         let _ = writer.flush().await;
                         return;
                     }
@@ -402,8 +424,8 @@ pub(super) async fn run_ably_realtime_socket(
     });
     let heartbeat_sender = sender.clone();
     let heartbeat_task = tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(Duration::from_millis(DEFAULT_MAX_IDLE_INTERVAL_MS / 2));
+        let period = Duration::from_millis(DEFAULT_MAX_IDLE_INTERVAL_MS / 2);
+        let mut interval = tokio::time::interval_at(TokioInstant::now() + period, period);
         loop {
             interval.tick().await;
             if heartbeat_sender
@@ -426,6 +448,7 @@ pub(super) async fn run_ably_realtime_socket(
         hub.forget_connection(&connection_key).await;
         hub.release_session_owner(&app.id, &connection_id, &session_id)
             .await;
+        writer_shutdown_tx.send(());
         drop(sender);
         heartbeat_task.abort();
         let _ = heartbeat_task.await;
@@ -446,6 +469,7 @@ pub(super) async fn run_ably_realtime_socket(
         hub.forget_connection(&connection_key).await;
         hub.release_session_owner(&app.id, &connection_id, &session_id)
             .await;
+        writer_shutdown_tx.send(());
         drop(sender);
         heartbeat_task.abort();
         let _ = heartbeat_task.await;
@@ -493,6 +517,11 @@ pub(super) async fn run_ably_realtime_socket(
         }
     });
 
+    let mut attached_channels = if matches!(connection_start, AblyConnectionStart::Resumed { .. }) {
+        hub.resume_live_subscribers(&app.id, &connection_id, &session_id, &sender)
+    } else {
+        HashMap::new()
+    };
     send_protocol(
         &sender,
         connected_message(
@@ -511,7 +540,6 @@ pub(super) async fn run_ably_realtime_socket(
         "socket connected"
     );
 
-    let mut attached_channels = HashMap::new();
     let (command_tx, command_rx) = crossfire::mpsc::bounded_async(8);
     let previous_session = hub.register_live_session(
         connection_id.clone(),
@@ -657,7 +685,14 @@ pub(super) async fn run_ably_realtime_socket(
                         .unwrap_or_else(|poisoned| poisoned.into_inner()) = connection_key;
                 }
                 Err(error) => {
-                    send_protocol_disconnected(&sender, error.code, error.message);
+                    send_protocol(
+                        &sender,
+                        AblyProtocolMessage {
+                            action: ACTION_ERROR,
+                            error: Some(error_info(error.status, error.code, error.message)),
+                            ..empty_protocol_message(ACTION_ERROR)
+                        },
+                    );
                     break;
                 }
             }
@@ -753,23 +788,27 @@ pub(super) async fn run_ably_realtime_socket(
             );
         }
     }
-    let attached_channel_count = attached_channels.len();
-    for (requested, _) in attached_channels {
-        if let Ok(channel) = AblyChannelName::parse(requested)
-            && let Err(error) = hub.unsubscribe(&app.id, &channel, &session_id).await
-        {
-            warn!(
-                protocol = "ably",
-                app_id = %app.id,
-                channel = %channel.requested(),
-                error = %error,
-                "channel close stats persistence failed"
-            );
-        }
-    }
     let owns_session = hub
         .session_is_current(&app.id, &connection_id, &session_id)
         .await;
+    let attached_channel_count = attached_channels.len();
+    if !graceful_close {
+        hub.mark_session_subscribers_recoverable(&app.id, &session_id);
+    } else {
+        for (requested, _) in attached_channels {
+            if let Ok(channel) = AblyChannelName::parse(requested)
+                && let Err(error) = hub.unsubscribe(&app.id, &channel, &session_id).await
+            {
+                warn!(
+                    protocol = "ably",
+                    app_id = %app.id,
+                    channel = %channel.requested(),
+                    error = %error,
+                    "channel close stats persistence failed"
+                );
+            }
+        }
+    }
     connection_lease_task.abort();
     let _ = connection_lease_task.await;
     hub.unregister_live_session(&connection_id, &session_id);
@@ -842,6 +881,7 @@ pub(super) async fn run_ably_realtime_socket(
     }
     heartbeat_task.abort();
     let _ = heartbeat_task.await;
+    writer_shutdown_tx.send(());
     drop(sender);
     let _ = writer_task.await;
     hub.stats.connection_closed(&app.id);
@@ -1148,7 +1188,7 @@ pub(super) async fn handle_ably_protocol_message(
                 send_channel_error(
                     sender,
                     channel.requested(),
-                    StatusCode::FORBIDDEN,
+                    StatusCode::UNAUTHORIZED,
                     40160,
                     "Ably token has no capability matching the requested channel modes",
                 );
@@ -1160,6 +1200,31 @@ pub(super) async fn handle_ably_protocol_message(
                     .snapshot(&app.id, channel.base())
                     .await?
                     .is_empty();
+            let (resumed_attach, recovery_gate) =
+                hub.take_resumed_subscriber_message(&app.id, &channel, session_id);
+            if resumed_attach {
+                inbound.channel_serial = None;
+                attach_options.attach_resume = true;
+            }
+            if recovery_gate.overflowed {
+                attached_channels.remove(channel.requested());
+                if let Err(error) = hub.unsubscribe(&app.id, &channel, session_id).await {
+                    tracing::warn!(
+                        error = %error,
+                        app_id = %app.id,
+                        channel = channel.base(),
+                        "overflowed recovered subscriber cleanup failed"
+                    );
+                }
+                send_channel_error(
+                    sender,
+                    channel.requested(),
+                    StatusCode::BAD_REQUEST,
+                    90003,
+                    "unable to recover channel because continuity buffering overflowed",
+                );
+                return Ok(AblyProtocolControl::Continue);
+            }
             let attachment_state = AblyConnectionAttachment {
                 channel: channel.clone(),
                 params: attach_options.params.clone(),
@@ -1196,10 +1261,10 @@ pub(super) async fn handle_ably_protocol_message(
                 inbound.channel_serial,
                 attach_options,
             );
-            if tokio::time::timeout(Duration::from_millis(hub.config.attach_timeout_ms), attach)
-                .await
-                .is_err()
-            {
+            let attach_result =
+                tokio::time::timeout(Duration::from_millis(hub.config.attach_timeout_ms), attach)
+                    .await;
+            if attach_result.is_err() {
                 if let Err(error) = hub.unsubscribe(&app.id, &channel, session_id).await {
                     warn!(
                         protocol = "ably",
@@ -1223,6 +1288,13 @@ pub(super) async fn handle_ably_protocol_message(
                         ..empty_protocol_message(ACTION_DETACHED)
                     },
                 );
+            } else {
+                for message in recovery_gate.messages {
+                    if let Err(error) = sender.send_protocol(&message, OutboundPriority::Data) {
+                        debug!(protocol = "ably", error = %error, "connection recovery replay unavailable");
+                        break;
+                    }
+                }
             }
         }
         ACTION_DETACH => {
@@ -1915,7 +1987,14 @@ pub(super) async fn handle_ably_attach(
         } else {
             Vec::new()
         };
-        hub.attach_clean(&app.id, channel, attachment(), attach_serial, replay);
+        hub.attach_clean(
+            &app.id,
+            channel,
+            attachment(),
+            attach_serial,
+            replay,
+            attach_resume,
+        );
         info!(
             protocol = "ably",
             app_id = %app.id,

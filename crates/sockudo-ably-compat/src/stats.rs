@@ -24,7 +24,10 @@ use thiserror::Error;
 
 const STATS_KEY_VERSION: &str = "stats:v1";
 const STATS_CURSOR_VERSION: u8 = 1;
-const MAX_FIXTURE_FIELDS: usize = 512;
+// The legacy Ably stats shape contains more than 512 numeric leaves when an
+// SDK serializes the complete object, including zero-valued counters. Keep the
+// ingest path bounded while accepting that canonical wire representation.
+const MAX_FIXTURE_FIELDS: usize = 2_048;
 const MAX_FIELD_NAME_BYTES: usize = 256;
 const MAX_FIXTURE_DEPTH: usize = 16;
 
@@ -405,6 +408,10 @@ pub(crate) struct StatsInterval {
     pub(crate) entries: BTreeMap<String, u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) in_progress: Option<String>,
+    /// Legacy SDKs (including ably-go) decode the pre-`entries` nested stats
+    /// fields. Emit both representations from the same canonical counters.
+    #[serde(flatten)]
+    pub(crate) legacy: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug)]
@@ -870,17 +877,22 @@ impl StatsAggregator {
         let current_id = query.unit.interval_id(now_ms)?;
         let items = buckets
             .iter()
-            .map(|bucket| StatsInterval {
-                interval_id: bucket.interval_id.clone(),
-                unit: query.unit.as_str().to_string(),
-                app_id: bucket.app_id.clone(),
-                schema: "sockudo:ably-stats:v1".to_string(),
-                entries: bucket
+            .map(|bucket| {
+                let entries = bucket
                     .entries
                     .iter()
                     .map(|(name, value)| (name.clone(), value.value))
-                    .collect(),
-                in_progress: (bucket.interval_id == current_id).then(|| bucket.interval_id.clone()),
+                    .collect::<BTreeMap<_, _>>();
+                StatsInterval {
+                    interval_id: bucket.interval_id.clone(),
+                    unit: query.unit.as_str().to_string(),
+                    app_id: bucket.app_id.clone(),
+                    schema: "sockudo:ably-stats:v1".to_string(),
+                    legacy: legacy_stats_fields(&entries),
+                    entries,
+                    in_progress: (bucket.interval_id == current_id)
+                        .then(|| bucket.interval_id.clone()),
+                }
             })
             .collect::<Vec<_>>();
         let next_cursor = has_more
@@ -1035,8 +1047,22 @@ fn bucket_from_fixture(app_id: &str, fixture: &Value) -> Result<StatsBucket, Sta
         let Some(transports) = object.get(direction).and_then(Value::as_object) else {
             continue;
         };
-        for values in transports.values() {
-            collect_fixture_numbers(&format!("messages.{direction}.all"), values, &mut bucket, 0)?;
+        let has_explicit_all = transports.contains_key("all");
+        for (transport, values) in transports {
+            if transport != "all" && !has_explicit_all {
+                collect_fixture_numbers(
+                    &format!("messages.{direction}.all"),
+                    values,
+                    &mut bucket,
+                    0,
+                )?;
+            }
+            collect_fixture_numbers(
+                &format!("messages.{direction}.{transport}"),
+                values,
+                &mut bucket,
+                0,
+            )?;
         }
     }
     for (name, value) in object {
@@ -1046,6 +1072,52 @@ fn bucket_from_fixture(app_id: &str, fixture: &Value) -> Result<StatsBucket, Sta
         collect_fixture_numbers(name, value, &mut bucket, 0)?;
     }
     Ok(bucket)
+}
+
+fn legacy_stats_fields(entries: &BTreeMap<String, u64>) -> BTreeMap<String, Value> {
+    let mut legacy = BTreeMap::new();
+    for (name, value) in entries {
+        let path = name
+            .strip_prefix("messages.inbound.")
+            .map(|suffix| format!("inbound.{suffix}"))
+            .or_else(|| {
+                name.strip_prefix("messages.outbound.")
+                    .map(|suffix| format!("outbound.{suffix}"))
+            })
+            .unwrap_or_else(|| name.clone());
+        insert_stats_value(&mut legacy, &path, *value);
+    }
+    legacy
+}
+
+fn insert_stats_value(root: &mut BTreeMap<String, Value>, path: &str, value: u64) {
+    let mut segments = path.split('.').peekable();
+    let Some(first) = segments.next() else {
+        return;
+    };
+    if segments.peek().is_none() {
+        root.insert(first.to_string(), Value::from(value));
+        return;
+    }
+
+    let entry = root
+        .entry(first.to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let mut object = entry
+        .as_object_mut()
+        .expect("stats field prefixes must not conflict with scalar fields");
+    while let Some(segment) = segments.next() {
+        if segments.peek().is_none() {
+            object.insert(segment.to_string(), Value::from(value));
+            break;
+        }
+        let nested = object
+            .entry(segment.to_string())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        object = nested
+            .as_object_mut()
+            .expect("stats field prefixes must not conflict with scalar fields");
+    }
 }
 
 fn collect_fixture_numbers(
@@ -1231,6 +1303,14 @@ mod tests {
         );
         assert_eq!(hour.items[0].entries["connections.tls.opened"], 15);
         assert_eq!(hour.items[0].entries["connections.tls.peak"], 20);
+
+        let encoded = serde_json::to_value(&hour.items[0]).unwrap();
+        assert_eq!(encoded["inbound"]["realtime"]["messages"]["count"], 110);
+        assert_eq!(encoded["connections"]["tls"]["opened"], 15);
+        assert_eq!(
+            encoded["entries"]["messages.inbound.realtime.messages.count"],
+            110
+        );
 
         for (unit, expected) in [("day", "2026-02-03"), ("month", "2026-02")] {
             let page = aggregator

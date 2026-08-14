@@ -10,6 +10,11 @@ REST and WebSocket compatibility, excluding Live Objects**. It also supports
 Ably AI Transport clients through Sockudo's native mutable-message, history,
 recovery, presence, annotation, stats, and push services.
 
+> **Community support notice:** Sockudo and this compatibility layer are
+> community-built and community-maintained. They are not Ably products, and
+> Ably does not provide support for them. Use the Sockudo community and project
+> support channels for help.
+
 The facade lives in the optional `sockudo-ably-compat` workspace crate. The
 server constructs one `AblyCompatRuntime` per server instance and merges its
 routes. Socket writers and attachment state remain local to that process;
@@ -28,30 +33,29 @@ upstream-pending bodies, and AI Transport have separate reports and pass/fail
 states. A result from one lane is never used to claim another lane passed.
 
 Pull requests also run a moving latest-upstream gate. It resolves and records
-the current `main` commits of `ably-js` and `ably-ai-transport-js`, forces
-realtime cases to WebSocket, runs every discovered Node REST/realtime/unit file
-outside the Live Objects and multi-transport files, and runs the complete AI
-Transport unit and integration suites. Three exact SDK/harness-only assertions
-are filtered: the Comet transport inventory and two default TLS/port assertions
-that local sandbox routing overrides. This gate detects upstream drift but does
-not replace the immutable pinned reports used for release claims.
+the current `main` commits of `ably-js`, `ably-go`, and
+`ably-ai-transport-js`. It runs ably-js over WebSocket, the official ably-go
+unit and JSON/MsgPack integration suites, and the complete AI Transport unit
+and integration suites. The structurally defined exceptions are the two Live
+Objects files, the multi-transport file, the Comet inventory assertion, and two
+local-routing TLS/port assertions. The Go and AI Transport suites have no test
+exclusions.
 
-Current release evidence is not fully green. The fresh Node default lane is
-575 passed with no failures, and the AIT lane is 50/50. The strict lane has four
-pinned-fixture failures before its wire assertion; Chromium, Firefox, and WebKit
-remain red on fatal browser diagnostics and/or assertions. See the dated
-`sockudo-compatibility/findings/2026-07-15-final-verification.md` report before
-publishing an unqualified compatibility claim.
+Fresh pinned source-build evidence is green: Node defaults are 575/575,
+strict completeness is 250/250, Chromium defaults are 574/574 with no browser
+boundary errors, Chromium strict is 250/250, and AI Transport is 50/50. A new
+published Sockudo tag must still pass the released-binary workflow before that
+tag is promoted as verified.
 
 ## Compatibility Matrix
 
 | Surface | Status | Scope |
 | --- | --- | --- |
-| Ably Realtime WebSocket JSON/MsgPack protocol | Node-default evidence green; browser gates red | Root WebSocket endpoint accepts Ably `ProtocolMessage` connect, attach, detach, message, presence, auth, heartbeat, ACK, and NACK flows covered by pinned `ably@2.21.0` JSON and MsgPack lanes. Non-WebSocket transports are intentionally unsupported. |
-| Ably REST time/token/history/message reads and publish | Node-default evidence green; browser gates red | `/time`, `/keys/{keyName}/requestToken`, `/keys/{keyName}/revokeTokens`, `/messages` batch publish, `/channels/{channel}/messages`, message lookup, version lookup, and presence reads/history exist for the selected SDK path. Full Ably REST API parity is not claimed. |
+| Ably Realtime WebSocket JSON/MsgPack protocol | Node, Chromium, and Go source evidence green | Root WebSocket endpoint accepts Ably `ProtocolMessage` connect, attach, detach, message, presence, auth, heartbeat, ACK, and NACK flows covered by pinned `ably@2.21.0` and ably-go JSON/MsgPack lanes. Non-WebSocket transports are intentionally unsupported. |
+| Ably REST time/token/history/message reads and publish | Node, Chromium, and Go source evidence green | `/time`, `/keys/{keyName}/requestToken`, `/keys/{keyName}/revokeTokens`, `/messages` batch publish, `/channels/{channel}/messages`, the Go SDK's `/channels/{channel}/history` alias, message lookup, version lookup, and presence reads/history exist for the selected SDK path. Full Ably REST API parity is not claimed. |
 | Run lifecycle vocabulary | Supported | Native AI Transport docs and fixtures use `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, `ai-run-end`, and `ai-cancel`. |
 | Legacy turn vocabulary | Legacy alias | `ai-turn-start`, `ai-turn-end`, `turn-id`, and `turn-reason` remain accepted for migration, but new docs and demos use run vocabulary. |
-| Mutable messages and output streaming | Node-default evidence green; browser REST gate red | Ably `publish`, `appendMessage`, `updateMessage`, `deleteMessage`, `getMessage`, `getMessageVersions`, and history map to Sockudo versioned messages. |
+| Mutable messages and output streaming | Pinned Node and Chromium evidence green | Ably `publish`, `appendMessage`, `updateMessage`, `deleteMessage`, `getMessage`, `getMessageVersions`, and history map to Sockudo versioned messages. |
 | Message annotations | Supported for the pinned annotation suite | Realtime action `21`, REST create/delete/list, summaries, pagination, JSON, and MsgPack translate onto Sockudo's native annotation store and projection pipeline. Protocol V1 remains unchanged. |
 
 Compatibility projections read a shared commit-time message envelope. This

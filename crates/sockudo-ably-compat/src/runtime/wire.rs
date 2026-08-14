@@ -532,6 +532,38 @@ pub(super) fn validate_ably_publish_message(
     Ok(())
 }
 
+pub(super) fn validate_ably_idempotent_batch(messages: &[AblyMessage]) -> Result<(), AppError> {
+    if messages.len() <= 1 || messages.iter().all(|message| message.id.is_none()) {
+        return Ok(());
+    }
+    let mut base = None::<&str>;
+    for (index, message) in messages.iter().enumerate() {
+        let valid = message
+            .id
+            .as_deref()
+            .and_then(|id| id.rsplit_once(':'))
+            .filter(|(candidate, _)| !candidate.is_empty())
+            .and_then(|(candidate, serial)| {
+                serial
+                    .parse::<usize>()
+                    .ok()
+                    .map(|serial| (candidate, serial))
+            })
+            .is_some_and(|(candidate, serial)| {
+                let expected_base = *base.get_or_insert(candidate);
+                candidate == expected_base && serial == index
+            });
+        if !valid {
+            return Err(AppError::Protocol {
+                status: StatusCode::BAD_REQUEST,
+                code: 40031,
+                message: "message IDs in a multi-message publish must share a base and use consecutive serials starting at zero".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn message_data_to_ably_value(data: &MessageData) -> Result<Value, String> {
     sonic_rs::to_value(data).map_err(|error| error.to_string())
 }

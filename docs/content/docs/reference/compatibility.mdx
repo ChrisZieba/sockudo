@@ -7,6 +7,11 @@ icon: BadgeCheck
 Sockudo's compatibility rule is simple: Protocol V1 preserves Pusher behavior; Protocol V2 adds
 Sockudo-native behavior.
 
+> Sockudo's third-party compatibility layers are community-built and
+> community-maintained. They are not products of Pusher or Ably, and those
+> companies do not provide support for Sockudo. Use Sockudo's project and
+> community support channels for help.
+
 ## Pusher-compatible
 
 | Feature | Compatibility |
@@ -69,21 +74,23 @@ AI Transport is additive and default-off. The server release order is:
 
 Sockudo does not claim full Ably platform compatibility. The evidence-backed wording is **Ably REST
 and WebSocket compatibility, excluding Live Objects**. The opt-in `ably-compat` surface is validated
-in two layers. Pull requests fetch the current `main` heads of `ably-js` and
-`ably-ai-transport-js`, record their resolved commit IDs, and run the Node REST/WebSocket and complete
-AI Transport suites against the pull request. Realtime is forced to WebSocket; Live Objects and
-multiple/non-WebSocket transport coverage are excluded. Three named SDK/harness-only assertions are
-also excluded: the Comet inventory and two default TLS/port checks overridden by local routing.
+in two layers. Pull requests fetch the current `main` heads of `ably-js`, `ably-go`, and
+`ably-ai-transport-js`, record their resolved commit IDs, and run the Node REST/WebSocket, official
+Go unit and JSON/MsgPack integration, and complete AI Transport suites against the pull request.
+Realtime is forced to WebSocket; Live Objects and multiple/non-WebSocket transport coverage are
+excluded. Three named ably-js SDK/harness-only assertions are also excluded: the Comet inventory
+and two default TLS/port checks overridden by local routing. The Go and AI Transport suites have no
+test exclusions.
 
-Pinned Node, browser, strict-upstream-pending, and AI Transport manifests remain the source of
+Pinned Node, browser, strict-upstream-pending, Go, and AI Transport manifests remain the source of
 reproducible release evidence. Upstream-default pending results are audited and executed separately,
 without changing their bodies, assertions, or expected values. A latest-upstream or default-lane
 pass is not reported as a strict-completeness, browser, or immutable release-evidence pass.
 
-The current dated evidence is not release-complete: Node defaults are green at 575 passes and AIT
-is 50/50, while strict completeness and all browser release lanes remain red. The authoritative
-counts and blockers are recorded in
-`sockudo-compatibility/findings/2026-07-15-final-verification.md`.
+The current pinned source-build evidence is green: Node defaults are 575/575, strict completeness
+is 250/250, Chromium defaults are 574/574 with no browser-boundary errors, Chromium strict is
+250/250, and AIT is 50/50. Release verification is separate: an explicit published tag must pass
+the checksum-verifying released-binary workflow before that tag is promoted as verified.
 
 The implementation is isolated in `crates/sockudo-ably-compat` and constructed
 per server instance. Its realtime surface is WebSocket-only; Ably fallback

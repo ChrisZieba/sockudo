@@ -1,0 +1,29 @@
+diff --git a/ably/websocket.go b/ably/websocket.go
+--- a/ably/websocket.go
++++ b/ably/websocket.go
+@@ -105,10 +105,22 @@ func dialWebsocket(proto string, u *url.URL, timeout time.Duration, agents map[s
+ 		return nil, errors.New(`invalid protocol "` + proto + `"`)
+ 	}
+ 	if os.Getenv("ABLY_LOCAL_PLAINTEXT_REALTIME") == "1" {
+-		if hostname := u.Hostname(); hostname != "127.0.0.1" && hostname != "localhost" && hostname != "::1" {
+-			return nil, fmt.Errorf("refusing plaintext realtime test transport for non-loopback host %q", hostname)
++		hostname := u.Hostname()
++		localURL := *u
++		if hostname != "127.0.0.1" && hostname != "localhost" && hostname != "::1" {
++			allowed := false
++			for _, fallbackHost := range strings.Split(os.Getenv("ABLY_LOCAL_FALLBACK_HOSTS"), ",") {
++				if strings.TrimSpace(fallbackHost) == hostname {
++					allowed = true
++					break
++				}
++			}
++			endpoint := strings.TrimSpace(os.Getenv("ABLY_LOCAL_REALTIME_ENDPOINT"))
++			if !allowed || (!strings.HasPrefix(endpoint, "127.0.0.1:") && !strings.HasPrefix(endpoint, "localhost:")) {
++				return nil, fmt.Errorf("refusing plaintext realtime test transport for non-loopback host %q", hostname)
++			}
++			localURL.Host = endpoint
+ 		}
+-		localURL := *u
+ 		localURL.Scheme = "ws"
+ 		u = &localURL
+ 	}

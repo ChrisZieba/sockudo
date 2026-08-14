@@ -1,20 +1,97 @@
 # Ably AI Transport Compatibility Test Plan
 
 This plan separates Sockudo-native AI Transport verification from the optional Ably compatibility
-facade. Native AI Transport uses Cargo feature `ai-transport`; the Ably facade additionally requires
-Cargo feature `ably-compat`.
+facade. Native AI Transport uses Cargo feature `ai-transport`; the facade additionally requires
+`ably-compat`.
 
-## Required Local Service
+## Pull Request Latest-Upstream Gate
+
+Every pull request runs `.github/workflows/ably-upstream-compat.yml`. It builds the pull request's
+Sockudo binary once, records all resolved revisions, and tests the current `main` branches of:
+
+- `ably/ably-js` in Node over WebSocket;
+- `ably/ably-go` using its official unit suite and its official integration suite in JSON and
+  MsgPack with the race detector; and
+- `ably/ably-ai-transport-js` using its complete unit and integration suites.
+
+No Ably credentials or long-lived test app are required. The local provisioner creates isolated,
+randomly keyed Sockudo children from repository configuration, so the workflow remains usable from
+fork pull requests.
+
+The discovered ably-js files exclude exactly:
+
+- `test/rest/liveobjects.test.js` and `test/realtime/liveobjects.test.js`, because Live Objects is
+  outside the advertised surface; and
+- `test/realtime/transports.test.js`, because Sockudo realtime is WebSocket-only.
+
+Three exact ably-js assertions are filtered because the local topology necessarily replaces their
+SDK defaults: the Comet transport inventory and two default TLS/port assertions. Every other
+discovered unit, REST, and realtime test runs. `ABLY_TEST_TRANSPORTS=web_socket` forces parameterized
+realtime cases onto the advertised transport.
+
+The ably-go patches load the generated static app, point the JWT authURL and stats-fixture helpers
+at bounded loopback services, and adapt HTTPS/WSS only when the explicit test environment flag is
+set. The exact primary, fallback, and internet-probe hostnames used by the official tests are
+tunnelled through an allowlist while remaining unchanged to the SDK; unlisted non-loopback hosts
+are refused. The idempotent-retry fixtures resolve the provisioned local child's endpoint and port.
+A separate one-line SDK fix ignores a duplicate ACK after the pending queue has already drained,
+matching the SDK's own surrounding contract instead of panicking in the low-latency reconnect
+fixture. Assertions and expected values are unchanged. The AI Transport job has no exclusions.
+
+## Pinned Source-Evidence Gate
+
+Release claims use immutable pins and separate reports:
 
 ```bash
-cargo run -p sockudo --features "v2,ai-transport,ably-compat,redis,postgres,push" -- \
-  --config config/config.toml
+cd sockudo-compatibility
+npm ci
+make conformance
+make strict-completeness
+make browser-install
+make browser-conformance
+make browser-strict
+make go-conformance
+make ait-conformance
 ```
 
-The default repository config uses app key `app-key`, app secret `app-secret`, port `6001`, and AI
-channel prefix `private-ai-`.
+The default, strict-completeness, browser, Go, and AI Transport reports remain independent. A pass
+in one lane is never reported as a pass in another. Reports record SDK and server revisions,
+patch hashes, binary path and SHA-256, selected scope, and exact results.
 
-## Stable Commands
+Browser reports fail on assertion failures, runner errors, page errors, console errors, leaked
+contexts, unexpected external requests, missing definitions, and unexpected pending results.
+Failure screenshots and Playwright traces are retained under
+`sockudo-compatibility/reports/browser-artifacts/`.
+
+The strict lane executes every result expanded from the 11 upstream-pending declarations. The
+pinned source expands those declarations to 27 default results and 250 strict assertions. Patch
+`0006` fixes a setup-only parenthesis/comma typo in four resume expansions; it does not change an
+assertion or expected value. `scope/pending-audit.json` records every stable identity and rationale.
+
+## Published-Release Gate
+
+After publishing a release that includes the compatibility changes, verify the exact artifact:
+
+```bash
+cd sockudo-compatibility
+SOCKUDO_RELEASE_TAG=vX.Y.Z make release-verify
+```
+
+The runner:
+
+1. selects the Linux asset matching the runner architecture;
+2. downloads the archive and detached `.sha256` file from that explicit tag;
+3. validates the checksum manifest, SHA-256 digest, and one-binary archive layout;
+4. runs Node default and strict, Chromium default and strict, Go unit/JSON/MsgPack, and AI
+   Transport against the downloaded binary; and
+5. writes the tag, target, binary hash, pins, patches, scopes, and results into retained evidence.
+
+The standalone harness also exposes a manual `Released Sockudo compatibility` workflow with a
+required `release_tag` input. A tag is not called verified until that workflow completes green.
+
+## Legacy Smoke Commands
+
+The repository-level smoke targets remain useful for narrow iteration:
 
 ```bash
 make ably-compat-test
@@ -23,90 +100,16 @@ make ably-ai-transport-test
 make ably-ai-demo
 ```
 
-## Pull Request Latest-Upstream Gate
-
-Every pull request runs `.github/workflows/ably-upstream-compat.yml`. The workflow checks out the
-current `main` heads of `ably/ably-js` and `ably/ably-ai-transport-js` at job start, records the
-resolved commit IDs in the GitHub step summary and diagnostic artifact, and tests the pull request's
-Sockudo merge commit. No Ably credentials or long-lived test app are required. Sockudo's public
-`tests/ably-compat/upstream-sandbox.mjs` provisioner creates isolated, randomly keyed Sockudo
-children locally from the repository's own config template. This keeps the pull request workflow
-usable from forks without a private-repository token.
-
-The `ably-js` job runs every Node `test/unit`, `test/rest`, and `test/realtime` file discovered on
-upstream `main`, except:
-
-- `test/rest/liveobjects.test.js` and `test/realtime/liveobjects.test.js`, because Live Objects is
-  outside Sockudo's advertised compatibility surface;
-- `test/realtime/transports.test.js`, because Sockudo realtime is WebSocket-only;
-- the exact `node_transports` assertion, which requires the SDK's Comet inventory; and
-- two SDK-default TLS/port assertions whose expected defaults are necessarily replaced by the
-  local sandbox routing. The remaining connectivity, REST fallback, and init assertions still run.
-
-`ABLY_TEST_TRANSPORTS=web_socket` forces all parameterized realtime cases onto WebSocket. New files
-are included automatically; the file list is printed so an upstream rename cannot silently shrink
-coverage. Upstream-default pending tests remain pending, matching Ably's own Node command.
-
-The `ably-ai-transport-js` job has no test exclusions. It runs the complete unit suite followed by
-the complete integration suite against the same local Sockudo sandbox. The two jobs are deliberately
-separate from pinned release evidence: latest-upstream CI detects drift, while a release claim must
-still cite immutable source revisions and retained reports.
-
-Release evidence uses the pinned harness directly and keeps each lane separate:
-
-```bash
-cd sockudo-compatibility
-make conformance
-make strict-completeness
-make browser-conformance
-make browser-matrix
-make browser-strict
-make ait-conformance
-
-cd ..
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test -p sockudo-ably-compat --all-features
-```
-
-Browser reports fail on assertion failures, runner errors, page errors, console errors, leaked
-contexts, and unexpected external requests. Failure screenshots and Playwright traces are retained
-under `sockudo-compatibility/reports/browser-artifacts/`; engine diagnostics are not filtered to
-make a lane green.
-
-The strict lane enables all 27 in-scope Mocha results represented by the 11 recorded upstream
-pending declarations. The pinned source expands to 27 results rather than the 25 estimated in the
-original work request; `scope/pending-audit.json` records every stable title. The lane does not
-rewrite bodies or expectations. Pinned upstream defects remain reported as release blockers.
-
-The legacy smoke targets use `tests/ably-compat`, stock `ably@2.21.0`, and
-`@ably/ai-transport@0.4.0`. The Ably facade is expected at the Sockudo root WebSocket/REST endpoint;
-existing Sockudo/Pusher clients continue to use `/app/{appKey}` and `/apps/{appId}`.
-`make ably-protocol-discovery` also installs Playwright Chromium and runs one stock browser bundle
-Pub/Sub/history lane from an allowed localhost origin.
-
-## Required Test Cases
-
-| Case | Command |
-| --- | --- |
-| Ably Realtime connect, attach, publish, receive, history, detach | `make ably-compat-test` |
-| Broader stock `ably` SDK discovery across JSON, REST publish/history, presence, token, token capability enforcement, MsgPack, and browser lanes | `make ably-protocol-discovery` |
-| Ably mutable message create/append/update/delete/version reads | `make ably-compat-test` |
-| Ably recovery/history replay during streamed output | `make ably-compat-test` |
-| Stock `@ably/ai-transport` chat smoke | `make ably-ai-transport-test` |
-| Headless chat and recovery demos | `make ably-ai-demo` |
+They use stock `ably@2.21.0` and `@ably/ai-transport@0.4.0` against the root Ably endpoint. Existing
+Sockudo/Pusher clients continue to use `/app/{appKey}` and `/apps/{appId}`.
 
 ## Claim Gate
 
-Do not claim full Ably support from these tests. The passing claim is:
+Do not claim full Ably platform support. For a tag with attached passing released-binary evidence,
+the accurate claim is:
 
-> Sockudo implements an opt-in Ably REST and WebSocket compatibility surface, excluding Live
-> Objects; publish a compatibility claim only for lanes with attached passing evidence.
+> Sockudo implements a community-maintained Ably REST and WebSocket compatibility surface,
+> excluding Live Objects and non-WebSocket realtime transports. Sockudo is not an Ably product and
+> is not supported by Ably.
 
-The pinned Node, strict-completeness, browser, and AIT lanes are independent gates. Broader or
-unqualified claims require every selected lane to pass and updated scorecard evidence.
-
-Security, fuzz, chaos, and performance evidence are also independent gates. The release load guard
-requires three independent runs across both topologies and every scenario in
-`tests/load/ably-compat/profiles/release.json`; a correctness-clean run that exceeds a latency or
-memory budget is not a performance pass.
+Security, fuzz, chaos, and performance evidence remain independent product release gates.

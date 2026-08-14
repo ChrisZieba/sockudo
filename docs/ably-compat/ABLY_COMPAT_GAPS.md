@@ -1,47 +1,56 @@
 # Ably Compatibility Gaps
 
-This file records gaps and release blockers for Sockudo's opt-in `ably-compat` facade. The selected
-scope is the pinned Ably REST/WebSocket manifest, excluding Live Objects and all non-WebSocket
-realtime transports.
+This file is the structured list of intentional exceptions and remaining release work for
+Sockudo's opt-in `ably-compat` facade. The selected scope is the pinned Ably REST/WebSocket
+manifest, excluding Live Objects and non-WebSocket realtime transports.
 
-## Not Claimed
+## Intentional Exceptions
 
-| Gap | Status | Notes |
+| Exception | Classification | Structured definition |
 | --- | --- | --- |
-| Full Ably platform API parity | Intentionally out of scope | Sockudo is not claiming to replace every Ably service or endpoint. |
-| LiveObjects/object modes | Intentionally out of scope | Not required for the current AI Transport target. |
-| Non-WebSocket realtime transports | Intentionally out of scope | No Comet, XHR, SSE, long-polling, or fallback transport will be added. |
-| Behavior outside the 41-file manifest | Not claimed | Only pinned assertions and native conformance evidence support compatibility statements. |
+| Full Ably platform API parity | Not claimed | `scope/advertised-surface.md` limits the public claim to the selected REST/WebSocket surface. |
+| LiveObjects/object modes | Out of scope | `test/rest/liveobjects.test.js` and `test/realtime/liveobjects.test.js` are excluded in both manifests. |
+| Multiple and non-WebSocket realtime transports | Out of scope | `test/realtime/transports.test.js` is excluded; all active realtime cases are forced to `web_socket`. |
+| Behavior outside the selected manifests | Not claimed | A new or renamed upstream file makes the runner fail classification rather than silently reducing coverage. |
+| ably-go duplicate ACK panic | Upstream SDK patch, not an exclusion | `patches/ably-go/0002-ignore-duplicate-acks-after-canceled-publish.patch` makes the SDK ignore an ACK after its pending queue has drained, as its own comment requires. The loopback reconnect fixture otherwise exposes the upstream panic deterministically; no assertion or expected value is changed. |
 
-## Current Release Blockers
+There are no per-test exclusions in the pinned Node or browser manifests. In latest-upstream CI,
+only three exact SDK/harness assertions are filtered: the Comet transport inventory and two SDK
+default TLS/port checks replaced by loopback sandbox routing. The official ably-go and AI Transport
+suites have no test-body or assertion exclusions.
 
-| Blocker | Fresh evidence |
+## Remaining Release Work
+
+| Item | Status |
 | --- | --- |
-| Strict upstream-pending lane | Four `resume_lost_continuity` expansions fail inside the unchanged upstream body before the protocol assertion. Portability-only patch rules prohibit changing that body or expected value. |
-| Browser default lanes | The latest complete matrix remains red because browser page/console diagnostics are fatal: Chromium has 233 page and 21 console errors, Firefox has 232 page and 390 console errors, and WebKit has 56 page and 438 console errors. The pinned browser crypto tests call private `Message.decode`/`Message.fromWireProtocol` exports that are absent from the pinned browser build; intentional connection-failure cases also produce engine-level WebSocket diagnostics. These errors are retained, not filtered. |
-| Browser strict lane | The latest Chromium strict report has four unchanged resume-body failures, 45 page errors, and one runner error caused by the pinned auth test settling 71 results from 70 definitions after `done()` is called twice. |
-| Release load/soak guard | One two-node 10,000-publish/1,000,000-delivery burst is correctness-clean, but publish p99 is 2032.031 ms and delivery p99 is 2008 ms against 100 ms and 250 ms budgets. The required three independent runs, both topologies, and every release scenario are therefore not complete. |
+| Published artifact containing the current compatibility changes | Pending a new version/tag. Existing published assets predate this evidence and must not inherit it. |
+| Released-binary verification | Implemented as `SOCKUDO_RELEASE_TAG=vX.Y.Z make release-verify` and the dispatchable `Released Sockudo compatibility` workflow; it becomes green only after it runs against the new tag. |
+| Independent release load/soak budget | Still red in the retained run: publish and delivery p99 exceed their separate budgets, and the full three-run topology matrix is incomplete. |
 
-## Closed Release Findings
+## Closed Compatibility Findings
 
-| Finding | Fresh evidence |
+| Finding | Resolution and evidence |
 | --- | --- |
-| Dashboard fallback-secret authentication bypass | Startup now fails closed without an explicit session secret. Dashboard API tests cover missing/placeholder secrets and pass 10/10 with TypeScript checking. |
-| Stale dashboard JWT privileges | Authenticated requests reload the user and current role/disabled state instead of trusting stale token authorization. Focused middleware/session tests cover role, password-version, and disabled-user changes. |
-| Unbounded local revocation state | Local and shared revocation records are app-scoped, capacity-bounded, and expiry-pruned. Focused tests cover bounds and cross-app rejection. |
-| Embedded/JWE JWT coverage | The local compatibility signer now honors the requested embedded/JWE variants and runtime verification rejects unsupported or confused algorithms. These variants have direct behavior assertions rather than title-only coverage. |
-| Fuzz boundary inventory | Fourteen checked-in `cargo-fuzz` targets and corpora cover the protocol/REST codecs, filters, auth/capabilities, continuity, state transitions, message data, mutations, versioned wire projection, push mapping, and AI headers. Each target completed a 20-second fresh campaign without a crash; longer campaigns remain prudent release hardening. |
-| Fresh AI chaos matrix | Eleven five-node scenarios passed under `target/ai-chaos/release-blocker-fix-postfix2`, including node loss, partitions, Redis restart, readiness, clock skew, and slow-subscriber pressure. Slow-subscriber delivery p99 was 8.704 ms. |
-| Firefox realtime assertion failures | The orderly fatal WebSocket close path now flushes Ably `ERROR`, permits the peer close handshake for a bounded 250 ms, and then closes. Focused current-tree Firefox reruns pass `failure.test.js` 19/19 and `init.test.js` 14/14; a complete Firefox rerun is still required before replacing the full-matrix counts above. |
+| Four `resume_lost_continuity` failures | The pinned upstream fixture accidentally called the return value of `recordPrivateApi(...)` because of a parenthesis/comma typo. That helper returns `undefined`, so the body stopped before its protocol assertion. Patch `0006` corrects only those setup statements; no assertion or expected value changes. All four JSON/MsgPack expansions now pass, and strict completeness is 250/250. |
+| Browser diagnostics made otherwise-passing assertions red | The local browser harness now distinguishes expected failed connections, uses browser-supported message decoding, and settles each upstream result once. Chromium defaults and strict completeness finish with zero assertion, page, console, context, or external-request errors. |
+| Second core SDK absent | ably-go is pinned and runs its official unit suite plus the official integration suite with `-race` in JSON and MsgPack. Latest-upstream CI also follows current `ably-go` `main`; every SDK patch hash is retained with the evidence. |
+| Go REST pagination stopped after page one | Sockudo now emits each `first`/`next` relation as a separate `Link` header value, matching the official Go SDK's iterator while preserving HTTP Link semantics for ably-js. |
+| Go token capability/JWT/realtime publish differences | Capability intersection accepts Ably's `[*]*` wildcard, invalid JWT signatures return Ably code `40144`, and a realtime message may carry only its own server-assigned `connectionId`, which is stripped before canonical publish. Focused Rust and official Go assertions cover each rule. |
+| Go connection fixture timed out before `CONNECTED` | Sockudo's heartbeat interval used Tokio's immediate first tick, so `heartbeats=true` could emit `HEARTBEAT` before `CONNECTED`. The interval now begins after its first full period, preserving `CONNECTED` as the first successful protocol frame. |
+| Go reconnect dropped or reordered messages | Abnormal disconnects now retain a bounded per-subscriber recovery window, transfer it only to the authenticated resumed session, send `ATTACHED` before replay, preserve message order, and fail closed with `90003` on overflow. The official RTN15 reconnect/recovery cases pass in JSON and MsgPack. |
+| Go explicit reauthorization entered `DISCONNECTED` | A failed explicit `AUTH` update now emits the required connection `ERROR` with the authentication reason, causing the SDK to enter `FAILED`. |
+| Go multi-message idempotent IDs accepted invalid batches | REST publish now validates one common base ID with consecutive `:0..n` suffixes and rejects malformed batches with protocol code `40031`. |
+| Go stats fixtures and typed responses diverged | Fixture ingestion accepts both JSON and MsgPack, the bounded field limit admits the canonical legacy SDK shape, transport and aggregate counters no longer double-count, and responses expose both legacy nested fields and the modern flattened `entries` map. Pagination, bounds, direction, and rollups pass in both formats. |
+| Go presence-history pagination lost its route | The `first`/`next` relations now resolve relative to the existing `/presence/history` endpoint instead of duplicating path segments. Multi-page and `First()` navigation pass. |
+| Go channel status reported a retained channel inactive | Channel status now considers both live occupancy and retained history, so a successfully published persistent channel reports active. |
+| Go local fallback tests depended on public hosts | The structured portability patches preserve the original SDK-visible hostnames while routing only an explicit allowlist to loopback, retain the official fallback/internet assertions, and refuse unlisted hosts. Fixture ingestion and local child proxy destinations are configurable without changing expected values. |
+| Executable release runner absent | The harness can now download a tagged Linux asset, verify its detached SHA-256, reject an unexpected archive layout, and execute every required lane against that binary with provenance retained in reports. |
+| Public ownership/support wording absent | Public docs now state that Sockudo and the compatibility layer are community-built and community-maintained, not Ably products, and not supported by Ably. |
 
-## Required Before Broader Claims
+## Required Before a Broader Claim
 
-- Resolve the strict and browser gates without changing upstream bodies, assertions, or expected
-  values and without introducing a non-WebSocket transport. Pinned upstream defects remain release
-  blockers rather than local test patches or xfails.
-- Meet the release latency budgets and retain three independent one-node and two-node load/soak
-  runs for every required scenario.
-- Retain longer fuzz campaigns and the fresh security/chaos evidence with the release artifacts.
-- Keep the `ably-compat` feature disabled in native-only AI Transport builds.
+- Publish a new release containing these changes and retain a green released-binary workflow artifact.
+- Keep the manifest-defined exceptions visible beside any compatibility statement.
 - Keep Pusher V1 and Sockudo V2 conformance green with and without `ably-compat`.
-- Expand docs only when supported by the pinned manifests or native conformance suites.
+- Satisfy the independent performance/security/chaos release policy before product promotion.
+- Expand the claim only when the pinned manifests and retained evidence expand with it.

@@ -14,6 +14,7 @@ import {
   HEADER_RUN_REASON,
   HEADER_ROLE,
   HEADER_RUN_CONTINUE,
+  HEADER_SUPERSEDES,
 } from "./constants.js";
 
 /** Immutable string header map. */
@@ -46,6 +47,8 @@ export interface BuildTransportHeadersOptions {
   forkOf?: string;
   /** Codec message id of the assistant message this message regenerates. */
   regenerates?: string | boolean;
+  /** Run id of the suspended reply replaced by this fork. */
+  supersedes?: string;
   /** Invocation identity. */
   invocationId?: string;
   /** Verified input client identity. */
@@ -178,6 +181,7 @@ export function buildTransportHeaders(options: BuildTransportHeadersOptions): He
   writer.set(HEADER_PARENT, options.parent);
   writer.set(HEADER_FORK_OF, options.forkOf);
   writer.set(HEADER_MSG_REGENERATE, regenerateHeaderValue(options));
+  writer.set(HEADER_SUPERSEDES, options.supersedes);
   writer.set(HEADER_INVOCATION_ID, options.invocationId);
   writer.set(HEADER_INPUT_CLIENT_ID, options.inputClientId);
   writer.set(HEADER_EVENT_ID, options.inputEventId);

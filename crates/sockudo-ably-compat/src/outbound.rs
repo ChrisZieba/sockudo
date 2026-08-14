@@ -302,7 +302,6 @@ impl AblyOutbound {
 }
 
 impl AblyOutboundReceiver {
-    #[cfg(feature = "bench")]
     pub(crate) fn try_recv(&mut self) -> Option<OutboundFrame> {
         if let Ok(frame) = self.control_rx.try_recv() {
             self.release(&frame);

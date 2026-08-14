@@ -11,11 +11,8 @@ pub async fn ably_ingest_stats(
     State(handler): State<Arc<ConnectionHandler>>,
     body: Bytes,
 ) -> Response {
-    let format = ably_rest_response_format(
-        &headers,
-        query.format.as_deref(),
-        ably_rest_request_format(&headers),
-    );
+    let request_format = ably_rest_request_format(&headers);
+    let format = ably_rest_response_format(&headers, query.format.as_deref(), request_format);
     if !runtime.hub.config.stats_fixture_ingest_enabled {
         return ably_error_response_format(
             StatusCode::NOT_FOUND,
@@ -39,7 +36,7 @@ pub async fn ably_ingest_stats(
             return ably_error_response_format(error.status, error.code, error.message, format);
         }
     };
-    let fixtures = match serde_json::from_slice::<Vec<serde_json::Value>>(&body) {
+    let fixtures = match decode_ably_stats_fixtures(&body, request_format) {
         Ok(fixtures) => fixtures,
         Err(error) => {
             return ably_error_response_format(
@@ -68,6 +65,16 @@ pub async fn ably_ingest_stats(
     }
     encode_ably_rest_response(StatusCode::CREATED, format, &json!({}))
         .unwrap_or_else(ably_app_error_response)
+}
+
+pub(super) fn decode_ably_stats_fixtures(
+    body: &[u8],
+    format: AblyFormat,
+) -> Result<Vec<serde_json::Value>, String> {
+    match format {
+        AblyFormat::Json => serde_json::from_slice(body).map_err(|error| error.to_string()),
+        AblyFormat::MsgPack => rmp_serde::from_slice(body).map_err(|error| error.to_string()),
+    }
 }
 
 /// Return typed interval statistics from the canonical stats store.
@@ -124,14 +131,12 @@ pub async fn ably_stats(
                 Ok(response) => response,
                 Err(error) => return ably_app_error_response(error),
             };
-            match stats_link_header(&query, &stats_query, page.next_cursor.as_deref()).parse() {
-                Ok(value) => {
-                    response.headers_mut().insert(header::LINK, value);
-                    response
-                }
-                Err(error) => ably_app_error_response(AppError::InternalError(format!(
-                    "invalid stats Link header: {error}"
-                ))),
+            match append_ably_link_headers(
+                response.headers_mut(),
+                &stats_link_header(&query, &stats_query, page.next_cursor.as_deref()),
+            ) {
+                Ok(()) => response,
+                Err(error) => ably_app_error_response(error),
             }
         }
         Err(error) => ably_app_error_response_format(stats_app_error(error), format),
@@ -179,6 +184,29 @@ pub(super) fn stats_link_header(
         links.push(format!("<./stats?{}>; rel=\"next\"", params(Some(next))));
     }
     links.join(", ")
+}
+
+/// Emit each pagination relation as its own field value. This is equivalent to
+/// a comma-joined `Link` field on the wire, while remaining consumable by SDKs
+/// that iterate the header's individual values (including ably-go).
+pub(super) fn append_ably_link_headers(
+    headers: &mut HeaderMap,
+    links: &str,
+) -> Result<(), AppError> {
+    for (index, relation) in links.split(", <").enumerate() {
+        let relation = if index == 0 {
+            relation.to_string()
+        } else {
+            format!("<{relation}")
+        };
+        headers.append(
+            header::LINK,
+            HeaderValue::from_str(&relation).map_err(|error| {
+                AppError::InternalError(format!("invalid Link header: {error}"))
+            })?,
+        );
+    }
+    Ok(())
 }
 
 pub async fn ably_channel_history(
@@ -291,14 +319,8 @@ pub(super) async fn ably_channel_presence(
         Ok(response) => response,
         Err(error) => return ably_app_error_response(error),
     };
-    match links
-        .parse()
-        .map_err(|error| AppError::InternalError(format!("invalid presence Link header: {error}")))
-    {
-        Ok(value) => {
-            response.headers_mut().insert(header::LINK, value);
-            response
-        }
+    match append_ably_link_headers(response.headers_mut(), &links) {
+        Ok(()) => response,
         Err(error) => ably_app_error_response_format(error, format),
     }
 }
@@ -473,14 +495,11 @@ pub(super) async fn ably_channel_presence_history_inner(
         };
         messages.push(message);
     }
-    let links = ably_presence_link_header(&query, "presence/history", limit, next_cursor);
+    // The base request already ends in `/presence/history`; a `./history`
+    // relation replaces only that final segment when SDKs resolve it.
+    let links = ably_presence_link_header(&query, "history", limit, next_cursor);
     let mut response = encode_ably_rest_response(StatusCode::OK, format, &messages)?;
-    response.headers_mut().insert(
-        header::LINK,
-        links.parse().map_err(|error| {
-            AppError::InternalError(format!("invalid presence history Link header: {error}"))
-        })?,
-    );
+    append_ably_link_headers(response.headers_mut(), &links)?;
     Ok(response)
 }
 
@@ -912,6 +931,7 @@ pub(super) async fn ably_channel_publish_inner(
             "Ably REST publish requires at least one message".to_string(),
         ));
     }
+    validate_ably_idempotent_batch(&messages)?;
     let message_count = u64::try_from(messages.len()).unwrap_or(u64::MAX);
 
     let prepared_messages = messages
@@ -1119,12 +1139,7 @@ pub(super) async fn ably_channel_history_inner(
         });
     }
     let mut response = encode_ably_rest_response(StatusCode::OK, response_format, &items)?;
-    response.headers_mut().insert(
-        header::LINK,
-        link_header.parse().map_err(|error| {
-            AppError::InternalError(format!("invalid history Link header: {error}"))
-        })?,
-    );
+    append_ably_link_headers(response.headers_mut(), &link_header)?;
     Ok(response)
 }
 
@@ -1184,13 +1199,46 @@ pub async fn ably_channel_status(
         .connection_manager()
         .get_channel_socket_count(&resolved.app.id, channel_name.base())
         .await;
+    let has_retained_messages = if occupancy == 0
+        && resolved
+            .app
+            .resolved_history(channel_name.base(), &handler.server_options().history)
+            .enabled
+    {
+        match handler
+            .history_store()
+            .read_page(HistoryReadRequest {
+                app_id: resolved.app.id.clone(),
+                channel: channel_name.base().to_string(),
+                direction: HistoryDirection::NewestFirst,
+                limit: 1,
+                cursor: None,
+                bounds: HistoryQueryBounds::default(),
+            })
+            .await
+        {
+            Ok(page) => !page.items.is_empty(),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    app_id = %resolved.app.id,
+                    channel = channel_name.base(),
+                    "channel status history lookup failed"
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+    let is_active = occupancy > 0 || has_retained_messages;
     encode_ably_rest_response(
         StatusCode::OK,
         response_format,
         &json!({
             "channelId": channel_name.requested(),
             "status": {
-                "isActive": occupancy > 0,
+                "isActive": is_active,
                 "occupancy": {
                     "metrics": {
                         "connections": occupancy,
@@ -1560,10 +1608,7 @@ pub async fn ably_channel_annotations(
                 urlencoding::encode(&cursor)
             ));
         }
-        let link = HeaderValue::from_str(&links.join(", ")).map_err(|error| {
-            AppError::InternalError(format!("invalid annotations Link header: {error}"))
-        })?;
-        response.headers_mut().insert(header::LINK, link);
+        append_ably_link_headers(response.headers_mut(), &links.join(", "))?;
         Ok(response)
     }
     .await;
@@ -1709,7 +1754,7 @@ pub(super) async fn ably_channel_message_versions_inner(
             app_id: app.id.clone(),
             channel: channel_name.base().to_string(),
             message_serial: message_serial_value,
-            direction: sockudo_core::version_store::VersionStoreDirection::NewestFirst,
+            direction: sockudo_core::version_store::VersionStoreDirection::OldestFirst,
             limit: handler
                 .server_options()
                 .versioned_messages
