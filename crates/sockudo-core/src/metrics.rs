@@ -271,6 +271,10 @@ pub trait MetricsInterface: Send + Sync {
     /// Track horizontal transport reconnects.
     fn mark_horizontal_transport_reconnection(&self, _driver: &str) {}
 
+    /// Track a NATS client event by type (e.g. `disconnected`, `slow_consumer`,
+    /// `server_error`, `max_reconnects`). Low, fixed label cardinality.
+    fn mark_nats_event(&self, _event: &str) {}
+
     /// Track a successful presence-history write.
     fn mark_presence_history_write(&self, _app_id: &str) {}
 

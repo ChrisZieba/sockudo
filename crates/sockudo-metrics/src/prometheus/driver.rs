@@ -203,6 +203,7 @@ pub struct PrometheusMetricsDriver {
     pub(super) horizontal_transport_queue_depth: GaugeVec,
     pub(super) horizontal_transport_messages_dropped_total: CounterVec,
     pub(super) horizontal_transport_reconnections_total: CounterVec,
+    pub(super) nats_events_total: CounterVec,
 }
 
 impl PrometheusMetricsDriver {
@@ -1122,6 +1123,15 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        let nats_events_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}nats_events_total"),
+                "Total number of NATS client events, by event type (e.g. disconnected, slow_consumer, server_error, max_reconnects)"
+            ),
+            &["event"]
+        )
+        .unwrap();
+
         // Reset gauge metrics to 0 on startup - they represent current state, not historical
         connected_sockets.reset();
         active_channels.reset();
@@ -1248,6 +1258,7 @@ impl PrometheusMetricsDriver {
             horizontal_transport_queue_depth,
             horizontal_transport_messages_dropped_total,
             horizontal_transport_reconnections_total,
+            nats_events_total,
         }
     }
 
