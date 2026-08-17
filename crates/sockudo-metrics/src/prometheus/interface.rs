@@ -586,6 +586,10 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .inc();
     }
 
+    fn mark_nats_event(&self, event: &str) {
+        self.nats_events_total.with_label_values(&[event]).inc();
+    }
+
     fn mark_presence_history_write(&self, app_id: &str) {
         let tags = self.get_tags(app_id);
         self.presence_history_writes_total

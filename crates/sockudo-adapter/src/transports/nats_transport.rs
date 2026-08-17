@@ -202,47 +202,71 @@ impl HorizontalTransport for NatsTransport {
         let request_subject = Subject::from(format!("{}.requests", config.prefix));
         let response_subject = Subject::from(format!("{}.responses", config.prefix));
 
+        // The metrics driver is wired later via `set_metrics`; capture a clone so the
+        // NATS event callback can record client events (disconnects, slow consumers,
+        // server/client errors) once metrics are available.
+        let metrics_driver: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>> =
+            Arc::new(OnceLock::new());
+        let event_metrics = metrics_driver.clone();
+
         // Build NATS Options
         let mut nats_options = NatsOptions::new()
             .retry_on_initial_connect()
-            .event_callback(|event| async move {
-                match event {
-                    async_nats::Event::Connected => {
-                        info!(adapter = "nats", "connection established");
-                    }
-                    async_nats::Event::Disconnected => {
-                        warn!(adapter = "nats", retryable = true, "connection lost");
-                    }
-                    async_nats::Event::SlowConsumer(sid) => {
-                        error!(
-                            adapter = "nats",
-                            subscription_id = sid,
-                            "slow consumer detected"
-                        );
-                    }
-                    async_nats::Event::ServerError(err) => {
-                        error!(adapter = "nats", error = %err, "server error");
-                    }
-                    async_nats::Event::ClientError(ref err) => match err {
-                        async_nats::ClientError::MaxReconnects => {
-                            error!(adapter = "nats", "max reconnects exhausted");
+            .event_callback(move |event| {
+                let event_metrics = event_metrics.clone();
+                async move {
+                    let record = |event_name: &str| {
+                        if let Some(metrics) = event_metrics.get() {
+                            metrics.mark_nats_event(event_name);
                         }
-                        async_nats::ClientError::Other(msg) => {
-                            error!(adapter = "nats", error = %msg, "client error");
+                    };
+                    match event {
+                        async_nats::Event::Connected => {
+                            record("connected");
+                            info!(adapter = "nats", "connection established");
                         }
-                    },
-                    async_nats::Event::LameDuckMode => {
-                        warn!(
-                            adapter = "nats",
-                            retryable = true,
-                            "server entering lame duck mode"
-                        );
-                    }
-                    async_nats::Event::Draining => {
-                        info!(adapter = "nats", "client draining");
-                    }
-                    async_nats::Event::Closed => {
-                        warn!(adapter = "nats", retryable = true, "connection closed");
+                        async_nats::Event::Disconnected => {
+                            record("disconnected");
+                            warn!(adapter = "nats", retryable = true, "connection lost");
+                        }
+                        async_nats::Event::SlowConsumer(sid) => {
+                            record("slow_consumer");
+                            error!(
+                                adapter = "nats",
+                                subscription_id = sid,
+                                "slow consumer detected"
+                            );
+                        }
+                        async_nats::Event::ServerError(err) => {
+                            record("server_error");
+                            error!(adapter = "nats", error = %err, "server error");
+                        }
+                        async_nats::Event::ClientError(ref err) => match err {
+                            async_nats::ClientError::MaxReconnects => {
+                                record("max_reconnects");
+                                error!(adapter = "nats", "max reconnects exhausted");
+                            }
+                            async_nats::ClientError::Other(msg) => {
+                                record("client_error");
+                                error!(adapter = "nats", error = %msg, "client error");
+                            }
+                        },
+                        async_nats::Event::LameDuckMode => {
+                            record("lame_duck");
+                            warn!(
+                                adapter = "nats",
+                                retryable = true,
+                                "server entering lame duck mode"
+                            );
+                        }
+                        async_nats::Event::Draining => {
+                            record("draining");
+                            info!(adapter = "nats", "client draining");
+                        }
+                        async_nats::Event::Closed => {
+                            record("closed");
+                            warn!(adapter = "nats", retryable = true, "connection closed");
+                        }
                     }
                 }
             });
@@ -295,7 +319,7 @@ impl HorizontalTransport for NatsTransport {
             inbox_prefix,
             config,
             metrics: Arc::new(TransportMetrics::new()),
-            metrics_driver: Arc::new(OnceLock::new()),
+            metrics_driver,
             shutdown: Arc::new(Notify::new()),
             is_running: Arc::new(AtomicBool::new(true)),
             owner_count: Arc::new(AtomicUsize::new(1)),
