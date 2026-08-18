@@ -24,9 +24,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   REGISTRY: ghcr.io
-  # Helm 4 is released, so setup-helm's `latest` default would install it. ArgoCD ships
-  # Helm 3, so the chart is packaged here on the same 3.x line that chart-ci.yml lints with.
-  HELM_VERSION: v3.21.4
+  # Pinned rather than the action's `latest` default, so a Helm release cannot silently change
+  # how the chart is packaged. Tracks the Helm 4 line that ArgoCD bundles.
+  HELM_VERSION: v4.2.4
 
 jobs:
   # =============================================================================
