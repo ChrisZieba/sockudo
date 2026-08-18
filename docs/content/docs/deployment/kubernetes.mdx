@@ -23,7 +23,7 @@ Pin the chart and image version in GitOps or release automation. Do not deploy `
 To work on the chart itself, install from a checkout instead: `helm upgrade --install sockudo
 ./charts/sockudo`.
 
-### ArgoCD
+## ArgoCD
 
 The chart is published as an OCI artifact, so ArgoCD consumes it directly without cloning this
 repository:
@@ -51,8 +51,8 @@ spec:
       - CreateNamespace=true
 ```
 
-Note `repoURL` carries no `oci://` prefix: ArgoCD infers the OCI protocol for Helm chart
-sources, and including the scheme makes the repository fail to resolve.
+Note `repoURL` carries no `oci://` prefix: for a Helm chart source, ArgoCD takes the bare
+registry path and infers the OCI protocol from `chart` being set.
 
 ## Production values example
 
