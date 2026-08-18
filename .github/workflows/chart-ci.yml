@@ -17,17 +17,20 @@ permissions:
   contents: read
 
 env:
+  # Helm 4 is released, so setup-helm's `latest` default would install it. ArgoCD ships
+  # Helm 3, so the chart is linted here on the same 3.x line that release.yml packages with.
   HELM_VERSION: v3.21.4
   KUBECONFORM_VERSION: v0.8.0
 
 jobs:
   lint-and-validate:
-    name: Lint and validate (${{ matrix.fixture }})
+    name: Lint and validate (${{ matrix.fixture }}, k8s ${{ matrix.kubernetes-version }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         fixture: [default, ingress, dashboard, ha]
+        kubernetes-version: ["1.29.0", "1.33.0"]
 
     steps:
       - name: Checkout repository
@@ -40,9 +43,13 @@ jobs:
 
       - name: Install kubeconform
         run: |
-          mkdir -p "${RUNNER_TEMP}/bin"
-          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
-            | tar -xz -C "${RUNNER_TEMP}/bin" kubeconform
+          cd "${RUNNER_TEMP}"
+          base="https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}"
+          curl -sSfL -O "${base}/kubeconform-linux-amd64.tar.gz"
+          curl -sSfL -O "${base}/CHECKSUMS"
+          sha256sum --check --ignore-missing CHECKSUMS
+          mkdir -p bin
+          tar -xzf kubeconform-linux-amd64.tar.gz -C bin kubeconform
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
 
       - name: Lint chart
@@ -50,11 +57,7 @@ jobs:
 
       - name: Validate rendered manifests
         run: |
-          for kube_version in 1.29.0 1.33.0; do
-            echo "::group::kubeconform ${kube_version}"
-            helm template ci charts/sockudo \
-              -f "charts/sockudo/ci/${{ matrix.fixture }}-values.yaml" \
-              | kubeconform -strict -summary -ignore-missing-schemas \
-                  -kubernetes-version "${kube_version}"
-            echo "::endgroup::"
-          done
+          helm template ci charts/sockudo \
+            -f "charts/sockudo/ci/${{ matrix.fixture }}-values.yaml" \
+            | kubeconform -strict -summary -ignore-missing-schemas \
+                -kubernetes-version "${{ matrix.kubernetes-version }}"
