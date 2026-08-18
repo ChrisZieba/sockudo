@@ -441,6 +441,7 @@ jobs:
         build-linux-arm64-musl,
         docker-manifest,
         publish-crates,
+        publish-chart,
       ]
     if: |
       always() && !cancelled() &&
@@ -449,7 +450,8 @@ jobs:
       needs.build-linux-arm64-gnu.result == 'success' &&
       needs.build-linux-arm64-musl.result == 'success' &&
       needs.docker-manifest.result == 'success' &&
-      (needs.publish-crates.result == 'success' || needs.publish-crates.result == 'skipped')
+      (needs.publish-crates.result == 'success' || needs.publish-crates.result == 'skipped') &&
+      needs.publish-chart.result == 'success'
 
     steps:
       - name: Checkout repository
@@ -489,6 +491,13 @@ jobs:
             ```bash
             docker pull ghcr.io/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}
             docker pull sockudo/sockudo:${{ needs.prepare.outputs.version }}
+            ```
+
+            ### Using Helm
+            ```bash
+            helm install sockudo \
+              oci://ghcr.io/${{ needs.prepare.outputs.lowercase_owner }}/charts/sockudo \
+              --version ${{ needs.prepare.outputs.version }}
             ```
 
             ### Direct Download
