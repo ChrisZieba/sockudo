@@ -24,6 +24,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   REGISTRY: ghcr.io
+  # Pinned rather than the action's `latest` default, so a Helm release cannot silently change
+  # how the chart is packaged. Tracks the Helm 4 line that ArgoCD bundles.
+  HELM_VERSION: v4.2.4
 
 jobs:
   # =============================================================================
@@ -37,6 +40,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       prerelease: ${{ steps.version.outputs.prerelease }}
       lowercase_image_name: ${{ steps.lowercase_repo.outputs.name }} # New output for lowercased repo name
+      lowercase_owner: ${{ steps.lowercase_repo.outputs.owner }}
       docker_tag_suffix: ${{ steps.docker_suffix.outputs.suffix }}
 
     steps:
@@ -94,9 +98,11 @@ jobs:
             echo "Skipping version verification for tag: ${TAG} (not in vX.X.X format)"
           fi
 
-      - name: Get repository name in lowercase
+      - name: Get repository and owner names in lowercase
         id: lowercase_repo # Step to convert repo name to lowercase
-        run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+        run: |
+          echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+          echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
       - name: Get Docker tag suffix
         id: docker_suffix
@@ -286,6 +292,51 @@ jobs:
           fi
 
   # =============================================================================
+  # Publish Helm Chart
+  # =============================================================================
+  publish-chart:
+    name: Publish Helm Chart
+    runs-on: ubuntu-24.04
+    needs: [prepare, docker-manifest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Package chart
+        run: |
+          helm package charts/sockudo \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --app-version "${{ needs.prepare.outputs.version }}" \
+            --destination dist
+
+      - name: Push chart
+        run: |
+          helm push "dist/sockudo-${{ needs.prepare.outputs.version }}.tgz" \
+            "oci://${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_owner }}/charts"
+
+      - name: Upload chart artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: sockudo-chart
+          path: dist/sockudo-${{ needs.prepare.outputs.version }}.tgz
+          retention-days: 1
+
+  # =============================================================================
   # Publish to Crates.io
   # =============================================================================
   publish-crates:
@@ -393,6 +444,7 @@ jobs:
         build-linux-arm64-musl,
         docker-manifest,
         publish-crates,
+        publish-chart,
       ]
     if: |
       always() && !cancelled() &&
@@ -401,7 +453,8 @@ jobs:
       needs.build-linux-arm64-gnu.result == 'success' &&
       needs.build-linux-arm64-musl.result == 'success' &&
       needs.docker-manifest.result == 'success' &&
-      (needs.publish-crates.result == 'success' || needs.publish-crates.result == 'skipped')
+      (needs.publish-crates.result == 'success' || needs.publish-crates.result == 'skipped') &&
+      needs.publish-chart.result == 'success'
 
     steps:
       - name: Checkout repository
@@ -441,6 +494,13 @@ jobs:
             ```bash
             docker pull ghcr.io/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}
             docker pull sockudo/sockudo:${{ needs.prepare.outputs.version }}
+            ```
+
+            ### Using Helm
+            ```bash
+            helm install sockudo \
+              oci://ghcr.io/${{ needs.prepare.outputs.lowercase_owner }}/charts/sockudo \
+              --version ${{ needs.prepare.outputs.version }}
             ```
 
             ### Direct Download

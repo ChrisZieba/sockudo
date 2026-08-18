@@ -140,13 +140,19 @@ cargo build -p sockudo --release --features full
 ### Kubernetes
 
 ```bash
+helm install sockudo oci://ghcr.io/sockudo/charts/sockudo --version 4.7.0
+```
+
+Or from a checkout, when developing the chart itself:
+
+```bash
 helm install sockudo ./charts/sockudo
 ```
 
 Example production shape with Redis, ingress, autoscaling, and monitoring:
 
 ```bash
-helm install sockudo ./charts/sockudo \
+helm install sockudo oci://ghcr.io/sockudo/charts/sockudo --version 4.7.0 \
   --set config.adapterDriver=redis \
   --set redis.host=redis-master \
   --set redis.existingSecret=my-redis-secret \

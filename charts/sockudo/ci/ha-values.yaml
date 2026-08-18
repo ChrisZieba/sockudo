@@ -1,0 +1,14 @@
+replicaCount: 3
+config:
+  adapterDriver: redis
+redis:
+  host: redis-master
+  password: ci-render-only-not-a-real-password
+autoscaling:
+  enabled: true
+pdb:
+  enabled: true
+serviceMonitor:
+  enabled: true
+networkPolicy:
+  enabled: true
