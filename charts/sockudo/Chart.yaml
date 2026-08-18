@@ -2,8 +2,8 @@ apiVersion: v2
 name: sockudo
 description: A simple, fast, and secure WebSocket server implementing the Pusher protocol
 type: application
-version: 0.1.0
-appVersion: "3.2.1"
+version: 4.7.0
+appVersion: "4.7.0"
 keywords:
   - websocket
   - pusher
