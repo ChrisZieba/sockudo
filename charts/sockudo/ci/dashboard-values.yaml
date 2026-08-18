@@ -1,3 +1,7 @@
+# persistence is enabled alongside a mysql app manager on purpose. It reads oddly against
+# values.yaml ("Needed when dashboard.databaseDriver=sqlite"), but sqlite refuses to render
+# with dashboard.autoscaling.api enabled, and this is the only combination that exercises
+# both dashboard-pvc.yaml and dashboard-hpa.yaml.
 config:
   appManagerDriver: mysql
 dashboard:

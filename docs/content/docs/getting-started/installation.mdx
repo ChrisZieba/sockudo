@@ -208,7 +208,7 @@ For exact loading precedence, equivalent JSON, secret injection, and clustered e
 ## Kubernetes with Helm
 
 ```bash
-helm install sockudo ./charts/sockudo \
+helm install sockudo oci://ghcr.io/sockudo/charts/sockudo --version 4.7.0 \
   --set config.adapterDriver=redis \
   --set redis.host=redis-master \
   --set autoscaling.enabled=true \

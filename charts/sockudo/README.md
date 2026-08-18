@@ -3,6 +3,40 @@
 This chart deploys the Sockudo server and can optionally deploy the Sockudo
 operator dashboard.
 
+## Install
+
+```bash
+helm install sockudo oci://ghcr.io/sockudo/charts/sockudo --version 4.7.0
+```
+
+Always pass `--version`. Without it Helm resolves the newest release at install time,
+which makes redeploys non-reproducible.
+
+GitHub Packages renders a Helm chart as though it were a container image, so the package
+page lists it under "Containers" and never displays the `oci://` address. The command above
+is the address; it cannot be derived from that page.
+
+To see every available option:
+
+```bash
+helm show values oci://ghcr.io/sockudo/charts/sockudo --version 4.7.0
+```
+
+For chart development, install from a checkout instead:
+
+```bash
+helm install sockudo ./charts/sockudo
+```
+
+## Versioning
+
+The chart version always equals the Sockudo application version, and the chart is
+republished with every application release. Chart `4.7.0` deploys application `4.7.0`;
+there is no separate chart version to cross-reference.
+
+One consequence worth knowing: consecutive chart versions may be identical charts. `4.7.1`
+following `4.7.0` means a new application release, not necessarily a chart change.
+
 ## Dashboard
 
 The dashboard is disabled by default:
