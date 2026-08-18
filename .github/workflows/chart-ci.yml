@@ -1,0 +1,60 @@
+name: Chart CI - Lint and Validate
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main, master, develop, beta]
+    paths:
+      - "charts/**"
+      - ".github/workflows/chart-ci.yml"
+  pull_request:
+    branches: [main, master, develop, beta]
+    paths:
+      - "charts/**"
+      - ".github/workflows/chart-ci.yml"
+
+permissions:
+  contents: read
+
+env:
+  HELM_VERSION: v3.21.4
+  KUBECONFORM_VERSION: v0.8.0
+
+jobs:
+  lint-and-validate:
+    name: Lint and validate (${{ matrix.fixture }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        fixture: [default, ingress, dashboard, ha]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install kubeconform
+        run: |
+          mkdir -p "${RUNNER_TEMP}/bin"
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C "${RUNNER_TEMP}/bin" kubeconform
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      - name: Lint chart
+        run: helm lint charts/sockudo -f "charts/sockudo/ci/${{ matrix.fixture }}-values.yaml"
+
+      - name: Validate rendered manifests
+        run: |
+          for kube_version in 1.29.0 1.33.0; do
+            echo "::group::kubeconform ${kube_version}"
+            helm template ci charts/sockudo \
+              -f "charts/sockudo/ci/${{ matrix.fixture }}-values.yaml" \
+              | kubeconform -strict -summary -ignore-missing-schemas \
+                  -kubernetes-version "${kube_version}"
+            echo "::endgroup::"
+          done
