@@ -57,6 +57,24 @@ describe("protocol wire formats", () => {
     expect(url).toContain("echo_messages=false");
   });
 
+  it("decodes JSON frames without serial metadata", () => {
+    setWireFormat("json");
+    const rawMessage = JSON.stringify({
+      event: "app:test",
+      channel: "public-room",
+      data: JSON.stringify({ message: "hello" }),
+    });
+
+    const decoded = Protocol.decodeMessage({ data: rawMessage } as MessageEvent);
+
+    expect(decoded).toMatchObject({
+      event: "app:test",
+      channel: "public-room",
+      data: { message: "hello" },
+      rawMessage,
+    });
+  });
+
   it("round trips messagepack", () => {
     setWireFormat("messagepack");
     const payload = Protocol.encodeMessage({
