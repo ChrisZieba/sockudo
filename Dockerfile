@@ -7,7 +7,7 @@
 # -----------------------------------------------------------------------------
 # Build Stage: Compile the Rust application
 # -----------------------------------------------------------------------------
-FROM rust:1.94-bookworm AS builder
+FROM rust:1.97-bookworm AS builder
 
 # Install system dependencies required for building
 RUN apt-get update && apt-get install -y \
