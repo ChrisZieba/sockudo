@@ -1,0 +1,2 @@
+# Chart defaults. Kept as an explicit fixture so the default render is covered
+# by the same matrix as every other configuration.

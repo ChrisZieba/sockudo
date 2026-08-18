@@ -1,0 +1,29 @@
+config:
+  appManagerDriver: mysql
+dashboard:
+  enabled: true
+  sessionSecret:
+    value: ci-render-only-not-a-real-secret
+  persistence:
+    enabled: true
+    size: 1Gi
+  ingress:
+    enabled: true
+    className: nginx
+    hosts:
+      - host: sockudo-admin.ci.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+  autoscaling:
+    api:
+      enabled: true
+    web:
+      enabled: true
+  pdb:
+    api:
+      enabled: true
+    web:
+      enabled: true
+  networkPolicy:
+    enabled: true
