@@ -2205,6 +2205,25 @@ fn channel_serial_source_never_falls_through_an_enabled_durable_authority() {
     );
 }
 
+#[tokio::test]
+async fn empty_version_stream_advertises_zero_without_consuming_the_first_position() {
+    let store = sockudo_core::version_store::MemoryVersionStore::new();
+
+    let channel_serial = realtime::current_ably_version_channel_serial(&store, "app", "channel")
+        .await
+        .expect("empty version stream position");
+    let position = parse_ably_channel_serial(&channel_serial).unwrap();
+    assert_eq!(position.serial, 0);
+
+    let reservation = sockudo_core::version_store::VersionStore::reserve_delivery_position(
+        &store, "app", "channel",
+    )
+    .await
+    .unwrap();
+    assert_eq!(reservation.stream_id, position.stream_id);
+    assert_eq!(reservation.delivery_serial, 1);
+}
+
 #[test]
 fn resumed_attach_without_a_channel_serial_keeps_the_live_recovery_tail() {
     let mut options = AblyAttachOptions::from_wire(None, None);

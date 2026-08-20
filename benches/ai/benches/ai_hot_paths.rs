@@ -100,6 +100,10 @@ impl CountingBlockVersionStore {
 
 #[async_trait]
 impl VersionStore for CountingBlockVersionStore {
+    async fn ensure_stream_id(&self, app_id: &str, channel: &str) -> Result<String> {
+        self.inner.ensure_stream_id(app_id, channel).await
+    }
+
     async fn reserve_delivery_position(
         &self,
         app_id: &str,

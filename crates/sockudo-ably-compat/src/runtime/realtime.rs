@@ -2220,6 +2220,22 @@ pub(super) const fn ably_channel_serial_source(
     }
 }
 
+pub(super) async fn current_ably_version_channel_serial(
+    version_store: &dyn sockudo_core::version_store::VersionStore,
+    app_id: &str,
+    channel: &str,
+) -> Option<String> {
+    let stream_id = version_store.ensure_stream_id(app_id, channel).await.ok()?;
+    let state = version_store.stream_state(app_id, channel).await.ok()?;
+    if state.stream_id.as_deref().is_some_and(|id| id != stream_id) {
+        return None;
+    }
+    Some(encode_ably_channel_serial(
+        &stream_id,
+        state.newest_available_delivery_serial.unwrap_or(0),
+    ))
+}
+
 pub(super) async fn current_ably_channel_serial(
     handler: &Arc<ConnectionHandler>,
     app: &App,
@@ -2232,13 +2248,10 @@ pub(super) async fn current_ably_channel_serial(
         handler.server_options().versioned_messages.enabled,
         history_enabled,
     ) {
-        AblyChannelSerialSource::Version => handler
-            .version_store()
-            .stream_state(&app.id, channel)
-            .await
-            .ok()
-            .and_then(|state| state.stream_id.zip(state.newest_available_delivery_serial))
-            .map(|(stream_id, serial)| encode_ably_channel_serial(&stream_id, serial)),
+        AblyChannelSerialSource::Version => {
+            current_ably_version_channel_serial(handler.version_store().as_ref(), &app.id, channel)
+                .await
+        }
         AblyChannelSerialSource::History => handler
             .history_store()
             .stream_inspection(&app.id, channel)

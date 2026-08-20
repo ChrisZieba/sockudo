@@ -65,10 +65,11 @@ alter the native `/app/{appKey}` route.
 - Restored Protocol V1 frame handling, corrected native auth and presence behavior, and hardened
   Ably reconnect/recovery ordering and continuity failure handling. Explicit Ably channel serials
   remain authoritative on same-node resumed attachments, preventing already-seen messages from
-  being mixed into durable recovery, while empty versioned channels no longer advertise a history
-  or hot-buffer stream that can conflict with the first versioned publish. Deployments without
-  durable history now filter the live recovery tail strictly after the client's channel serial and
-  fail closed when buffered continuity cannot be proven.
+  being mixed into durable recovery. Empty versioned channels now advertise position zero from the
+  version store's stable stream identity instead of a history or hot-buffer stream that can
+  conflict with the first versioned publish. Deployments without durable history filter the live
+  recovery tail strictly after the client's channel serial and fail closed when buffered
+  continuity cannot be proven.
 - Suppressed repeated Ably ACKable protocol serials on the same resumed transport while allowing
   the first retry on a replacement transport, preventing duplicate processing and responses.
 - Released socket rate-limit entries, token-expiry tasks, disconnect tasks, and stats-map guards
