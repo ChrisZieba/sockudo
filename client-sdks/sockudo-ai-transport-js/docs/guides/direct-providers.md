@@ -14,7 +14,7 @@ const provider = createOpenAICompatibleProvider({
   model: "llama-3.3-70b-versatile",
 });
 
-await runDirectLlm(turn, provider, {
+await runDirectLlm(run, provider, {
   model: "llama-3.3-70b-versatile",
   prompt: "Answer over Sockudo AI Transport.",
 });

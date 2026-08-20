@@ -34,9 +34,10 @@ at bounded loopback services, and adapt HTTPS/WSS only when the explicit test en
 set. The exact primary, fallback, and internet-probe hostnames used by the official tests are
 tunnelled through an allowlist while remaining unchanged to the SDK; unlisted non-loopback hosts
 are refused. The idempotent-retry fixtures resolve the provisioned local child's endpoint and port.
-A separate one-line SDK fix ignores a duplicate ACK after the pending queue has already drained,
-matching the SDK's own surrounding contract instead of panicking in the low-latency reconnect
-fixture. Assertions and expected values are unchanged. The AI Transport job has no exclusions.
+The SDK's pending-ACK validation is left unchanged: an ACK received after its queue drains remains
+a hard failure. Sockudo suppresses repeated protocol serials on one transport while still answering
+the first retry on a replacement transport, as required by RTN19a. Assertions and expected values
+are unchanged. The AI Transport job has no exclusions.
 
 ## Pinned Source-Evidence Gate
 

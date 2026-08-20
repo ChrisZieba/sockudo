@@ -18,7 +18,7 @@ released-binary workflow before that tag is promoted as verified.
 | Ably JS upstream suite | `ably@2.21.0`, source `400c6a42ff4903cd3bba3c556f75dfbea1b74448` | 41-file REST/WebSocket manifest under `sockudo-compatibility/`. |
 | Ably Go upstream suite | source `26cb17198f4fb62a54aa2ca7c7ba1127ebdaaccc` | Official unit suite and official integration suite in JSON and MsgPack. |
 | Minimum browser runtime | Playwright `1.61.1`, Chromium `149.0.7827.55` | Exact revision and every selected file are pinned in `scope/browser-manifest.json`. |
-| Sockudo server workspace | `4.7.0` source tree | The evidence below uses a locally built binary; it is not evidence for the already-published `v4.7.0` asset. |
+| Sockudo server workspace | `5.0.0` source tree | The evidence below uses a locally built binary; released-binary evidence is required before promoting the `v5.0.0` asset. |
 
 ## Compatibility Summary
 
@@ -84,8 +84,8 @@ all pass in the separate strict lane.
 - `scope/known-failures.json` is the reviewed in-scope failure ledger; the runner fails on new
   failures and on stale entries.
 - The ably-go assertions and expected values are unchanged. Its retained patches provide the
-  static-app, loopback transport, fixture URL, and local proxy-destination contracts and correct an
-  upstream duplicate-ACK empty-queue panic; every hash is reported.
+  static-app, loopback transport, fixture URL, and local proxy-destination contracts; its
+  pending-ACK validation remains intact, and every applied patch hash is reported.
 - Every report records source revisions, applied-patch hashes, binary provenance, and binary SHA-256.
 
 ## Independent Product Release Gates

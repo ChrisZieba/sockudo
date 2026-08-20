@@ -558,6 +558,12 @@ pub(super) async fn run_ably_realtime_socket(
     revocation_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut renewal_hint_sent = false;
     let mut graceful_close = false;
+    // Ably protocol serials identify logical publishes, not transport writes.
+    // A reconnecting SDK can write the same pending ProtocolMessage more than
+    // once on the replacement transport. Only the first copy on this transport
+    // may be processed and answered; a fresh transport gets a fresh tracker so
+    // a retry still receives the ACK/NACK that could not arrive on the old one.
+    let mut inbound_serials = AblyInboundSerialTracker::default();
     loop {
         let next_auth_deadline = authorization_deadline(&authorization, renewal_hint_sent);
         let auth_sleep = tokio::time::sleep(next_auth_deadline);
@@ -708,6 +714,7 @@ pub(super) async fn run_ably_realtime_socket(
             &sender,
             &active_connection_key,
             &mut attached_channels,
+            &mut inbound_serials,
             replace_presence_on_reenter,
             inbound,
         )
@@ -1075,6 +1082,32 @@ pub(super) enum AblyProtocolControl {
     Close,
 }
 
+#[derive(Debug, Default)]
+pub(super) struct AblyInboundSerialTracker {
+    highest_serial: Option<u64>,
+}
+
+impl AblyInboundSerialTracker {
+    pub(super) fn accepts(&mut self, inbound: &AblyProtocolMessage) -> bool {
+        if !matches!(
+            inbound.action,
+            ACTION_MESSAGE | ACTION_PRESENCE | ACTION_ANNOTATION
+        ) {
+            return true;
+        }
+        let Some(start) = inbound.msg_serial else {
+            return true;
+        };
+        if self.highest_serial.is_some_and(|highest| start <= highest) {
+            return false;
+        }
+
+        let count = inbound.count.unwrap_or(1).max(1);
+        self.highest_serial = Some(start.saturating_add(count - 1));
+        true
+    }
+}
+
 pub(super) fn ably_protocol_control(action: u8) -> AblyProtocolControl {
     match action {
         ACTION_DISCONNECT => AblyProtocolControl::Disconnect,
@@ -1094,10 +1127,24 @@ pub(super) async fn handle_ably_protocol_message(
     sender: &AblySender,
     active_connection_key: &RwLock<String>,
     attached_channels: &mut HashMap<String, AblyConnectionAttachment>,
+    inbound_serials: &mut AblyInboundSerialTracker,
     replace_presence_on_reenter: bool,
     mut inbound: AblyProtocolMessage,
 ) -> SockudoResult<AblyProtocolControl> {
     let control = ably_protocol_control(inbound.action);
+    if !inbound_serials.accepts(&inbound) {
+        hub.metrics
+            .duplicate_suppression
+            .fetch_add(1, Ordering::Relaxed);
+        debug!(
+            protocol = "ably",
+            app_id = %app.id,
+            connection_id,
+            msg_serial = inbound.msg_serial.unwrap_or_default(),
+            "duplicate inbound protocol serial suppressed"
+        );
+        return Ok(AblyProtocolControl::Continue);
+    }
     let client_id = authorization.client_id.as_deref();
     let connection_client_id = authorization.connection_client_id.as_deref();
     let capabilities = authorization.capabilities.as_ref();

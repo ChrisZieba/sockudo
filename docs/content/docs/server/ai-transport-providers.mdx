@@ -115,18 +115,18 @@ the `ai` ecosystem.
 ```ts
 // server/api/chat.post.ts
 import { streamText, toUIMessageStream } from "ai";
-import { createServerTransport } from "@sockudo/ai-transport/vercel";
+import { createAgentSession } from "@sockudo/ai-transport/vercel";
 import { realtimeClient } from "../utils/sockudo";
 
 export default defineEventHandler(async (event) => {
   const body = await readBody(event);
 
-  const transport = createServerTransport({
+  const session = createAgentSession({
     client: realtimeClient(),
     channelName: body.channelName,
   });
 
-  const run = transport.newTurn({
+  const run = session.createRun({
     runId: body.runId,
     invocationId: body.invocationId,
     inputEventId: body.inputEventId,
@@ -134,7 +134,7 @@ export default defineEventHandler(async (event) => {
     onCancel(request) {
       return (
         request.filter.all === true ||
-        request.matchedTurnIds.includes(body.runId)
+        request.matchedRunIds.includes(body.runId)
       );
     },
   });
@@ -154,7 +154,7 @@ export default defineEventHandler(async (event) => {
       });
       await run.streamResponse(toUIMessageStream({ stream: result.stream }));
       await run.end("complete");
-      transport.close();
+      session.close();
     })(),
   );
 
@@ -237,7 +237,7 @@ require one.
 ```ts
 import {
   createOpenAICompatibleProvider,
-  runDirectLlmTurn,
+  runDirectLlm,
 } from "@sockudo/ai-transport/providers";
 
 const provider = createOpenAICompatibleProvider({
@@ -246,7 +246,7 @@ const provider = createOpenAICompatibleProvider({
   model: "llama-3.3-70b-versatile",
 });
 
-await runDirectLlmTurn(turn, provider, {
+await runDirectLlm(run, provider, {
   prompt: "Write a remediation plan for a Redis fanout incident.",
   maxOutputTokens: 800,
 });
@@ -258,7 +258,7 @@ await runDirectLlmTurn(turn, provider, {
 import OpenAI from "openai";
 import {
   createOpenAISdkProvider,
-  runDirectLlmTurn,
+  runDirectLlm,
 } from "@sockudo/ai-transport/providers";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -269,7 +269,7 @@ const chatProvider = createOpenAISdkProvider({
   model: "gpt-4.1-mini",
 });
 
-await runDirectLlmTurn(turn, chatProvider, {
+await runDirectLlm(run, chatProvider, {
   messages: [
     { role: "system", content: "Answer as a production engineer." },
     { role: "user", content: "Why did reconnect recovery fail?" },
@@ -284,7 +284,7 @@ const responsesProvider = createOpenAISdkProvider({
   model: "gpt-5-mini",
 });
 
-await runDirectLlmTurn(turn, responsesProvider, {
+await runDirectLlm(run, responsesProvider, {
   prompt: "Explain the latest channel history page in plain English.",
   body: {
     reasoning: { effort: "low" },
@@ -298,7 +298,7 @@ await runDirectLlmTurn(turn, responsesProvider, {
 import Anthropic from "@anthropic-ai/sdk";
 import {
   createAnthropicSdkProvider,
-  runDirectLlmTurn,
+  runDirectLlm,
 } from "@sockudo/ai-transport/providers";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -309,7 +309,7 @@ const provider = createAnthropicSdkProvider({
   system: "Be concise and include risk levels.",
 });
 
-await runDirectLlmTurn(turn, provider, {
+await runDirectLlm(run, provider, {
   prompt: "Audit this failed push notification delivery chain.",
 });
 ```

@@ -49,6 +49,7 @@ jobs:
             sockudo-ai-transport
             sockudo-push
             sockudo-adapter
+            sockudo-ably-compat
             sockudo
           )
 
@@ -79,6 +80,7 @@ jobs:
           if [ ${#FAILED_CRATES[@]} -gt 0 ]; then
             echo "Retrying ${#FAILED_CRATES[@]} failed crate(s) after index propagation delay..."
             sleep 30
+            FINAL_FAILURES=()
             for crate in "${FAILED_CRATES[@]}"; do
               echo "::group::Retrying $crate"
               VERSION=$(cargo metadata --no-deps --format-version 1 \
@@ -86,8 +88,14 @@ jobs:
               echo "Retrying $crate@$VERSION..."
               cargo publish -p "$crate" --token "$CRATES_IO_TOKEN" || {
                 echo "::error::Failed to publish $crate@$VERSION after retry"
+                FINAL_FAILURES+=("$crate")
               }
               sleep 30
               echo "::endgroup::"
             done
+
+            if [ ${#FINAL_FAILURES[@]} -gt 0 ]; then
+              echo "::error::Failed to publish after retry: ${FINAL_FAILURES[*]}"
+              exit 1
+            fi
           fi

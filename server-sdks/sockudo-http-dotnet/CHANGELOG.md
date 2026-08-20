@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.0 - 2026-08-17
+
+* [ADDED] Add `TerminateUserConnections` and `ForceReconnectUser` to the Sockudo and Pusher-compatible clients.
+* [ADDED] Add unit coverage and usage documentation for user connection management.
+
 ## 2.1.0 - 2026-06-27
 
 * [ADDED] Preserve raw nested webhook event payloads while keeping the legacy string event projection.

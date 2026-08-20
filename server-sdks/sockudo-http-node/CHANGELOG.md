@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.0 - 2026-08-17
+
+- [ADDED] Add `forceReconnectUser` for `POST /users/{userId}/force_reconnect`.
+- [ADDED] Add integration coverage and usage documentation for user connection management.
+- [FIXED] Pin patched transitive development dependencies used by the release checks.
+
 ## 2.1.0 - 2026-06-27
 
 - [CHANGED] Widen webhook typings for future event names and payload fields.

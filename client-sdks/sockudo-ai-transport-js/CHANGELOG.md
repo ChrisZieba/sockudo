@@ -1,5 +1,36 @@
 # @sockudo/ai-transport
 
+## 3.0.0 - 2026-08-17
+
+### Breaking changes
+
+- Renamed the public transport/session API to the Session/Run vocabulary: `createClientTransport` to
+  `createClientSession`, `createServerTransport` to `createAgentSession`, Turn types to Run types,
+  `ConversationTree` to `Tree`, and `runDirectLlmTurn` to `runDirectLlm`.
+- Renamed the public `ErrorCode` members to Session/Run names while preserving their numeric wire
+  values.
+- Write `run-continue` for new continuations. Existing `turn-continue` history remains readable, but
+  it is no longer emitted.
+- Require `@sockudo/client` 2.x; the coordinated release uses 2.2.0.
+
+### Added
+
+- Four-arm run lifecycle events (`start`, `suspend`, `resume`, and `end`), step lifecycle support,
+  steering, and configurable AI header ceilings.
+- Recovery-aware branching, supersession, complete tree projection seeds, and `createToolResultFork`
+  for direct view-driven tool resolution.
+- Ably AI Transport compatibility coverage and Vercel codec/transport parity for recovery,
+  branching, steering, steps, and tool results.
+
+### Fixed
+
+- Correctly distinguish capability-denied, token-expired, and token-revoked failures while keeping
+  SDK-local invalid arguments in the SDK error namespace.
+- Preserve recovery metadata, full-width serials, future frames, and `extras.ai` across the realtime
+  adapter.
+- Refresh the demo and build dependency graph to patched releases and consume `protobufjs` 7.6.5
+  from the coordinated `@sockudo/client` workspace package.
+
 ## 2.1.0 - 2026-06-27
 
 - Hardened adapter-level forward-compatibility over `@sockudo/client` by replaying the shared E1

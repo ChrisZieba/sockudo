@@ -1,3 +1,9 @@
+## 2.2.0 - 2026-08-17
+
+* Added bounded automatic reconnection with configurable attempt and retry-gap limits plus an explicit reconnecting state.
+* Corrected Protocol V2 capability-token refresh, expiration, revocation, and reconnect behavior.
+* Hardened Ably-compatible auth, presence, and connection handling.
+
 ## 2.1.0 - 2026-06-27
 
 * Added Protocol V2 capability-token options with initial `token` query auth, proactive 80% lifetime refresh for JWTs when `authCallback` is available, `authCallback` refresh on `sockudo:token_expired` code `40142`, and `sockudo:auth_success` event passthrough. Opaque tokens and static-only tokens remain reactive/manual.

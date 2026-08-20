@@ -4,7 +4,7 @@ import path from "node:path";
 export default defineConfig({
   define: {
     RUNTIME: JSON.stringify("node"),
-    VERSION: JSON.stringify("2.1.0"),
+    VERSION: JSON.stringify("2.2.0"),
     CDN_HTTP: JSON.stringify("//js.pusher.com/"),
     CDN_HTTPS: JSON.stringify("//js.pusher.com/"),
     DEPENDENCY_SUFFIX: JSON.stringify(""),

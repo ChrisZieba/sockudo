@@ -256,6 +256,7 @@ impl AdapterFactory {
                     request_timeout_ms: config.redis.requests_timeout,
                     cluster_mode: config.redis.cluster_mode,
                     sentinel,
+                    tls: db_config.redis.master_tls.clone(),
                 };
                 match RedisAdapter::new(adapter_options).await {
                     Ok(mut adapter) => {
@@ -313,6 +314,7 @@ impl AdapterFactory {
                     request_timeout_ms: config.cluster.request_timeout_ms,
                     use_connection_manager: config.cluster.use_connection_manager,
                     use_sharded_pubsub: config.cluster.use_sharded_pubsub,
+                    tls: db_config.redis.cluster_tls_options(),
                 };
                 match RedisClusterAdapter::new(cluster_adapter_config).await {
                     Ok(mut adapter) => {

@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.2.0] - 2026-08-17
+
+### Added
+
+* bounded automatic reconnection with configurable attempt and retry-gap limits plus an explicit
+  `reconnecting` state
+* Protocol V2 capability-token refresh through static tokens, auth URLs, and callbacks, including
+  proactive JWT refresh and typed expiration/revocation errors
+* native continuity and recovery metadata used by Sockudo 5 and the AI Transport SDK
+
+### Fixed
+
+* refresh provider tokens before reconnecting and never resend static, expired, or revoked tokens
+* restore the React Native entrypoint and harden Ably-compatible auth, presence, and connection
+  behavior
+* update `protobufjs` to the patched 7.6.5 release
+
 ## [2.1.0] - 2026-06-27
 
 ### Fixed

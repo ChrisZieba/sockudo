@@ -2887,7 +2887,7 @@ class SockudoClient:
         query = {
             "protocol": self.prefix.version,
             "client": "python",
-            "version": "2.1.0",
+            "version": "2.2.0",
             "flash": "false",
         }
         if self.options.protocol_version >= 2:

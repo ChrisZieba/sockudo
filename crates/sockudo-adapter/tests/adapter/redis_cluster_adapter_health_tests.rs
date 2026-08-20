@@ -56,6 +56,7 @@ async fn create_redis_cluster_adapter(
         request_timeout_ms: 5000,
         use_connection_manager: true,
         use_sharded_pubsub: false,
+        tls: Default::default(),
     };
 
     let mut adapter = RedisClusterAdapter::new(config).await.unwrap();

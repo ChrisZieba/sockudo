@@ -26,6 +26,17 @@ use super::transports::test_helpers::get_nats_config;
 #[cfg(feature = "redis")]
 use super::transports::test_helpers::get_redis_config;
 
+#[cfg(feature = "nats")]
+async fn wait_for_nats_health(adapter: &HorizontalAdapterBase<NatsTransport>) -> Result<()> {
+    for _ in 0..50 {
+        if adapter.check_health().await.is_ok() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    adapter.check_health().await
+}
+
 #[tokio::test]
 #[cfg(feature = "redis")]
 async fn test_horizontal_adapter_with_redis_transport() -> Result<()> {
@@ -153,8 +164,10 @@ async fn test_cross_node_broadcast_nats() -> Result<()> {
     adapter1.start_listeners().await?;
     adapter2.start_listeners().await?;
 
-    // Give adapters time to establish connections
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // The NATS client connects asynchronously, so wait for both adapters to
+    // leave their transitional state before publishing the test message.
+    wait_for_nats_health(&adapter1).await?;
+    wait_for_nats_health(&adapter2).await?;
 
     let message = PusherMessage {
         channel: Some("test-channel".to_string()),
@@ -185,8 +198,8 @@ async fn test_cross_node_broadcast_nats() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Verify both adapters are healthy and can communicate
-    adapter1.check_health().await?;
-    adapter2.check_health().await?;
+    wait_for_nats_health(&adapter1).await?;
+    wait_for_nats_health(&adapter2).await?;
 
     Ok(())
 }

@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Security fixes are prepared for the current `2.1.x` release line until the next minor release is
+Security fixes are prepared for the current `3.0.x` release line until the next minor release is
 available.
 
 ## Reporting A Vulnerability

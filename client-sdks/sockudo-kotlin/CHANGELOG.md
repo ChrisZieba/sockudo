@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.2.0 - 2026-08-17
+
+- Added `RECONNECTING`, bounded reconnect attempts, configurable retry gaps, and quadratic backoff
+  with immediate retry for retryable/TLS-only close codes.
+- Corrected Protocol V2 capability-token refresh, expiration, revocation, and reconnect behavior.
+- Lowered the JVM target from 23 to 21.
+
 ## 2.1.0 - 2026-06-27
 
 - Added Protocol V2 client platform primitives: capability-token URL auth with provider refresh, presence member updates, attach-serial exposure with `until_attach` channel history params, proxy-backed mutable-message write helpers, and `appendRollupWindow` negotiation.

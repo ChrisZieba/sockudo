@@ -354,6 +354,61 @@ fn ack_count_covers_the_inbound_protocol_serial_range() {
 }
 
 #[test]
+fn inbound_protocol_serial_is_processed_once_per_transport() {
+    let message = AblyProtocolMessage {
+        action: ACTION_MESSAGE,
+        msg_serial: Some(7),
+        count: Some(1),
+        ..empty_protocol_message(ACTION_MESSAGE)
+    };
+    let mut transport = AblyInboundSerialTracker::default();
+
+    assert!(transport.accepts(&message));
+    assert!(!transport.accepts(&message));
+
+    // RTN19a requires the replacement transport to ACK a resent pending
+    // message because the old transport's response cannot reach it.
+    let mut replacement_transport = AblyInboundSerialTracker::default();
+    assert!(replacement_transport.accepts(&message));
+}
+
+#[test]
+fn inbound_protocol_serial_ranges_suppress_overlapping_retries() {
+    let mut transport = AblyInboundSerialTracker::default();
+    let batch = AblyProtocolMessage {
+        action: ACTION_MESSAGE,
+        msg_serial: Some(10),
+        count: Some(3),
+        ..empty_protocol_message(ACTION_MESSAGE)
+    };
+    let overlap = AblyProtocolMessage {
+        action: ACTION_PRESENCE,
+        msg_serial: Some(12),
+        count: Some(1),
+        ..empty_protocol_message(ACTION_PRESENCE)
+    };
+    let next = AblyProtocolMessage {
+        action: ACTION_ANNOTATION,
+        msg_serial: Some(13),
+        count: Some(1),
+        ..empty_protocol_message(ACTION_ANNOTATION)
+    };
+
+    assert!(transport.accepts(&batch));
+    assert!(!transport.accepts(&overlap));
+    assert!(transport.accepts(&next));
+
+    let max_serial = AblyProtocolMessage {
+        action: ACTION_MESSAGE,
+        msg_serial: Some(u64::MAX),
+        count: Some(2),
+        ..empty_protocol_message(ACTION_MESSAGE)
+    };
+    assert!(transport.accepts(&max_serial));
+    assert!(!transport.accepts(&max_serial));
+}
+
+#[test]
 fn multi_message_idempotency_requires_one_base_and_consecutive_serials() {
     let valid = ["batch:0", "batch:1", "batch:2"]
         .into_iter()

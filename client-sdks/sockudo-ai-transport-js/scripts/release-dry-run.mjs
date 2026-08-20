@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 
 const root = process.cwd();
+const clientRoot = join(root, "..", "sockudo-js");
 const temp = await mkdtemp(join(tmpdir(), "sockudo-ai-transport-release-"));
 const registry = "http://127.0.0.1:4873";
 const storage = join(temp, "storage");
 const config = join(temp, "verdaccio.yml");
 const npmrc = join(temp, ".npmrc");
-const packDir = join(temp, "pack");
+const clientPackDir = join(temp, "client-pack");
+const aiTransportPackDir = join(temp, "ai-transport-pack");
 const appDir = join(temp, "app");
 let server;
 
@@ -41,6 +43,7 @@ try {
     ].join("\n"),
   );
 
+  await run("bun", ["run", "build:all"], { cwd: clientRoot });
   await run("pnpm", ["build"]);
   server = spawn("pnpm", ["exec", "verdaccio", "--config", config, "--listen", registry], {
     cwd: root,
@@ -50,20 +53,14 @@ try {
   const token = await createVerdaccioUser(registry);
   await writeFile(npmrc, `//127.0.0.1:4873/:_authToken=${token}\nregistry=${registry}\n`);
 
-  await run("mkdir", ["-p", packDir, appDir]);
-  await run("npm", ["pack", "--pack-destination", packDir]);
-  const tarball = await findPackedTarball(packDir);
-  await run("npm", [
-    "publish",
-    tarball,
-    "--registry",
-    registry,
-    "--userconfig",
-    npmrc,
-    "--access",
-    "public",
-    "--provenance=false",
-  ]);
+  await run("mkdir", ["-p", clientPackDir, aiTransportPackDir, appDir]);
+  await run("npm", ["pack", "--pack-destination", clientPackDir], { cwd: clientRoot });
+  const clientTarball = await findPackedTarball(clientPackDir);
+  await publishTarball(clientTarball);
+
+  await run("npm", ["pack", "--pack-destination", aiTransportPackDir]);
+  const aiTransportTarball = await findPackedTarball(aiTransportPackDir);
+  await publishTarball(aiTransportTarball);
 
   await writeFile(
     join(appDir, "package.json"),
@@ -72,8 +69,8 @@ try {
         private: true,
         type: "module",
         dependencies: {
-          "@sockudo/ai-transport": "2.1.0",
-          "@sockudo/client": "^2.1.0",
+          "@sockudo/ai-transport": "3.0.0",
+          "@sockudo/client": "2.2.0",
           ai: "^6",
           react: "^19",
           "react-dom": "^19",
@@ -89,13 +86,13 @@ try {
   await writeFile(
     join(appDir, "smoke.mjs"),
     [
-      "import { createClientTransport, createMockClient } from '@sockudo/ai-transport';",
-      "import { TransportProvider } from '@sockudo/ai-transport/react';",
+      "import { createClientSession, createMockClient } from '@sockudo/ai-transport';",
+      "import { ClientSessionProvider } from '@sockudo/ai-transport/react';",
       "import { createChatTransport } from '@sockudo/ai-transport/vercel';",
       "import { ChatTransportProvider } from '@sockudo/ai-transport/vercel/react';",
-      "if (typeof createClientTransport !== 'function') throw new Error('missing core export');",
+      "if (typeof createClientSession !== 'function') throw new Error('missing core export');",
       "if (typeof createMockClient !== 'function') throw new Error('missing mock export');",
-      "if (typeof TransportProvider !== 'function') throw new Error('missing react export');",
+      "if (typeof ClientSessionProvider !== 'function') throw new Error('missing react export');",
       "if (typeof createChatTransport !== 'function') throw new Error('missing vercel export');",
       "if (typeof ChatTransportProvider !== 'function') throw new Error('missing vercel/react export');",
       "",
@@ -108,6 +105,20 @@ try {
     server.kill("SIGTERM");
   }
   await rm(temp, { recursive: true, force: true });
+}
+
+async function publishTarball(tarball) {
+  await run("npm", [
+    "publish",
+    tarball,
+    "--registry",
+    registry,
+    "--userconfig",
+    npmrc,
+    "--access",
+    "public",
+    "--provenance=false",
+  ]);
 }
 
 function run(command, args, options = {}) {

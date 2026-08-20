@@ -240,15 +240,15 @@ the same Sockudo session channel; clients recover the visible transcript from So
 
 ```ts
 import { streamText, toUIMessageStream } from "ai";
-import { createServerTransport } from "@sockudo/ai-transport/vercel";
+import { createAgentSession } from "@sockudo/ai-transport/vercel";
 
 export async function runAgent({ body, sockudo }) {
-  const transport = createServerTransport({
+  const session = createAgentSession({
     client: sockudo,
     channelName: body.channelName,
   });
 
-  const run = transport.newTurn({
+  const run = session.createRun({
     runId: body.runId,
     invocationId: body.invocationId,
     inputEventId: body.inputEventId,
@@ -264,7 +264,7 @@ export async function runAgent({ body, sockudo }) {
   });
   await run.streamResponse(toUIMessageStream({ stream: result.stream }));
   await run.end("complete");
-  transport.close();
+  session.close();
 }
 ```
 

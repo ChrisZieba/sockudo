@@ -9,9 +9,11 @@ use redis::cluster_async::ClusterConnection;
 #[cfg(feature = "redis-cluster")]
 use sockudo_core::error::Error;
 use sockudo_core::error::Result;
-use sockudo_core::options::SentinelSpec;
+use sockudo_core::options::{RedisTlsOptions, SentinelSpec};
 use sockudo_core::queue::QueueBackendKind;
-use sockudo_core::redis_client::RedisClient;
+#[cfg(feature = "redis-cluster")]
+use sockudo_core::redis_client::configure_cluster_builder;
+use sockudo_core::redis_client::{RedisClient, RedisClientOptions};
 #[cfg(feature = "redis-cluster")]
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,10 +53,19 @@ impl StandaloneRedisProvider {
     pub(crate) async fn connect(
         url: &str,
         sentinel: Option<SentinelSpec>,
+        tls: RedisTlsOptions,
         worker_response_timeout: Option<Duration>,
     ) -> Result<Self> {
         Ok(Self {
-            client: RedisClient::connect(url, sentinel).await?,
+            client: RedisClient::connect_with_options(
+                url,
+                RedisClientOptions {
+                    sentinel,
+                    tls,
+                    response_timeout: None,
+                },
+            )
+            .await?,
             worker_response_timeout,
         })
     }
@@ -106,6 +117,7 @@ impl ClusterRedisProvider {
         nodes: Vec<String>,
         request_timeout_ms: u64,
         worker_poll_interval_ms: u64,
+        tls: RedisTlsOptions,
     ) -> Result<Self> {
         if nodes.is_empty() {
             return Err(Error::Config(
@@ -114,11 +126,13 @@ impl ClusterRedisProvider {
         }
         let response_timeout =
             (request_timeout_ms > 0).then(|| Duration::from_millis(request_timeout_ms));
-        let command_client = build_cluster_client(nodes.clone(), response_timeout)?;
+        let command_client = build_cluster_client(nodes.clone(), response_timeout, &tls).await?;
         let worker_client = build_cluster_client(
             nodes,
             blocking_response_timeout(request_timeout_ms, worker_poll_interval_ms),
-        )?;
+            &tls,
+        )
+        .await?;
         let connection = command_client
             .get_async_connection()
             .await
@@ -169,16 +183,18 @@ impl QueueRedisProvider for ClusterRedisProvider {
 }
 
 #[cfg(feature = "redis-cluster")]
-fn build_cluster_client(
+async fn build_cluster_client(
     nodes: Vec<String>,
     response_timeout: Option<Duration>,
+    tls: &RedisTlsOptions,
 ) -> Result<ClusterClient> {
     let builder = ClusterClientBuilder::new(nodes).overall_response_timeout(response_timeout);
     let builder = match response_timeout {
         Some(timeout) => builder.response_timeout(timeout),
         None => builder,
     };
-    builder
+    configure_cluster_builder(builder, tls)
+        .await?
         .build()
         .map_err(|error| Error::Config(format!("failed to create Redis Cluster client: {error}")))
 }
@@ -213,10 +229,14 @@ mod tests {
     async fn blocking_worker_connection_outlives_empty_redis_wait() {
         let url = std::env::var("SOCKUDO_REDIS_QUEUE_TEST_URL")
             .expect("SOCKUDO_REDIS_QUEUE_TEST_URL is required");
-        let provider =
-            StandaloneRedisProvider::connect(&url, None, blocking_response_timeout(500, 500))
-                .await
-                .expect("Redis queue provider should connect");
+        let provider = StandaloneRedisProvider::connect(
+            &url,
+            None,
+            RedisTlsOptions::default(),
+            blocking_response_timeout(500, 500),
+        )
+        .await
+        .expect("Redis queue provider should connect");
         let mut connection = provider
             .worker_connection()
             .await
@@ -247,7 +267,7 @@ mod tests {
             .split(',')
             .map(str::to_string)
             .collect();
-        let provider = ClusterRedisProvider::connect(nodes, 500, 500)
+        let provider = ClusterRedisProvider::connect(nodes, 500, 500, RedisTlsOptions::default())
             .await
             .expect("Redis Cluster queue provider should connect");
         let mut connection = provider

@@ -22,7 +22,7 @@ make demo
 ## Concepts
 
 - [Sessions](concepts/sessions.md)
-- [Turns](concepts/turns.md)
+- [Runs](concepts/turns.md)
 - [Transport](concepts/transport.md)
 - [Codec](concepts/codec.md)
 - [Conversation tree](concepts/tree.md)

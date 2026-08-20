@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.0 - 2026-08-17
+
+* [ADDED] Add `terminate_user_connections` and `force_reconnect_user` helpers.
+* [ADDED] Add request coverage and usage documentation for user connection management.
+
 ## 2.1.0 - 2026-06-27
 
 * [ADDED] Forward-compatibility coverage for future webhook event names and nested payload fields.

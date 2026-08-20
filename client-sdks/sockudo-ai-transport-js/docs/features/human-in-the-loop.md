@@ -1,4 +1,4 @@
 # Human-In-The-Loop
 
-Agents can end a turn with `suspended`. A later approval continues the same `turn-id` with
-`turn-continue=true` and a new invocation id. First accepted approval wins.
+Agents can suspend a run. A later approval continues the same `run-id` with `run-continue=true` and
+a new invocation id. First accepted approval wins.
