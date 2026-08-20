@@ -16,9 +16,9 @@ use sockudo_app::AppManagerFactory;
 use sockudo_cache::CacheManagerFactory;
 use sockudo_core::auth::AuthValidator;
 use sockudo_core::error::{Error, Result};
-use sockudo_core::options::{
-    AdapterDriver, CacheDriver, DeltaCoordinationBackend, QueueDriver, ServerOptions,
-};
+#[cfg(feature = "ably-compat")]
+use sockudo_core::options::CacheDriver;
+use sockudo_core::options::{AdapterDriver, DeltaCoordinationBackend, QueueDriver, ServerOptions};
 use sockudo_queue::QueueManagerFactory;
 use sockudo_rate_limiter::factory::RateLimiterFactory;
 use sockudo_webhook::integration::QueueManager;
