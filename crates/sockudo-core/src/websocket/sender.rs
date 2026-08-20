@@ -1,9 +1,10 @@
-use super::buffer::{ByteCounter, MessageSenderHandle, SizedMessageReceiverHandle};
+use super::buffer::{ByteCounter, MessageSenderHandle, OutboundFrame, SizedMessageSenderHandle};
 use crate::error::{Error, Result};
 use crossfire::{TrySendError, mpsc};
 use sockudo_ws::Message;
 use sockudo_ws::axum_integration::WebSocketWriter;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -13,6 +14,7 @@ use tracing::{debug, error, warn};
 #[derive(Debug)]
 pub struct MessageSender {
     sender: MessageSenderHandle,
+    broadcast_sender: SizedMessageSenderHandle,
     close_flushed: Arc<Notify>,
     shutdown_token: Option<CancellationToken>,
     receiver_handle: Option<JoinHandle<()>>,
@@ -50,12 +52,24 @@ impl SocketOperation {
 impl MessageSender {
     pub fn new_with_broadcast(
         mut socket: WebSocketWriter,
-        broadcast_rx: SizedMessageReceiverHandle,
         buffer_capacity: usize,
         byte_counter: Option<Arc<ByteCounter>>,
         shutdown_token: CancellationToken,
     ) -> Self {
-        let (sender, receiver) = mpsc::bounded_async::<Message>(buffer_capacity);
+        let combined_capacity = buffer_capacity.saturating_mul(2);
+        let (outbound_sender, receiver) = mpsc::bounded_async::<OutboundFrame>(combined_capacity);
+        let direct_pending = Arc::new(AtomicUsize::new(0));
+        let broadcast_pending = Arc::new(AtomicUsize::new(0));
+        let sender = MessageSenderHandle::new(
+            outbound_sender.clone(),
+            Arc::clone(&direct_pending),
+            buffer_capacity,
+        );
+        let broadcast_sender = SizedMessageSenderHandle::new(
+            outbound_sender,
+            Arc::clone(&broadcast_pending),
+            buffer_capacity,
+        );
         let close_flushed = Arc::new(Notify::new());
         let writer_close_flushed = Arc::clone(&close_flushed);
         let close_shutdown_token = shutdown_token.clone();
@@ -63,8 +77,6 @@ impl MessageSender {
         let receiver_handle = tokio::spawn(async move {
             let mut msg_count = 0;
             let mut is_shutting_down = false;
-            let mut broadcast_closed = false;
-            let mut receiver_closed = false;
 
             loop {
                 tokio::select! {
@@ -74,35 +86,10 @@ impl MessageSender {
                         debug!("Receiver task shutting down via cancellation token");
                         break;
                     }
-                    recv_result = broadcast_rx.recv(), if !broadcast_closed => {
+                    recv_result = receiver.recv() => {
                         match recv_result {
-                            Ok(sized_msg) => {
-                                msg_count += 1;
-                                let msg_size = sized_msg.size;
-                                let msg = Message::Text(sized_msg.bytes);
-
-                                if let Err(e) = socket.send(msg).await {
-                                    Self::log_connection_error(
-                                        &e,
-                                        SocketOperation::WriteFrame,
-                                        msg_count,
-                                        is_shutting_down,
-                                    );
-                                    break;
-                                }
-
-                                if let Some(ref counter) = byte_counter {
-                                    counter.sub(msg_size);
-                                }
-                            }
-                            Err(_) => {
-                                broadcast_closed = true;
-                            }
-                        }
-                    }
-                    recv_result = receiver.recv(), if !receiver_closed => {
-                        match recv_result {
-                            Ok(message) => {
+                            Ok(OutboundFrame::Direct(message)) => {
+                                direct_pending.fetch_sub(1, Ordering::Release);
                                 msg_count += 1;
 
                                 let is_close = matches!(message, Message::Close(_));
@@ -127,12 +114,29 @@ impl MessageSender {
                                     break;
                                 }
                             }
-                            Err(_) => {
-                                receiver_closed = true;
+                            Ok(OutboundFrame::Broadcast(sized_msg)) => {
+                                broadcast_pending.fetch_sub(1, Ordering::Release);
+                                msg_count += 1;
+                                let msg_size = sized_msg.size;
+                                let msg = Message::Text(sized_msg.bytes);
+
+                                if let Err(e) = socket.send(msg).await {
+                                    Self::log_connection_error(
+                                        &e,
+                                        SocketOperation::WriteFrame,
+                                        msg_count,
+                                        is_shutting_down,
+                                    );
+                                    break;
+                                }
+
+                                if let Some(ref counter) = byte_counter {
+                                    counter.sub(msg_size);
+                                }
                             }
+                            Err(_) => break,
                         }
                     }
-                    else => break,
                 }
             }
 
@@ -143,6 +147,7 @@ impl MessageSender {
 
         Self {
             sender,
+            broadcast_sender,
             close_flushed,
             shutdown_token: Some(close_shutdown_token),
             receiver_handle: Some(receiver_handle),
@@ -197,7 +202,20 @@ impl MessageSender {
     }
 
     pub fn new(mut socket: WebSocketWriter, buffer_capacity: usize) -> Self {
-        let (sender, receiver) = mpsc::bounded_async::<Message>(buffer_capacity);
+        let combined_capacity = buffer_capacity.saturating_mul(2);
+        let (outbound_sender, receiver) = mpsc::bounded_async::<OutboundFrame>(combined_capacity);
+        let direct_pending = Arc::new(AtomicUsize::new(0));
+        let broadcast_pending = Arc::new(AtomicUsize::new(0));
+        let sender = MessageSenderHandle::new(
+            outbound_sender.clone(),
+            Arc::clone(&direct_pending),
+            buffer_capacity,
+        );
+        let broadcast_sender = SizedMessageSenderHandle::new(
+            outbound_sender,
+            Arc::clone(&broadcast_pending),
+            buffer_capacity,
+        );
         let close_flushed = Arc::new(Notify::new());
         let writer_close_flushed = Arc::clone(&close_flushed);
 
@@ -205,29 +223,47 @@ impl MessageSender {
             let mut msg_count = 0;
             let mut is_shutting_down = false;
 
-            while let Ok(message) = receiver.recv().await {
-                msg_count += 1;
+            while let Ok(frame) = receiver.recv().await {
+                match frame {
+                    OutboundFrame::Direct(message) => {
+                        direct_pending.fetch_sub(1, Ordering::Release);
+                        msg_count += 1;
 
-                let is_close = matches!(message, Message::Close(_));
-                if is_close {
-                    is_shutting_down = true;
-                }
+                        let is_close = matches!(message, Message::Close(_));
+                        if is_close {
+                            is_shutting_down = true;
+                        }
 
-                let send_result = socket.send(message).await;
-                if is_close {
-                    writer_close_flushed.notify_one();
-                }
-                if let Err(e) = send_result {
-                    Self::log_connection_error(
-                        &e,
-                        SocketOperation::WriteFrame,
-                        msg_count,
-                        is_shutting_down,
-                    );
-                    break;
-                }
-                if is_close {
-                    break;
+                        let send_result = socket.send(message).await;
+                        if is_close {
+                            writer_close_flushed.notify_one();
+                        }
+                        if let Err(e) = send_result {
+                            Self::log_connection_error(
+                                &e,
+                                SocketOperation::WriteFrame,
+                                msg_count,
+                                is_shutting_down,
+                            );
+                            break;
+                        }
+                        if is_close {
+                            break;
+                        }
+                    }
+                    OutboundFrame::Broadcast(sized_msg) => {
+                        broadcast_pending.fetch_sub(1, Ordering::Release);
+                        msg_count += 1;
+                        if let Err(e) = socket.send(Message::Text(sized_msg.bytes)).await {
+                            Self::log_connection_error(
+                                &e,
+                                SocketOperation::WriteFrame,
+                                msg_count,
+                                is_shutting_down,
+                            );
+                            break;
+                        }
+                    }
                 }
             }
 
@@ -238,6 +274,7 @@ impl MessageSender {
 
         Self {
             sender,
+            broadcast_sender,
             close_flushed,
             shutdown_token: None,
             receiver_handle: Some(receiver_handle),
@@ -248,8 +285,12 @@ impl MessageSender {
         self.sender.try_send(message)
     }
 
-    pub(crate) fn sender_handle(&self) -> MessageSenderHandle {
+    pub(super) fn sender_handle(&self) -> MessageSenderHandle {
         self.sender.clone()
+    }
+
+    pub(crate) fn broadcast_sender_handle(&self) -> SizedMessageSenderHandle {
+        self.broadcast_sender.clone()
     }
 
     pub fn send(&self, message: Message) -> Result<()> {

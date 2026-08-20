@@ -1,4 +1,4 @@
-use super::buffer::{ByteCounter, SizedMessage, SizedMessageSenderHandle, WebSocketBufferConfig};
+use super::buffer::{ByteCounter, SizedMessageSenderHandle, WebSocketBufferConfig};
 use super::capabilities::UserInfo;
 use super::sender::MessageSender;
 use super::socket_id::SocketId;
@@ -8,7 +8,6 @@ use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
 use ahash::AHashMap as HashMap;
 use bytes::Bytes;
-use crossfire::mpsc;
 use sockudo_filter::FilterNode;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::Message;
@@ -44,16 +43,15 @@ impl WebSocket {
         };
 
         let channel_capacity = buffer_config.channel_capacity();
-        let (broadcast_tx, broadcast_rx) = mpsc::bounded_async::<SizedMessage>(channel_capacity);
         let shutdown_token = CancellationToken::new();
 
         let message_sender = MessageSender::new_with_broadcast(
             socket,
-            broadcast_rx,
             channel_capacity,
             byte_counter.clone(),
             shutdown_token.clone(),
         );
+        let broadcast_tx = message_sender.broadcast_sender_handle();
 
         WebSocket {
             state: ConnectionState::with_socket_id(socket_id),

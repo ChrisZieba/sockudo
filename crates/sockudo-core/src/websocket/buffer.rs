@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use crossfire::mpsc;
+use crossfire::{TrySendError, mpsc};
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::Message;
 use std::sync::Arc;
@@ -165,6 +165,7 @@ impl ByteCounter {
 }
 
 /// Message wrapper that includes size for byte tracking
+#[derive(Debug)]
 pub struct SizedMessage {
     pub bytes: Bytes,
     pub size: usize,
@@ -341,11 +342,106 @@ impl RewindGate {
     }
 }
 
-pub(super) type MessageChannelFlavor = mpsc::Array<Message>;
-pub(super) type MessageSenderHandle = crossfire::MAsyncTx<MessageChannelFlavor>;
-pub(super) type SizedMessageChannelFlavor = mpsc::Array<SizedMessage>;
-pub type SizedMessageSenderHandle = crossfire::MAsyncTx<SizedMessageChannelFlavor>;
-pub(super) type SizedMessageReceiverHandle = crossfire::AsyncRx<SizedMessageChannelFlavor>;
+#[derive(Debug)]
+pub(super) enum OutboundFrame {
+    Direct(Message),
+    Broadcast(SizedMessage),
+}
+
+pub(super) type OutboundChannelFlavor = mpsc::Array<OutboundFrame>;
+type OutboundSenderHandle = crossfire::MAsyncTx<OutboundChannelFlavor>;
+
+#[derive(Debug, Clone)]
+pub(super) struct MessageSenderHandle {
+    pub(super) sender: OutboundSenderHandle,
+    pub(super) pending: Arc<AtomicUsize>,
+    pub(super) limit: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct SizedMessageSenderHandle {
+    pub(super) sender: OutboundSenderHandle,
+    pub(super) pending: Arc<AtomicUsize>,
+    pub(super) limit: usize,
+}
+
+fn try_reserve_message(pending: &AtomicUsize, limit: usize) -> bool {
+    pending
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current.checked_add(1).filter(|next| *next <= limit)
+        })
+        .is_ok()
+}
+
+impl MessageSenderHandle {
+    pub(super) fn new(
+        sender: OutboundSenderHandle,
+        pending: Arc<AtomicUsize>,
+        limit: usize,
+    ) -> Self {
+        Self {
+            sender,
+            pending,
+            limit,
+        }
+    }
+
+    pub(super) fn try_send(
+        &self,
+        message: Message,
+    ) -> std::result::Result<(), TrySendError<Message>> {
+        if !try_reserve_message(&self.pending, self.limit) {
+            return Err(TrySendError::Full(message));
+        }
+        match self.sender.try_send(OutboundFrame::Direct(message)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(OutboundFrame::Direct(message))) => {
+                self.pending.fetch_sub(1, Ordering::Release);
+                Err(TrySendError::Full(message))
+            }
+            Err(TrySendError::Disconnected(OutboundFrame::Direct(message))) => {
+                self.pending.fetch_sub(1, Ordering::Release);
+                Err(TrySendError::Disconnected(message))
+            }
+            Err(_) => unreachable!("direct frame changed variant while enqueueing"),
+        }
+    }
+}
+
+impl SizedMessageSenderHandle {
+    pub(super) fn new(
+        sender: OutboundSenderHandle,
+        pending: Arc<AtomicUsize>,
+        limit: usize,
+    ) -> Self {
+        Self {
+            sender,
+            pending,
+            limit,
+        }
+    }
+
+    pub fn try_send(
+        &self,
+        message: SizedMessage,
+    ) -> std::result::Result<(), TrySendError<SizedMessage>> {
+        if !try_reserve_message(&self.pending, self.limit) {
+            return Err(TrySendError::Full(message));
+        }
+        match self.sender.try_send(OutboundFrame::Broadcast(message)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(OutboundFrame::Broadcast(message))) => {
+                self.pending.fetch_sub(1, Ordering::Release);
+                Err(TrySendError::Full(message))
+            }
+            Err(TrySendError::Disconnected(OutboundFrame::Broadcast(message))) => {
+                self.pending.fetch_sub(1, Ordering::Release);
+                Err(TrySendError::Disconnected(message))
+            }
+            Err(_) => unreachable!("broadcast frame changed variant while enqueueing"),
+        }
+    }
+}
 
 impl SizedMessage {
     #[inline]
