@@ -1,9 +1,11 @@
 #![allow(dead_code)]
 
 use async_trait::async_trait;
-use redis::{AsyncCommands, Client, aio::ConnectionManager};
+use redis::{AsyncCommands, aio::ConnectionManager};
 use sockudo_core::cache::{CacheManager, CacheScanPage};
 use sockudo_core::error::{Error, Result};
+use sockudo_core::options::{RedisTlsOptions, SentinelSpec};
+use sockudo_core::redis_client::{RedisClient, RedisClientOptions};
 use std::time::Duration;
 
 /// Configuration for the Redis cache manager
@@ -17,6 +19,10 @@ pub struct RedisCacheConfig {
     pub response_timeout: Option<Duration>,
     /// Use RESP3 protocol
     pub use_resp3: bool,
+    /// Optional native Sentinel topology.
+    pub sentinel: Option<SentinelSpec>,
+    /// TLS settings for a direct Redis data connection.
+    pub tls: RedisTlsOptions,
 }
 
 impl Default for RedisCacheConfig {
@@ -26,6 +32,8 @@ impl Default for RedisCacheConfig {
             prefix: "cache".to_string(),
             response_timeout: Some(Duration::from_secs(5)),
             use_resp3: false,
+            sentinel: None,
+            tls: RedisTlsOptions::default(),
         }
     }
 }
@@ -33,7 +41,7 @@ impl Default for RedisCacheConfig {
 /// A Redis-based implementation of the CacheManager trait
 pub struct RedisCacheManager {
     /// Redis client
-    client: Client,
+    client: RedisClient,
     /// Connection manager with automatic reconnection. Clone is cheap (shared internal state).
     connection: ConnectionManager,
     /// Dedicated connection manager for health checks so probes do not open a
@@ -56,25 +64,25 @@ impl RedisCacheManager {
             config.url
         };
 
-        let client = Client::open(redis_url)
-            .map_err(|e| Error::Cache(format!("Failed to create Redis client: {e}")))?;
-
-        let connection_manager_config = Self::connection_manager_config(config.response_timeout);
-
+        let client = RedisClient::connect_with_options(
+            &redis_url,
+            RedisClientOptions {
+                sentinel: config.sentinel,
+                tls: config.tls,
+                response_timeout: config.response_timeout,
+            },
+        )
+        .await
+        .map_err(|error| Error::Cache(format!("Failed to connect to Redis: {error}")))?;
         let connection = client
-            .get_connection_manager_with_config(connection_manager_config)
+            .command_connection()
             .await
-            .map_err(|e| Error::Cache(format!("Failed to connect to Redis: {e}")))?;
-        let health_connection = client
-            .get_connection_manager_with_config(Self::connection_manager_config(
-                config.response_timeout,
+            .map_err(|error| Error::Cache(format!("Failed to connect to Redis: {error}")))?;
+        let health_connection = client.events_connection().await.map_err(|error| {
+            Error::Cache(format!(
+                "Failed to connect Redis health check connection: {error}"
             ))
-            .await
-            .map_err(|e| {
-                Error::Cache(format!(
-                    "Failed to connect Redis health check connection: {e}"
-                ))
-            })?;
+        })?;
 
         Ok(Self {
             client,
@@ -98,16 +106,6 @@ impl RedisCacheManager {
     /// Get the prefixed key
     fn prefixed_key(&self, key: &str) -> String {
         format!("{}:{}", self.prefix, key)
-    }
-
-    fn connection_manager_config(
-        response_timeout: Option<Duration>,
-    ) -> redis::aio::ConnectionManagerConfig {
-        redis::aio::ConnectionManagerConfig::new()
-            .set_number_of_retries(5)
-            .set_exponent_base(2.0)
-            .set_max_delay(Duration::from_millis(5000))
-            .set_response_timeout(response_timeout)
     }
 }
 
@@ -480,6 +478,8 @@ impl CacheManagerFactory {
             prefix: prefix.unwrap_or("cache").to_string(),
             response_timeout,
             use_resp3: false,
+            sentinel: None,
+            tls: RedisTlsOptions::default(),
         };
 
         let cache_manager = RedisCacheManager::new(config).await?;
@@ -496,6 +496,8 @@ impl CacheManagerFactory {
             prefix: prefix.unwrap_or("cache").to_string(),
             response_timeout,
             use_resp3: true,
+            sentinel: None,
+            tls: RedisTlsOptions::default(),
         };
 
         let cache_manager = RedisCacheManager::new(config).await?;

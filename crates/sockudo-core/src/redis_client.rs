@@ -9,7 +9,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use redis::aio::{ConnectionManager, ConnectionManagerConfig, MultiplexedConnection, PubSub};
 use redis::sentinel::{SentinelClient, SentinelClientBuilder, SentinelServerType};
-use redis::{ClientTlsConfig, ConnectionAddr, TlsCertificates, TlsMode};
+use redis::{ClientTlsConfig, ConnectionAddr, IntoConnectionInfo, TlsCertificates, TlsMode};
 use tracing::warn;
 
 use crate::error::{Error, Result};
@@ -35,23 +35,66 @@ pub struct RedisClient {
     inner: Arc<Inner>,
 }
 
+/// Connection settings shared by standalone and Sentinel-backed Redis clients.
+#[derive(Debug, Clone, Default)]
+pub struct RedisClientOptions {
+    /// Native Sentinel topology. When present, `url` is not parsed.
+    pub sentinel: Option<SentinelSpec>,
+    /// TLS settings for a direct Redis data connection.
+    ///
+    /// Sentinel clients use the TLS settings embedded in [`SentinelSpec`].
+    pub tls: RedisTlsOptions,
+    /// Optional command-response timeout for cached connection managers.
+    pub response_timeout: Option<Duration>,
+}
+
 impl RedisClient {
+    /// Wraps an already configured standalone client.
+    pub async fn from_client(client: redis::Client) -> Result<Self> {
+        Self::from_source(
+            ClientSource::Standalone(client),
+            ConnectionManagerConfig::new()
+                .set_number_of_retries(5)
+                .set_exponent_base(2.0)
+                .set_max_delay(Duration::from_millis(5_000)),
+        )
+        .await
+    }
+
     /// Connects and eagerly verifies the command path.
     pub async fn connect(url: &str, sentinel: Option<SentinelSpec>) -> Result<Self> {
+        Self::connect_with_options(
+            url,
+            RedisClientOptions {
+                sentinel,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Connects with explicit direct-TLS and timeout settings.
+    pub async fn connect_with_options(url: &str, options: RedisClientOptions) -> Result<Self> {
         let manager_config = ConnectionManagerConfig::new()
             .set_number_of_retries(5)
             .set_exponent_base(2.0)
-            .set_max_delay(Duration::from_millis(5_000));
+            .set_max_delay(Duration::from_millis(5_000))
+            .set_response_timeout(options.response_timeout);
 
-        let source = match sentinel {
+        let source = match options.sentinel {
             Some(spec) => {
                 ClientSource::Sentinel(tokio::sync::Mutex::new(build_sentinel_client(&spec).await?))
             }
-            None => ClientSource::Standalone(redis::Client::open(url).map_err(|error| {
-                Error::Redis(format!("failed to create Redis client: {error}"))
-            })?),
+            None => ClientSource::Standalone(build_standalone_client(url, &options.tls).await?),
         };
 
+        Self::from_source(source, manager_config).await
+    }
+
+    async fn from_source(
+        source: ClientSource,
+        manager_config: ConnectionManagerConfig,
+    ) -> Result<Self> {
         let client = Self {
             inner: Arc::new(Inner {
                 source,
@@ -168,6 +211,57 @@ impl RedisClient {
     }
 }
 
+/// Builds a direct Redis client, applying private-CA and mutual-TLS material
+/// when configured. Enabling TLS upgrades a `redis://` address to a TLS socket,
+/// so callers do not need to encode certificate behavior in the URL.
+pub async fn build_standalone_client(url: &str, tls: &RedisTlsOptions) -> Result<redis::Client> {
+    let connection_info = url.into_connection_info().map_err(|error| {
+        Error::Redis(format!("failed to parse direct Redis connection: {error}"))
+    })?;
+
+    if !tls.enabled {
+        return redis::Client::open(connection_info)
+            .map_err(|error| Error::Redis(format!("failed to create Redis client: {error}")));
+    }
+
+    let tls_addr = match connection_info.addr() {
+        ConnectionAddr::Tcp(host, port) => ConnectionAddr::TcpTls {
+            host: host.clone(),
+            port: *port,
+            insecure: tls.accept_invalid_certs,
+            tls_params: None,
+        },
+        ConnectionAddr::TcpTls { host, port, .. } => ConnectionAddr::TcpTls {
+            host: host.clone(),
+            port: *port,
+            insecure: tls.accept_invalid_certs,
+            tls_params: None,
+        },
+        ConnectionAddr::Unix(_) => {
+            return Err(Error::Redis(
+                "direct Redis TLS cannot be used with a Unix socket".to_string(),
+            ));
+        }
+        _ => {
+            return Err(Error::Redis(
+                "unsupported direct Redis address for TLS".to_string(),
+            ));
+        }
+    };
+    let connection_info = connection_info.set_addr(tls_addr);
+
+    match load_tls_certificates(tls, "direct").await? {
+        Some(certificates) => {
+            redis::Client::build_with_tls(connection_info, certificates).map_err(|error| {
+                Error::Redis(format!("failed to create direct Redis TLS client: {error}"))
+            })
+        }
+        None => redis::Client::open(connection_info).map_err(|error| {
+            Error::Redis(format!("failed to create direct Redis TLS client: {error}"))
+        }),
+    }
+}
+
 fn tls_mode(tls: &RedisTlsOptions) -> TlsMode {
     if tls.accept_invalid_certs {
         TlsMode::Insecure
@@ -176,7 +270,7 @@ fn tls_mode(tls: &RedisTlsOptions) -> TlsMode {
     }
 }
 
-async fn load_tls_certificates(
+pub async fn load_tls_certificates(
     tls: &RedisTlsOptions,
     hop: &str,
 ) -> Result<Option<TlsCertificates>> {
@@ -217,6 +311,22 @@ async fn load_tls_certificates(
         client_tls,
         root_cert,
     }))
+}
+
+/// Applies shared Redis data-plane TLS settings to a cluster client builder.
+pub async fn configure_cluster_builder(
+    mut builder: redis::cluster::ClusterClientBuilder,
+    tls: &RedisTlsOptions,
+) -> Result<redis::cluster::ClusterClientBuilder> {
+    if !tls.enabled {
+        return Ok(builder);
+    }
+
+    builder = builder.tls(tls_mode(tls));
+    if let Some(certificates) = load_tls_certificates(tls, "cluster").await? {
+        builder = builder.certs(certificates);
+    }
+    Ok(builder)
 }
 
 async fn build_sentinel_client(spec: &SentinelSpec) -> Result<SentinelClient> {
@@ -309,5 +419,67 @@ mod tests {
         let mut value = spec();
         value.hosts.clear();
         assert!(build_sentinel_client(&value).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn standalone_tls_upgrades_plain_redis_url() {
+        let client = build_standalone_client(
+            "redis://127.0.0.1:6379/0",
+            &RedisTlsOptions {
+                enabled: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("TLS client metadata should build without connecting");
+
+        assert!(matches!(
+            client.get_connection_info().addr(),
+            ConnectionAddr::TcpTls {
+                host,
+                port: 6379,
+                insecure: false,
+                ..
+            } if host == "127.0.0.1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn standalone_tls_applies_insecure_mode_explicitly() {
+        let client = build_standalone_client(
+            "rediss://redis.internal:6380/0",
+            &RedisTlsOptions {
+                enabled: true,
+                accept_invalid_certs: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("insecure TLS client metadata should build without connecting");
+
+        assert!(matches!(
+            client.get_connection_info().addr(),
+            ConnectionAddr::TcpTls {
+                host,
+                port: 6380,
+                insecure: true,
+                ..
+            } if host == "redis.internal"
+        ));
+    }
+
+    #[tokio::test]
+    async fn standalone_tls_reports_missing_private_ca() {
+        let result = build_standalone_client(
+            "redis://127.0.0.1:6379/0",
+            &RedisTlsOptions {
+                enabled: true,
+                ca_path: Some("/definitely/missing/sockudo-redis-ca.pem".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::Redis(message)) if message.contains("TLS CA")));
     }
 }

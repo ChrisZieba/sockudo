@@ -8,13 +8,15 @@ use redis::cluster::ClusterClient;
 use redis::cluster_async::ClusterConnection;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::rate_limiter::{RateLimitConfig, RateLimitResult, RateLimiter};
+use tokio::sync::RwLock;
+use tracing::warn;
 
 /// Redis Cluster-based rate limiter implementation
 pub struct RedisClusterRateLimiter {
     /// Redis client
     client: ClusterClient,
     /// Redis connection
-    connection: ClusterConnection,
+    connection: RwLock<ClusterConnection>,
     /// Prefix for Redis keys
     prefix: String,
     /// Configuration for rate limiting
@@ -54,7 +56,7 @@ impl RedisClusterRateLimiter {
 
         Ok(Self {
             client,
-            connection,
+            connection: RwLock::new(connection),
             prefix,
             config,
         })
@@ -74,50 +76,60 @@ impl RedisClusterRateLimiter {
         let redis_key = self.get_key(key);
         let now_ms = crate::redis_window::current_time_ms();
         let window_start_ms = crate::redis_window::window_start_ms(now_ms, self.config.window_secs);
+        let member = if increment {
+            crate::redis_window::entry_member(now_ms)
+        } else {
+            String::new()
+        };
+        let request = crate::redis_window::SlidingWindowRequest {
+            key: &redis_key,
+            now_ms,
+            window_start_ms,
+            window_secs: self.config.window_secs,
+            max_requests: self.config.max_requests,
+            increment,
+            member: &member,
+        };
 
-        let mut conn = self.connection.clone();
+        let mut connection = { self.connection.read().await.clone() };
+        let first_result = crate::redis_window::run_sliding_window(&mut connection, request).await;
 
-        let _: usize = conn
-            .zrembyscore(&redis_key, 0, window_start_ms)
-            .await
-            .map_err(|e| Error::Redis(format!("Failed to clean up Redis sorted set: {e}")))?;
-
-        let count: u32 = conn
-            .zcard(&redis_key)
-            .await
-            .map_err(|e| Error::Redis(format!("Failed to count Redis sorted set: {e}")))?;
-
-        let _: () = conn
-            .expire(&redis_key, self.config.window_secs as usize as i64)
-            .await
-            .map_err(|e| Error::Redis(format!("Failed to set expiry on Redis key: {e}")))?;
-
-        let remaining = self.config.max_requests.saturating_sub(count);
-        let allowed = remaining > 0;
-
-        if increment && allowed {
-            let member = crate::redis_window::entry_member(now_ms);
-            let _: usize = conn
-                .zadd(&redis_key, member, now_ms)
+        match first_result {
+            Ok(result) => Ok(result),
+            Err(error) if error.is_connection_dropped() => {
+                warn!(
+                    error = %error,
+                    attempt_count = 1,
+                    retryable = true,
+                    "redis cluster rate limiter command retry scheduled"
+                );
+                let replacement =
+                    self.client
+                        .get_async_connection()
+                        .await
+                        .map_err(|retry_error| {
+                            Error::Redis(format!(
+                                "failed to reconnect Redis Cluster rate limiter: {retry_error}"
+                            ))
+                        })?;
+                let mut retry_connection = replacement.clone();
+                let result = crate::redis_window::run_sliding_window(
+                    &mut retry_connection,
+                    request,
+                )
                 .await
-                .map_err(|e| Error::Redis(format!("Failed to increment Redis counter: {e}")))?;
-
-            let new_remaining = remaining.saturating_sub(1);
-
-            return Ok(RateLimitResult {
-                allowed,
-                remaining: new_remaining,
-                reset_after: self.config.window_secs,
-                limit: self.config.max_requests,
-            });
+                .map_err(|retry_error| {
+                    Error::Redis(format!(
+                        "redis cluster sliding-window command failed after reconnect: {retry_error}"
+                    ))
+                })?;
+                *self.connection.write().await = replacement;
+                Ok(result)
+            }
+            Err(error) => Err(Error::Redis(format!(
+                "redis cluster sliding-window command failed: {error}"
+            ))),
         }
-
-        Ok(RateLimitResult {
-            allowed,
-            remaining,
-            reset_after: self.config.window_secs,
-            limit: self.config.max_requests,
-        })
     }
 }
 
@@ -133,7 +145,7 @@ impl RateLimiter for RedisClusterRateLimiter {
 
     async fn reset(&self, key: &str) -> Result<()> {
         let redis_key = self.get_key(key);
-        let mut conn = self.connection.clone();
+        let mut conn = { self.connection.read().await.clone() };
 
         let _: () = conn
             .del(&redis_key)

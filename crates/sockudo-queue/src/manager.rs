@@ -1,6 +1,7 @@
 use sockudo_core::error::Result;
-use sockudo_core::options::{QueueReliabilityConfig, SentinelSpec};
+use sockudo_core::options::{QueueReliabilityConfig, RedisTlsOptions, SentinelSpec};
 
+use futures_util::future::BoxFuture;
 #[cfg(feature = "google-pubsub")]
 use sockudo_core::options::GooglePubSubAdapterConfig;
 #[cfg(feature = "iggy")]
@@ -59,7 +60,7 @@ impl QueueManagerFactory {
         concurrency: Option<usize>,
         response_timeout_ms: Option<u64>,
     ) -> Result<Box<dyn QueueInterface>> {
-        Self::create_with_reliability(
+        Self::create_with_redis_connection_options(
             driver,
             redis_url,
             prefix,
@@ -67,6 +68,7 @@ impl QueueManagerFactory {
             response_timeout_ms,
             QueueReliabilityConfig::default(),
             None,
+            RedisTlsOptions::default(),
         )
         .await
     }
@@ -83,10 +85,37 @@ impl QueueManagerFactory {
         reliability: QueueReliabilityConfig,
         sentinel: Option<SentinelSpec>,
     ) -> Result<Box<dyn QueueInterface>> {
-        reliability
-            .validate()
-            .map_err(sockudo_core::error::Error::Config)?;
-        match driver {
+        Self::create_with_redis_connection_options(
+            driver,
+            redis_url,
+            prefix,
+            concurrency,
+            response_timeout_ms,
+            reliability,
+            sentinel,
+            RedisTlsOptions::default(),
+        )
+        .await
+    }
+
+    /// Creates a queue manager with explicit direct Redis TLS settings.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(unused_variables)]
+    pub fn create_with_redis_connection_options<'a>(
+        driver: &'a str,
+        redis_url: Option<&'a str>,
+        prefix: Option<&'a str>,
+        concurrency: Option<usize>,
+        response_timeout_ms: Option<u64>,
+        reliability: QueueReliabilityConfig,
+        sentinel: Option<SentinelSpec>,
+        tls: RedisTlsOptions,
+    ) -> BoxFuture<'a, Result<Box<dyn QueueInterface>>> {
+        Box::pin(async move {
+            reliability
+                .validate()
+                .map_err(sockudo_core::error::Error::Config)?;
+            match driver {
             #[cfg(feature = "redis")]
             "redis" => {
                 let url = redis_url.unwrap_or("redis://127.0.0.1:6379/");
@@ -99,16 +128,17 @@ impl QueueManagerFactory {
                     response_timeout_ms = response_timeout_ms,
                     "queue factory initialized"
                 );
-                let manager = RedisQueueManager::new_with_config(
+                let manager = RedisQueueManager::new_with_connection_options(
                     url,
                     sentinel,
+                    tls,
                     prefix_str,
                     concurrency_val,
                     response_timeout_ms,
                     reliability,
                 )
                 .await?;
-                Ok(Box::new(manager))
+                Ok(Box::new(manager) as Box<dyn QueueInterface>)
             }
             #[cfg(feature = "redis-cluster")]
             "redis-cluster" => {
@@ -127,15 +157,16 @@ impl QueueManagerFactory {
                     request_timeout_ms = response_timeout_ms,
                     "queue factory initialized"
                 );
-                let manager = RedisClusterQueueManager::new_with_config(
+                let manager = RedisClusterQueueManager::new_with_connection_options(
                     cluster_nodes,
                     prefix_str,
                     concurrency_val,
                     response_timeout_ms,
                     reliability,
+                    tls,
                 )
                 .await?;
-                Ok(Box::new(manager))
+                Ok(Box::new(manager) as Box<dyn QueueInterface>)
             }
             #[cfg(feature = "nats")]
             "nats" => {
@@ -147,7 +178,7 @@ impl QueueManagerFactory {
                 info!(queue_driver = "memory", "queue factory initialized");
                 let manager = MemoryQueueManager::new_with_config(reliability)?;
                 manager.start_processing();
-                Ok(Box::new(manager))
+                Ok(Box::new(manager) as Box<dyn QueueInterface>)
             }
             #[cfg(not(feature = "redis"))]
             "redis" => {
@@ -187,10 +218,11 @@ impl QueueManagerFactory {
                     "SNS queue manager requested but the sns feature is not compiled in".to_string(),
                 ))
             }
-            other => Err(sockudo_core::error::Error::Queue(format!(
-                "Unsupported queue driver: {other}"
-            ))),
-        }
+                other => Err(sockudo_core::error::Error::Queue(format!(
+                    "Unsupported queue driver: {other}"
+                ))),
+            }
+        })
     }
 
     /// Creates an SQS queue manager instance with the given configuration.

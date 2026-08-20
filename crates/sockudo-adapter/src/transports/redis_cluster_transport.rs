@@ -5,6 +5,7 @@ use redis::cluster_read_routing::RandomReplicaStrategy;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::RedisClusterAdapterConfig;
+use sockudo_core::redis_client::configure_cluster_builder;
 
 use redis::AsyncCommands;
 use redis::cluster::{ClusterClient, ClusterClientBuilder};
@@ -80,9 +81,11 @@ impl HorizontalTransport for RedisClusterTransport {
     type Config = RedisClusterAdapterConfig;
 
     async fn new(config: Self::Config) -> Result<Self> {
-        let client = ClusterClientBuilder::new(config.nodes.clone())
+        let builder = ClusterClientBuilder::new(config.nodes.clone())
             .retries(3)
-            .read_routing_strategy(RandomReplicaStrategy)
+            .read_routing_strategy(RandomReplicaStrategy);
+        let client = configure_cluster_builder(builder, &config.tls)
+            .await?
             .build()
             .map_err(|e| Error::Redis(format!("Failed to create Redis Cluster client: {e}")))?;
 
@@ -336,6 +339,7 @@ impl HorizontalTransport for RedisClusterTransport {
         let request_channel = self.request_channel.clone();
         let response_channel = self.response_channel.clone();
         let nodes = self.config.nodes.clone();
+        let tls = self.config.tls.clone();
         let use_sharded_pubsub = self.use_sharded_pubsub;
         // Clone the publish connection for use in handlers (cheap, thread-safe)
         let publish_connection = self.publish_connection.clone();
@@ -374,6 +378,7 @@ impl HorizontalTransport for RedisClusterTransport {
                         metrics.clone(),
                         is_running.clone(),
                         shutdown.clone(),
+                        tls.clone(),
                     )
                 } else {
                     use crate::transports::redis_cluster_sharded_pubsub::ShardedSubscriber;
@@ -384,6 +389,7 @@ impl HorizontalTransport for RedisClusterTransport {
                         metrics.clone(),
                         is_running.clone(),
                         shutdown.clone(),
+                        tls.clone(),
                     )
                 };
 

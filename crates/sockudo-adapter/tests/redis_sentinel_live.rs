@@ -103,7 +103,42 @@ fn transport_config(test_name: &str) -> RedisAdapterConfig {
         request_timeout_ms: 5000,
         cluster_mode: false,
         sentinel: connection.sentinel_spec(),
+        tls: connection.master_tls,
     }
+}
+
+fn direct_transport_config(test_name: &str) -> RedisAdapterConfig {
+    let mut connection = sentinel_connection();
+    connection.sentinels.clear();
+    connection.host =
+        std::env::var("SOCKUDO_DIRECT_REDIS_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    connection.port = std::env::var("SOCKUDO_DIRECT_REDIS_PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(16380);
+    let url = connection.to_url();
+
+    RedisAdapterConfig {
+        url,
+        prefix: format!("sockudo-direct-tls-live:{test_name}"),
+        request_timeout_ms: 5000,
+        cluster_mode: false,
+        sentinel: None,
+        tls: connection.master_tls,
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a live direct Redis TLS deployment; configure via SOCKUDO_MASTER_TLS and SOCKUDO_TLS_* (see `make sentinel-tls-up`)"]
+async fn direct_transport_connects_with_private_ca() {
+    let transport = RedisTransport::new(direct_transport_config("private-ca"))
+        .await
+        .expect("direct transport should connect with the configured private CA and mTLS pair");
+
+    transport
+        .check_health()
+        .await
+        .expect("PING via the direct TLS connection should succeed");
 }
 
 #[tokio::test]

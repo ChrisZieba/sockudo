@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.2.0 - 2026-08-17
+
+### Added
+
+- Add typed `terminateUserConnections` and `forceReconnectUser` endpoints.
+- Add request coverage and usage documentation for user connection management.
+
+### Fixed
+
+- Use the server's `X-Pusher-*` webhook signature headers.
+
 ## 2.1.0 - 2026-06-27
 
 ### Added

@@ -1,4 +1,4 @@
-# Concurrent Turns
+# Concurrent Runs
 
-Concurrent turns are routed by `turn-id`, `invocation-id`, `event-id`, and stream headers.
-`waitForTurn()` resolves when the selected active-turn filter settles.
+Concurrent runs are routed by `run-id`, `invocation-id`, `event-id`, and stream headers.
+`waitForRun()` resolves when the selected active-run filter settles.

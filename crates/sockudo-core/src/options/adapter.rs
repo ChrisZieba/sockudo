@@ -95,6 +95,8 @@ pub struct RedisClusterAdapterConfig {
     pub use_connection_manager: bool,
     #[serde(default)]
     pub use_sharded_pubsub: bool,
+    /// TLS settings for cluster data connections and shard listeners.
+    pub tls: super::RedisTlsOptions,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -201,6 +203,7 @@ impl Default for RedisClusterAdapterConfig {
             request_timeout_ms: 1000,
             use_connection_manager: true,
             use_sharded_pubsub: false,
+            tls: super::RedisTlsOptions::default(),
         }
     }
 }

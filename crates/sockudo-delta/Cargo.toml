@@ -9,7 +9,7 @@ license-file.workspace = true
 
 [features]
 default = []
-redis = ["dep:redis"]
+redis = ["dep:redis", "sockudo-core/redis"]
 nats = ["dep:async-nats"]
 
 [dependencies]

@@ -29,7 +29,7 @@ impl CacheManagerFactory {
                 #[cfg(feature = "redis-cluster")]
                 if config.redis.cluster_mode {
                     info!(cache_driver = "redis_cluster", "using cache driver");
-                    if global_redis_conn_details.cluster_nodes.is_empty() {
+                    if !global_redis_conn_details.has_cluster_nodes() {
                         tracing::error!(
                             cache_driver = "redis_cluster",
                             "redis cluster cache requires configured cluster nodes"
@@ -38,11 +38,7 @@ impl CacheManagerFactory {
                             "Cache: Redis cluster nodes not configured.".to_string(),
                         ));
                     }
-                    let nodes: Vec<String> = global_redis_conn_details
-                        .cluster_nodes
-                        .iter()
-                        .map(|node| node.to_url())
-                        .collect();
+                    let nodes = global_redis_conn_details.cluster_node_urls();
 
                     let prefix =
                         config.redis.prefix.clone().unwrap_or_else(|| {
@@ -52,6 +48,7 @@ impl CacheManagerFactory {
                     let cluster_cache_config = RedisClusterCacheConfig {
                         nodes,
                         prefix,
+                        tls: global_redis_conn_details.cluster_tls_options(),
                         ..Default::default()
                     };
                     let manager = RedisClusterCacheManager::new(cluster_cache_config).await?;
@@ -73,6 +70,12 @@ impl CacheManagerFactory {
                     .url_override
                     .clone()
                     .unwrap_or_else(|| global_redis_conn_details.to_url());
+                let sentinel = config
+                    .redis
+                    .url_override
+                    .is_none()
+                    .then(|| global_redis_conn_details.sentinel_spec())
+                    .flatten();
 
                 let prefix = config
                     .redis
@@ -83,6 +86,8 @@ impl CacheManagerFactory {
                 let standalone_redis_cache_config = StandaloneRedisCacheConfig {
                     url: redis_url,
                     prefix,
+                    sentinel,
+                    tls: global_redis_conn_details.master_tls.clone(),
                     ..Default::default()
                 };
                 let manager = RedisCacheManager::new(standalone_redis_cache_config).await?;
@@ -95,7 +100,7 @@ impl CacheManagerFactory {
             #[cfg(feature = "redis-cluster")]
             CacheDriver::RedisCluster => {
                 info!(cache_driver = "redis_cluster", "using cache driver");
-                if global_redis_conn_details.cluster_nodes.is_empty() {
+                if !global_redis_conn_details.has_cluster_nodes() {
                     tracing::error!(
                         cache_driver = "redis_cluster",
                         "redis cluster cache requires configured cluster nodes"
@@ -105,11 +110,7 @@ impl CacheManagerFactory {
                             .to_string(),
                     ));
                 }
-                let nodes: Vec<String> = global_redis_conn_details
-                    .cluster_nodes
-                    .iter()
-                    .map(|node| node.to_url())
-                    .collect();
+                let nodes = global_redis_conn_details.cluster_node_urls();
 
                 let prefix = config
                     .redis
@@ -120,6 +121,7 @@ impl CacheManagerFactory {
                 let cluster_cache_config = RedisClusterCacheConfig {
                     nodes,
                     prefix,
+                    tls: global_redis_conn_details.cluster_tls_options(),
                     ..Default::default()
                 };
                 let manager = RedisClusterCacheManager::new(cluster_cache_config).await?;

@@ -824,7 +824,7 @@ class SockudoClient(
                         currentAuthToken?.let { put("token", AuthValue.Text(it)) }
                     }
                     put("client", AuthValue.Text("kotlin"))
-                    put("version", AuthValue.Text("2.1.0"))
+                    put("version", AuthValue.Text("2.2.0"))
                     put("flash", AuthValue.Flag(false))
                 },
             )

@@ -9,6 +9,8 @@ use crossfire::mpsc;
 use redis::cluster_routing::Slot;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::metrics::MetricsInterface;
+use sockudo_core::options::RedisTlsOptions;
+use sockudo_core::redis_client::build_standalone_client;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -90,10 +92,10 @@ impl Topology {
     /// # Errors
     ///
     /// Returns an error if all seeds fail or the response cannot be parsed.
-    pub(crate) async fn discover(seed_urls: &[String]) -> Result<Self> {
+    pub(crate) async fn discover(seed_urls: &[String], tls: &RedisTlsOptions) -> Result<Self> {
         let mut last_err: Option<Error> = None;
         for url in seed_urls {
-            match Self::discover_one(url).await {
+            match Self::discover_one(url, tls).await {
                 Ok(topo) => return Ok(topo),
                 Err(e) => {
                     warn!(adapter = "redis_cluster", "seed node connection failed");
@@ -105,12 +107,8 @@ impl Topology {
             .unwrap_or_else(|| Error::Redis("Topology::discover: no seed URLs provided".into())))
     }
 
-    async fn discover_one(url: &str) -> Result<Self> {
-        let client = redis::Client::open(url).map_err(|e| {
-            Error::Redis(format!(
-                "topology: failed to open client for seed node: {e}"
-            ))
-        })?;
+    async fn discover_one(url: &str, tls: &RedisTlsOptions) -> Result<Self> {
+        let client = build_standalone_client(url, tls).await?;
 
         let mut conn = client
             .get_multiplexed_async_connection()
@@ -362,6 +360,7 @@ pub(crate) struct ShardListenerParams {
     shard_addr: String,
     metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
     refresh_notify: Arc<Notify>,
+    tls: RedisTlsOptions,
 }
 
 /// Long-running task for one shard master.
@@ -399,7 +398,7 @@ pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
 
         let cfg = redis::AsyncConnectionConfig::new().set_push_sender(push_sender);
 
-        let client = match redis::Client::open(params.url.as_str()) {
+        let client = match build_standalone_client(&params.url, &params.tls).await {
             Ok(c) => c,
             Err(_e) => {
                 warn!(
@@ -566,6 +565,7 @@ pub(crate) struct ShardedSubscriber {
     is_running: Arc<AtomicBool>,
     shutdown: Arc<Notify>,
     refresh_notify: Arc<Notify>,
+    tls: RedisTlsOptions,
 }
 
 impl ShardedSubscriber {
@@ -576,6 +576,7 @@ impl ShardedSubscriber {
         metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
         is_running: Arc<AtomicBool>,
         shutdown: Arc<Notify>,
+        tls: RedisTlsOptions,
     ) -> Self {
         Self::with_mode(
             channels,
@@ -584,6 +585,7 @@ impl ShardedSubscriber {
             metrics,
             is_running,
             shutdown,
+            tls,
         )
     }
 
@@ -593,6 +595,7 @@ impl ShardedSubscriber {
         metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
         is_running: Arc<AtomicBool>,
         shutdown: Arc<Notify>,
+        tls: RedisTlsOptions,
     ) -> Self {
         Self::with_mode(
             channels,
@@ -601,6 +604,7 @@ impl ShardedSubscriber {
             metrics,
             is_running,
             shutdown,
+            tls,
         )
     }
 
@@ -611,6 +615,7 @@ impl ShardedSubscriber {
         metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
         is_running: Arc<AtomicBool>,
         shutdown: Arc<Notify>,
+        tls: RedisTlsOptions,
     ) -> Self {
         Self {
             channels,
@@ -620,6 +625,7 @@ impl ShardedSubscriber {
             is_running,
             shutdown,
             refresh_notify: Arc::new(Notify::new()),
+            tls,
         }
     }
 
@@ -631,7 +637,7 @@ impl ShardedSubscriber {
     /// Propagates any error from `Topology::discover`. Individual shard
     /// connection failures are retried internally.
     pub(crate) async fn start(&self) -> Result<ShardedPushReceiver> {
-        let topology = Topology::discover(&self.seed_urls).await?;
+        let topology = Topology::discover(&self.seed_urls, &self.tls).await?;
 
         let mut by_shard: HashMap<NodeAddr, Vec<String>> = HashMap::new();
         for ch in &self.channels {
@@ -698,6 +704,7 @@ impl ShardedSubscriber {
                     shard_addr: shard_addr_str.clone(),
                     metrics: self.metrics.clone(),
                     refresh_notify: self.refresh_notify.clone(),
+                    tls: self.tls.clone(),
                 };
                 shard_map.insert(shard_addr_str, tokio::spawn(shard_listener_loop(params)));
                 ready_receivers.push(ready_rx);
@@ -727,6 +734,7 @@ impl ShardedSubscriber {
         let scheme_clone = scheme.to_owned();
         let password_clone = password.clone();
         let mode = self.mode;
+        let tls = self.tls.clone();
 
         let refresh_task = tokio::spawn(async move {
             loop {
@@ -739,7 +747,7 @@ impl ShardedSubscriber {
                     break;
                 }
 
-                let new_topo = match Topology::discover(&seed_urls_clone).await {
+                let new_topo = match Topology::discover(&seed_urls_clone, &tls).await {
                     Ok(t) => t,
                     Err(_e) => {
                         warn!(adapter = "redis_cluster", "topology refresh failed");
@@ -796,6 +804,7 @@ impl ShardedSubscriber {
                         shard_addr: new_str.clone(),
                         metrics: metrics_clone.clone(),
                         refresh_notify: refresh_notify_clone.clone(),
+                        tls: tls.clone(),
                     };
                     sh.insert(new_str, tokio::spawn(shard_listener_loop(params)));
                 }

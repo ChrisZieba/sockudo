@@ -24,6 +24,7 @@ async fn test_redis_transport_new_with_invalid_url() {
         request_timeout_ms: 1000,
         cluster_mode: false,
         sentinel: None,
+        tls: Default::default(),
     };
 
     // Add a timeout to prevent test from hanging
@@ -46,6 +47,7 @@ async fn test_redis_transport_config_edge_cases() -> Result<()> {
         request_timeout_ms: 1000,
         cluster_mode: false,
         sentinel: None,
+        tls: Default::default(),
     };
 
     let transport = RedisTransport::new(config).await?;
@@ -58,6 +60,7 @@ async fn test_redis_transport_config_edge_cases() -> Result<()> {
         request_timeout_ms: 1, // 1ms timeout
         cluster_mode: false,
         sentinel: None,
+        tls: Default::default(),
     };
 
     let transport = RedisTransport::new(config).await?;
@@ -70,6 +73,7 @@ async fn test_redis_transport_config_edge_cases() -> Result<()> {
         request_timeout_ms: 0, // Zero timeout
         cluster_mode: false,
         sentinel: None,
+        tls: Default::default(),
     };
 
     let transport = RedisTransport::new(config).await?;
@@ -97,6 +101,7 @@ async fn test_redis_transport_malformed_url() {
             request_timeout_ms: 1000,
             cluster_mode: false,
             sentinel: None,
+            tls: Default::default(),
         };
 
         let result = tokio::time::timeout(
@@ -275,6 +280,7 @@ async fn test_channel_names() -> Result<()> {
         request_timeout_ms: 1000,
         cluster_mode: false,
         sentinel: None,
+        tls: Default::default(),
     };
 
     let transport = RedisTransport::new(config.clone()).await?;

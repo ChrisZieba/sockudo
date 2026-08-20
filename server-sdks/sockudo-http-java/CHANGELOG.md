@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.0 - 2026-08-17
+
+- [ADDED] Add `terminateUserConnections` and `forceReconnectUser` helpers.
+- [FIXED] Use the server's `X-Pusher-*` webhook signature headers.
+- [ADDED] Add request coverage and usage documentation for user connection management.
+
 ## 2.1.0 - 2026-06-27
 
 - [ADDED] Add tolerant webhook parsing that preserves unknown event names, future fields, nested JSON values, and raw event access.

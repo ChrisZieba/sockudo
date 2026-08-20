@@ -56,7 +56,7 @@ func (c *Client) autoIdempotencyEnabled() bool {
 }
 
 const (
-	libraryVersion = "2.1.0"
+	libraryVersion = "2.2.0"
 	libraryName    = "sockudo-http-go"
 )
 

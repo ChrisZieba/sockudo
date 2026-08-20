@@ -424,7 +424,7 @@ impl SockudoServer {
                     _ => None,
                 };
 
-                match QueueManagerFactory::create_with_reliability(
+                match QueueManagerFactory::create_with_redis_connection_options(
                     config.queue.driver.as_ref(),
                     queue_redis_url_or_nodes.as_deref(),
                     Some(queue_prefix),
@@ -432,6 +432,7 @@ impl SockudoServer {
                     queue_response_timeout_ms,
                     config.queue.reliability.clone(),
                     queue_sentinel,
+                    config.database.redis.master_tls.clone(),
                 )
                 .await
                 {
@@ -670,8 +671,10 @@ impl SockudoServer {
                         #[cfg(feature = "redis")]
                         DeltaCoordinationBackend::Redis => {
                             let redis_url = config.database.redis.to_url();
-                            match sockudo_delta::coordination::RedisClusterCoordinator::new(
+                            match sockudo_delta::coordination::RedisClusterCoordinator::new_with_connection_options(
                                 &redis_url,
+                                config.database.redis.sentinel_spec(),
+                                config.database.redis.master_tls.clone(),
                                 Some(&config.database.redis.key_prefix),
                             )
                             .await
@@ -691,8 +694,9 @@ impl SockudoServer {
                         #[cfg(feature = "redis")]
                         DeltaCoordinationBackend::RedisCluster => {
                             let nodes = config.database.redis.cluster_node_urls();
-                            match sockudo_delta::coordination::RedisClusterCoordinator::new_cluster(
+                            match sockudo_delta::coordination::RedisClusterCoordinator::new_cluster_with_tls(
                                 nodes,
+                                config.database.redis.cluster_tls_options(),
                                 Some(&config.database.redis.key_prefix),
                             )
                             .await

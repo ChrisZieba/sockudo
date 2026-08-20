@@ -5,6 +5,8 @@ use redis::cluster_async::ClusterConnection;
 use redis::cluster_read_routing::RandomReplicaStrategy;
 use sockudo_core::cache::{CacheManager, CacheScanPage};
 use sockudo_core::error::{Error, Result};
+use sockudo_core::options::RedisTlsOptions;
+use sockudo_core::redis_client::configure_cluster_builder;
 use std::time::Duration;
 
 /// Configuration for the Redis Cluster cache manager
@@ -18,6 +20,8 @@ pub struct RedisClusterCacheConfig {
     pub response_timeout: Option<Duration>,
     /// Read from replicas (if supported)
     pub read_from_replicas: bool,
+    /// TLS settings for cluster data connections.
+    pub tls: RedisTlsOptions,
 }
 
 impl Default for RedisClusterCacheConfig {
@@ -27,6 +31,7 @@ impl Default for RedisClusterCacheConfig {
             prefix: "cache".to_string(),
             response_timeout: Some(Duration::from_secs(5)),
             read_from_replicas: false,
+            tls: RedisTlsOptions::default(),
         }
     }
 }
@@ -50,6 +55,7 @@ impl RedisClusterCacheManager {
         if config.read_from_replicas {
             builder = builder.read_routing_strategy(RandomReplicaStrategy);
         }
+        builder = configure_cluster_builder(builder, &config.tls).await?;
 
         let client = builder
             .build()
@@ -477,6 +483,7 @@ impl ClusterCacheManagerFactory {
             prefix: prefix.unwrap_or("cache").to_string(),
             response_timeout,
             read_from_replicas,
+            tls: RedisTlsOptions::default(),
         };
 
         let cache_manager = RedisClusterCacheManager::new(config).await?;

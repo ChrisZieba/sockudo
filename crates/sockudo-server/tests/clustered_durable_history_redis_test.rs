@@ -220,6 +220,7 @@ async fn build_redis_node(
         request_timeout_ms: 1000,
         cluster_mode: false,
         sentinel: None,
+        tls: Default::default(),
     })
     .await
     .unwrap();

@@ -1,8 +1,9 @@
 use crate::redis_backend::ReliableRedisQueue;
 use crate::redis_connection::{StandaloneRedisProvider, blocking_response_timeout};
 use async_trait::async_trait;
+use futures_util::future::BoxFuture;
 use sockudo_core::error::Result;
-use sockudo_core::options::{QueueReliabilityConfig, SentinelSpec};
+use sockudo_core::options::{QueueReliabilityConfig, RedisTlsOptions, SentinelSpec};
 use sockudo_core::queue::{
     QueueBackendKind, QueueCapabilities, QueueHealth, QueueInterface, QueueJobId, QueueJobOptions,
     QueueJobRequest, QueueStats,
@@ -41,18 +42,42 @@ impl RedisQueueManager {
         response_timeout_ms: u64,
         reliability: QueueReliabilityConfig,
     ) -> Result<Self> {
-        let worker_response_timeout =
-            blocking_response_timeout(response_timeout_ms, reliability.worker_poll_interval_ms);
-        let provider =
-            StandaloneRedisProvider::connect(redis_url, sentinel, worker_response_timeout).await?;
-        Ok(Self {
-            backend: ReliableRedisQueue::new(
-                provider,
-                prefix,
-                concurrency,
-                response_timeout_ms,
-                reliability,
-            )?,
+        Self::new_with_connection_options(
+            redis_url,
+            sentinel,
+            RedisTlsOptions::default(),
+            prefix,
+            concurrency,
+            response_timeout_ms,
+            reliability,
+        )
+        .await
+    }
+
+    pub fn new_with_connection_options<'a>(
+        redis_url: &'a str,
+        sentinel: Option<SentinelSpec>,
+        tls: RedisTlsOptions,
+        prefix: &'a str,
+        concurrency: usize,
+        response_timeout_ms: u64,
+        reliability: QueueReliabilityConfig,
+    ) -> BoxFuture<'a, Result<Self>> {
+        Box::pin(async move {
+            let worker_response_timeout =
+                blocking_response_timeout(response_timeout_ms, reliability.worker_poll_interval_ms);
+            let provider =
+                StandaloneRedisProvider::connect(redis_url, sentinel, tls, worker_response_timeout)
+                    .await?;
+            Ok(Self {
+                backend: ReliableRedisQueue::new(
+                    provider,
+                    prefix,
+                    concurrency,
+                    response_timeout_ms,
+                    reliability,
+                )?,
+            })
         })
     }
 }

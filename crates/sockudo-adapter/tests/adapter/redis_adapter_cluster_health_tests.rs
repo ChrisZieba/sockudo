@@ -40,6 +40,7 @@ async fn create_redis_adapter(prefix: &str, cluster_config: &ClusterHealthConfig
         request_timeout_ms: 5000,
         cluster_mode: false,
         sentinel: None,
+        tls: Default::default(),
     };
 
     let mut adapter = RedisAdapter::new(options).await.unwrap();

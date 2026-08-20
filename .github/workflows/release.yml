@@ -64,9 +64,11 @@ jobs:
             PRERELEASE="true"
           fi
 
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "prerelease=${PRERELEASE}" >> $GITHUB_OUTPUT
+          {
+            echo "version=${VERSION}"
+            echo "tag=${TAG}"
+            echo "prerelease=${PRERELEASE}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Checkout requested release tag
         if: github.event_name == 'workflow_dispatch'
@@ -101,8 +103,12 @@ jobs:
       - name: Get repository and owner names in lowercase
         id: lowercase_repo # Step to convert repo name to lowercase
         run: |
-          echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-          echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+          REPOSITORY_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')
+          OWNER_NAME=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          {
+            echo "name=${REPOSITORY_NAME}"
+            echo "owner=${OWNER_NAME}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Get Docker tag suffix
         id: docker_suffix
@@ -112,7 +118,7 @@ jobs:
           else
             SUFFIX="latest"
           fi
-          echo "suffix=${SUFFIX}" >> $GITHUB_OUTPUT
+          echo "suffix=${SUFFIX}" >> "$GITHUB_OUTPUT"
 
   # =============================================================================
   # Build Linux Binaries
@@ -272,10 +278,17 @@ jobs:
 
           # Clean up temporary platform-specific tags
           echo "Cleaning up temporary tags..."
-          TOKEN=$(curl -s -X POST \
-            -H "Content-Type: application/json" \
-            -d '{"username": "'${DOCKERHUB_USERNAME}'", "password": "'${DOCKERHUB_TOKEN}'"}' \
-            https://hub.docker.com/v2/users/login/ | jq -r .token)
+          TOKEN=$(
+            jq -n \
+              --arg username "$DOCKERHUB_USERNAME" \
+              --arg password "$DOCKERHUB_TOKEN" \
+              '{username: $username, password: $password}' \
+              | curl -s -X POST \
+                -H "Content-Type: application/json" \
+                --data-binary @- \
+                https://hub.docker.com/v2/users/login/ \
+              | jq -r .token
+          )
 
           if [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ]; then
             echo "Deleting temp tag: ${{ needs.prepare.outputs.version }}-amd64-temp"
@@ -386,6 +399,7 @@ jobs:
             sockudo-ai-transport
             sockudo-push
             sockudo-adapter
+            sockudo-ably-compat
             sockudo
           )
 
@@ -416,6 +430,7 @@ jobs:
           if [ ${#FAILED_CRATES[@]} -gt 0 ]; then
             echo "Retrying ${#FAILED_CRATES[@]} failed crate(s) after index propagation delay..."
             sleep 30
+            FINAL_FAILURES=()
             for crate in "${FAILED_CRATES[@]}"; do
               echo "::group::Retrying $crate"
               VERSION=$(cargo metadata --no-deps --format-version 1 \
@@ -423,10 +438,16 @@ jobs:
               echo "Retrying $crate@$VERSION..."
               cargo publish -p "$crate" --token "$CRATES_IO_TOKEN" || {
                 echo "::error::Failed to publish $crate@$VERSION after retry"
+                FINAL_FAILURES+=("$crate")
               }
               sleep 30
               echo "::endgroup::"
             done
+
+            if [ ${#FINAL_FAILURES[@]} -gt 0 ]; then
+              echo "::error::Failed to publish after retry: ${FINAL_FAILURES[*]}"
+              exit 1
+            fi
           fi
 
   # =============================================================================

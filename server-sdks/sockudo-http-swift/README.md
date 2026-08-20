@@ -34,7 +34,7 @@ let package = Package(
             targets: ["YourPackage"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/sockudo/sockudo-http-swift", from: "2.1.0"),
+        .package(url: "https://github.com/sockudo/sockudo-http-swift", from: "2.2.0"),
     ],
     targets: [
         .target(

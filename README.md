@@ -208,7 +208,7 @@ channel.bind("price-updated", (payload) => {
 AI Transport example:
 
 ```ts
-import { TransportProvider, useView } from "@sockudo/ai-transport/react";
+import { ClientSessionProvider, useView } from "@sockudo/ai-transport/react";
 ```
 
 See [`client-sdks/sockudo-ai-transport-js/README.md`](client-sdks/sockudo-ai-transport-js/README.md)

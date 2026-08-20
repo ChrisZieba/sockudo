@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.0 - 2026-08-17
+
+* [ADDED] Add `TerminateUserConnections` and `ForceReconnectUser` helpers.
+* [ADDED] Add validation, request coverage, and usage documentation for user connection management.
+
 ## 2.1.0 - 2026-06-27
 
 * [ADDED] Preserve raw webhook event fields and nested non-string data payloads for forward compatibility.

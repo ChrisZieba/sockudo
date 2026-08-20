@@ -6,7 +6,8 @@ use futures::StreamExt;
 use redis::AsyncCommands;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::metrics::MetricsInterface;
-use sockudo_core::options::SentinelSpec;
+use sockudo_core::options::{RedisTlsOptions, SentinelSpec};
+use sockudo_core::redis_client::RedisClientOptions;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -24,6 +25,8 @@ pub struct RedisAdapterConfig {
     /// When set, connect via Redis Sentinel (with optional TLS / client certs)
     /// instead of opening `url` directly. `url` is then used only for diagnostics.
     pub sentinel: Option<SentinelSpec>,
+    /// TLS settings for a direct Redis data connection.
+    pub tls: RedisTlsOptions,
 }
 
 impl Default for RedisAdapterConfig {
@@ -34,6 +37,7 @@ impl Default for RedisAdapterConfig {
             request_timeout_ms: 5000,
             cluster_mode: false,
             sentinel: None,
+            tls: RedisTlsOptions::default(),
         }
     }
 }
@@ -69,7 +73,15 @@ impl HorizontalTransport for RedisTransport {
     async fn new(config: Self::Config) -> Result<Self> {
         // Standalone opens `url`; Sentinel builds a native Sentinel client (with TLS
         // and optional client certs) and resolves the current master.
-        let client = RedisClient::connect(&config.url, config.sentinel.clone()).await?;
+        let client = RedisClient::connect_with_options(
+            &config.url,
+            RedisClientOptions {
+                sentinel: config.sentinel.clone(),
+                tls: config.tls.clone(),
+                response_timeout: None,
+            },
+        )
+        .await?;
 
         let broadcast_channel = format!("{}:#broadcast", config.prefix);
         let request_channel = format!("{}:#requests", config.prefix);

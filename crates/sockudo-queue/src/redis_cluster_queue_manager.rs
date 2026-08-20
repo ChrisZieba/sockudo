@@ -1,8 +1,9 @@
 use crate::redis_backend::ReliableRedisQueue;
 use crate::redis_connection::ClusterRedisProvider;
 use async_trait::async_trait;
+use futures_util::future::BoxFuture;
 use sockudo_core::error::Result;
-use sockudo_core::options::QueueReliabilityConfig;
+use sockudo_core::options::{QueueReliabilityConfig, RedisTlsOptions};
 use sockudo_core::queue::{
     QueueBackendKind, QueueCapabilities, QueueHealth, QueueInterface, QueueJobId, QueueJobOptions,
     QueueJobRequest, QueueStats,
@@ -40,20 +41,42 @@ impl RedisClusterQueueManager {
         request_timeout_ms: u64,
         reliability: QueueReliabilityConfig,
     ) -> Result<Self> {
-        let provider = ClusterRedisProvider::connect(
+        Self::new_with_connection_options(
             cluster_nodes,
+            prefix,
+            concurrency,
             request_timeout_ms,
-            reliability.worker_poll_interval_ms,
+            reliability,
+            RedisTlsOptions::default(),
         )
-        .await?;
-        Ok(Self {
-            backend: ReliableRedisQueue::new(
-                provider,
-                prefix,
-                concurrency,
+        .await
+    }
+
+    pub fn new_with_connection_options<'a>(
+        cluster_nodes: Vec<String>,
+        prefix: &'a str,
+        concurrency: usize,
+        request_timeout_ms: u64,
+        reliability: QueueReliabilityConfig,
+        tls: RedisTlsOptions,
+    ) -> BoxFuture<'a, Result<Self>> {
+        Box::pin(async move {
+            let provider = ClusterRedisProvider::connect(
+                cluster_nodes,
                 request_timeout_ms,
-                reliability,
-            )?,
+                reliability.worker_poll_interval_ms,
+                tls,
+            )
+            .await?;
+            Ok(Self {
+                backend: ReliableRedisQueue::new(
+                    provider,
+                    prefix,
+                    concurrency,
+                    request_timeout_ms,
+                    reliability,
+                )?,
+            })
         })
     }
 }

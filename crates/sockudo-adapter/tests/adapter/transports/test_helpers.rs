@@ -22,6 +22,7 @@ pub fn get_redis_config() -> RedisAdapterConfig {
         request_timeout_ms: 1000, // Reduced timeout
         cluster_mode: false,
         sentinel: None,
+        tls: Default::default(),
     }
 }
 
@@ -38,6 +39,7 @@ pub fn get_redis_cluster_config() -> RedisClusterAdapterConfig {
         request_timeout_ms: 1000,      // Reduced timeout
         use_connection_manager: false, // Disable for grokzen cluster compatibility
         use_sharded_pubsub: false,     // Use standard pub/sub for tests
+        tls: Default::default(),
     }
 }
 

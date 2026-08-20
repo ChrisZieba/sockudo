@@ -5,6 +5,8 @@ use redis::cluster_async::ClusterConnection;
 use redis::cluster_read_routing::RandomReplicaStrategy;
 use sockudo_core::delta_types::ClusterCoordinator;
 use sockudo_core::error::{Error, Result};
+use sockudo_core::options::{RedisTlsOptions, SentinelSpec};
+use sockudo_core::redis_client::{RedisClient, RedisClientOptions, configure_cluster_builder};
 use std::sync::Arc;
 use tracing::debug;
 
@@ -61,18 +63,26 @@ pub struct RedisClusterCoordinator {
 impl RedisClusterCoordinator {
     /// Create a new Redis cluster coordinator
     pub async fn new(redis_url: &str, prefix: Option<&str>) -> Result<Self> {
-        let client = redis::Client::open(redis_url)
-            .map_err(|e| Error::Redis(format!("Failed to create Redis client: {}", e)))?;
+        Self::new_with_connection_options(redis_url, None, RedisTlsOptions::default(), prefix).await
+    }
 
-        let connection_manager_config = redis::aio::ConnectionManagerConfig::new()
-            .set_number_of_retries(5)
-            .set_exponent_base(2.0)
-            .set_max_delay(std::time::Duration::from_millis(5000));
-
-        let connection = client
-            .get_connection_manager_with_config(connection_manager_config)
-            .await
-            .map_err(|e| Error::Redis(format!("Failed to connect to Redis: {}", e)))?;
+    /// Create a coordinator using direct TLS or a native Sentinel topology.
+    pub async fn new_with_connection_options(
+        redis_url: &str,
+        sentinel: Option<SentinelSpec>,
+        tls: RedisTlsOptions,
+        prefix: Option<&str>,
+    ) -> Result<Self> {
+        let client = RedisClient::connect_with_options(
+            redis_url,
+            RedisClientOptions {
+                sentinel,
+                tls,
+                response_timeout: None,
+            },
+        )
+        .await?;
+        let connection = client.command_connection().await?;
 
         Ok(Self {
             connection: Arc::new(tokio::sync::Mutex::new(
@@ -86,9 +96,20 @@ impl RedisClusterCoordinator {
 
     /// Create a new Redis Cluster coordinator from seed nodes.
     pub async fn new_cluster(nodes: Vec<String>, prefix: Option<&str>) -> Result<Self> {
-        let client = ClusterClientBuilder::new(nodes)
+        Self::new_cluster_with_tls(nodes, RedisTlsOptions::default(), prefix).await
+    }
+
+    /// Create a Redis Cluster coordinator with data-plane TLS settings.
+    pub async fn new_cluster_with_tls(
+        nodes: Vec<String>,
+        tls: RedisTlsOptions,
+        prefix: Option<&str>,
+    ) -> Result<Self> {
+        let builder = ClusterClientBuilder::new(nodes)
             .retries(3)
-            .read_routing_strategy(RandomReplicaStrategy)
+            .read_routing_strategy(RandomReplicaStrategy);
+        let client = configure_cluster_builder(builder, &tls)
+            .await?
             .build()
             .map_err(|e| Error::Redis(format!("Failed to create Redis Cluster client: {}", e)))?;
 

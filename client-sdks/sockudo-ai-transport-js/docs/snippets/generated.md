@@ -28,21 +28,21 @@ Source: `demo/server/api/chat.post.ts`
 <!-- snippet:core-route -->
 
 ```ts
-async function runTurn(
-  turn: ReturnType<ReturnType<typeof createAgentSession>["createRun"]>,
+async function runAgentRun(
+  run: ReturnType<ReturnType<typeof createAgentSession>["createRun"]>,
   body: Record<string, unknown>,
   model: string,
 ): Promise<void> {
-  await turn.start();
+  await run.start();
   try {
     const stream = hasGatewayKey()
-      ? await liveGatewayStream(body, model, turn.abortSignal)
+      ? await liveGatewayStream(body, model, run.abortSignal)
       : demoUiMessageStream(latestText(body));
-    await turn.streamResponse(stream);
-    await turn.end("complete");
+    await run.streamResponse(stream);
+    await run.end("complete");
   } catch (error) {
-    await turn.streamResponse(errorStream(error));
-    await turn.end("error");
+    await run.streamResponse(errorStream(error));
+    await run.end("error");
   }
 }
 ```
@@ -90,7 +90,7 @@ Source: `demo/server/api/chat.post.ts`
     client: realtimeClient(),
     channelName,
   });
-  const turn = session.createRun({
+  const run = session.createRun({
     runId,
     invocationId,
     inputEventId,
@@ -99,7 +99,7 @@ Source: `demo/server/api/chat.post.ts`
       return request.filter.all === true || request.runOwners.get(runId) === clientId;
     },
     onError(error) {
-      console.error("[sockudo-ai-transport-demo] turn failed", error.message);
+      console.error("[sockudo-ai-transport-demo] run failed", error.message);
     },
   });
 ```

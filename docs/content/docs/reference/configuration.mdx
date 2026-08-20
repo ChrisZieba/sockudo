@@ -149,9 +149,9 @@ the same durable push store used by native push APIs.
 | `[queue]` | Webhook and push background work. |
 | `[rate_limiter]` | Request, connection, event, and push limits. |
 
-## Redis Sentinel and TLS
+## Redis connections, Sentinel, and TLS
 
-`[database.redis]` configures the Redis connection used by the Redis adapter, cache, queue, and rate limiter. When `sentinels` is non-empty, Sockudo connects through Redis Sentinel using a native Sentinel client (rather than a direct URL) and can secure both connection hops independently.
+`[database.redis]` configures the Redis connection used by the Redis adapter, cache, queue, rate limiter, and delta coordinator. Without Sentinel, `[database.redis.master_tls]` secures the direct Redis data connection for every consumer. When `sentinels` is non-empty, Sockudo connects through Redis Sentinel using a native Sentinel client (rather than a direct URL) and can secure both connection hops independently. Redis Cluster also reuses `master_tls` certificate material; the legacy `cluster.use_tls` switch continues to enable TLS with the default root store.
 
 | Key | Purpose |
 | --- | --- |
@@ -160,9 +160,21 @@ the same durable push store used by native push APIs.
 | `username` / `password` | Auth for the master/replica data connection. |
 | `sentinel_username` / `sentinel_password` | Auth for the Sentinel control connection. |
 | `[database.redis.sentinel_tls]` | TLS for the client→Sentinel control connection. |
-| `[database.redis.master_tls]` | TLS for the client→master/replica data connection. |
+| `[database.redis.master_tls]` | TLS for direct Redis, Redis Cluster, or the Sentinel-resolved master/replica data connection. |
 
 Each TLS block accepts `enabled`, `accept_invalid_certs` (skips verification; dangerous), `ca_path` (PEM CA for private CAs), and `client_cert_path` + `client_key_path` (PEM pair for mutual TLS / client-certificate auth).
+
+For a direct Redis deployment signed by a private CA, no Sentinel configuration is required:
+
+```toml
+[database.redis]
+host = "redis.internal"
+port = 6380
+
+[database.redis.master_tls]
+enabled = true
+ca_path = "/etc/sockudo/tls/redis-ca.pem"
+```
 
 ```toml
 [database.redis]
@@ -194,7 +206,7 @@ client_cert_path = "/etc/sockudo/tls/client.pem"
 client_key_path = "/etc/sockudo/tls/client.key"
 ```
 
-> **Note:** Sentinel TLS secures the horizontal Redis **adapter** (pub/sub) path and Queue v2 when `queue.driver = "redis"` inherits this topology. A `redis_pub_options.url` override, if set, takes precedence for the adapter and uses its standalone connection path instead.
+> **Note:** All Redis consumers inherit the native Sentinel topology when they do not define a URL override. An adapter, cache, queue, or rate-limiter URL override selects its standalone path; `master_tls` still applies to that direct data connection.
 
 ## Protocol features
 

@@ -19,9 +19,10 @@ pub struct RedisConnection {
     ///
     /// Only consulted when [`RedisConnection::sentinels`] is non-empty.
     pub sentinel_tls: RedisTlsOptions,
-    /// TLS settings for the data-plane connection to the master/replica resolved via Sentinel.
+    /// TLS settings for Redis data-plane connections.
     ///
-    /// Only consulted when [`RedisConnection::sentinels`] is non-empty.
+    /// This secures the master/replica resolved via Sentinel when Sentinel is
+    /// configured, or the direct Redis endpoint otherwise.
     pub master_tls: RedisTlsOptions,
     pub cluster: RedisClusterConnection,
     /// Legacy field kept for backward compatibility. Prefer `database.redis.cluster.nodes`.
@@ -180,7 +181,16 @@ impl RedisConnection {
         let (scheme, host) = if self.host.starts_with("rediss://") {
             ("rediss://", self.host.trim_start_matches("rediss://"))
         } else if self.host.starts_with("redis://") {
-            ("redis://", self.host.trim_start_matches("redis://"))
+            (
+                if self.master_tls.enabled {
+                    "rediss://"
+                } else {
+                    "redis://"
+                },
+                self.host.trim_start_matches("redis://"),
+            )
+        } else if self.master_tls.enabled {
+            ("rediss://", self.host.as_str())
         } else {
             ("redis://", self.host.as_str())
         };
@@ -261,6 +271,15 @@ impl RedisConnection {
         self.build_cluster_urls(&self.cluster_nodes)
     }
 
+    /// Returns the data-plane TLS settings used for Redis Cluster connections.
+    /// The legacy `cluster.use_tls` switch still enables TLS with default roots;
+    /// `master_tls` adds private-CA, mTLS, and verification settings.
+    pub fn cluster_tls_options(&self) -> RedisTlsOptions {
+        let mut tls = self.master_tls.clone();
+        tls.enabled |= self.cluster.use_tls;
+        tls
+    }
+
     /// Normalizes any list of seed strings (`host:port`, `redis://...`, `rediss://...`) using
     /// shared cluster auth/TLS options.
     pub fn normalize_cluster_seed_urls(&self, seeds: &[String]) -> Vec<String> {
@@ -283,7 +302,7 @@ impl RedisConnection {
             .password
             .as_deref()
             .or(self.password.as_deref());
-        let use_tls = self.cluster.use_tls;
+        let use_tls = self.cluster.use_tls || self.master_tls.enabled;
 
         nodes
             .iter()
@@ -596,6 +615,22 @@ mod redis_connection_tests {
     }
 
     #[test]
+    fn test_standard_url_uses_tls_when_master_tls_is_enabled() {
+        let conn = RedisConnection {
+            host: "redis.internal".to_string(),
+            port: 6380,
+            master_tls: super::RedisTlsOptions {
+                enabled: true,
+                ca_path: Some("/etc/sockudo/redis-ca.pem".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(conn.to_url(), "rediss://redis.internal:6380/0");
+    }
+
+    #[test]
     fn test_is_sentinel_configured_false() {
         let conn = RedisConnection::default();
         assert!(!conn.is_sentinel_configured());
@@ -876,6 +911,34 @@ mod redis_connection_tests {
                 "redis://:cluster-secret@node2.secure-cluster.com:7001",
                 "rediss://:cluster-secret@node3.secure-cluster.com:7002",
             ]
+        );
+    }
+
+    #[test]
+    fn test_master_tls_enables_cluster_tls_with_private_ca() {
+        let conn = RedisConnection {
+            cluster: RedisClusterConnection {
+                nodes: vec![ClusterNode {
+                    host: "node1.secure-cluster.com".to_string(),
+                    port: 7000,
+                }],
+                ..Default::default()
+            },
+            master_tls: super::RedisTlsOptions {
+                enabled: true,
+                ca_path: Some("/etc/sockudo/redis-ca.pem".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(
+            conn.cluster_node_urls(),
+            vec!["rediss://node1.secure-cluster.com:7000"]
+        );
+        assert_eq!(
+            conn.cluster_tls_options().ca_path.as_deref(),
+            Some("/etc/sockudo/redis-ca.pem")
         );
     }
 

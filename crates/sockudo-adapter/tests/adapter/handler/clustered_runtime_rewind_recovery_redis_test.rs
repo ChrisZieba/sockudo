@@ -291,6 +291,7 @@ async fn build_redis_node_with_version_store_cache_and_tap(
         request_timeout_ms: 1000,
         cluster_mode: false,
         sentinel: None,
+        tls: Default::default(),
     })
     .await
     .unwrap();
@@ -361,6 +362,7 @@ async fn redis_cache(prefix: &str) -> Arc<dyn CacheManager + Send + Sync> {
             prefix: prefix.to_string(),
             response_timeout: Some(Duration::from_secs(1)),
             use_resp3: false,
+            ..Default::default()
         })
         .await
         .unwrap(),

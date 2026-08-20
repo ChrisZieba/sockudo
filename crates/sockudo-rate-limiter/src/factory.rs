@@ -13,6 +13,10 @@ use crate::redis_cluster_limiter::RedisClusterRateLimiter;
 #[cfg(feature = "redis")]
 use crate::redis_limiter::RedisRateLimiter;
 use sockudo_core::options::{CacheDriver, RateLimiterConfig, RedisConnection};
+#[cfg(feature = "redis-cluster")]
+use sockudo_core::redis_client::configure_cluster_builder;
+#[cfg(feature = "redis")]
+use sockudo_core::redis_client::{RedisClient, RedisClientOptions};
 
 pub struct RateLimiterFactory;
 
@@ -163,19 +167,34 @@ impl RateLimiterFactory {
             .url_override
             .clone()
             .unwrap_or_else(|| global_redis_conn_details.to_url());
+        let sentinel = config
+            .redis
+            .url_override
+            .is_none()
+            .then(|| global_redis_conn_details.sentinel_spec())
+            .flatten();
 
         let prefix = config.redis.prefix.clone().unwrap_or_else(|| {
             global_redis_conn_details.key_prefix.clone() + default_prefix_suffix
         });
 
-        let client = redis::Client::open(redis_url.as_str()).map_err(|e| {
-            sockudo_core::error::Error::Redis(format!(
-                "Failed to create Redis client for rate limiter: {e}"
-            ))
-        })?;
+        let client = RedisClient::connect_with_options(
+            &redis_url,
+            RedisClientOptions {
+                sentinel,
+                tls: global_redis_conn_details.master_tls.clone(),
+                response_timeout: None,
+            },
+        )
+        .await?;
 
-        let limiter =
-            RedisRateLimiter::new(client, prefix, limit.max_requests, limit.window_seconds).await?;
+        let limiter = RedisRateLimiter::with_redis_client(
+            client,
+            prefix,
+            limit.max_requests,
+            limit.window_seconds,
+        )
+        .await?;
 
         Ok(Arc::new(limiter))
     }
@@ -194,7 +213,7 @@ impl RateLimiterFactory {
             "rate limiter using redis cluster backend"
         );
 
-        if global_redis_conn_details.cluster_nodes.is_empty() {
+        if !global_redis_conn_details.has_cluster_nodes() {
             tracing::error!(
                 limiter = limiter_name,
                 "rate limiter: redis cluster nodes not configured"
@@ -204,21 +223,22 @@ impl RateLimiterFactory {
             ));
         }
 
-        let nodes: Vec<String> = global_redis_conn_details
-            .cluster_nodes
-            .iter()
-            .map(|node| node.to_url())
-            .collect();
+        let nodes = global_redis_conn_details.cluster_node_urls();
 
         let prefix = config.redis.prefix.clone().unwrap_or_else(|| {
             global_redis_conn_details.key_prefix.clone() + default_prefix_suffix
         });
 
-        let client = redis::cluster::ClusterClient::new(nodes).map_err(|e| {
-            sockudo_core::error::Error::Redis(format!(
-                "Failed to create Redis cluster client for rate limiter: {e}"
-            ))
-        })?;
+        let builder = redis::cluster::ClusterClientBuilder::new(nodes);
+        let client =
+            configure_cluster_builder(builder, &global_redis_conn_details.cluster_tls_options())
+                .await?
+                .build()
+                .map_err(|e| {
+                    sockudo_core::error::Error::Redis(format!(
+                        "Failed to create Redis cluster client for rate limiter: {e}"
+                    ))
+                })?;
 
         let limiter =
             RedisClusterRateLimiter::new(client, prefix, limit.max_requests, limit.window_seconds)

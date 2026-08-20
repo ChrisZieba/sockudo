@@ -20,7 +20,7 @@ export default defineEventHandler(async (event) => {
     client: realtimeClient(),
     channelName,
   });
-  const turn = session.createRun({
+  const run = session.createRun({
     runId,
     invocationId,
     inputEventId,
@@ -29,11 +29,11 @@ export default defineEventHandler(async (event) => {
       return request.filter.all === true || request.runOwners.get(runId) === clientId;
     },
     onError(error) {
-      console.error("[sockudo-ai-transport-demo] turn failed", error.message);
+      console.error("[sockudo-ai-transport-demo] run failed", error.message);
     },
   });
   // @docs-snippet-end
-  const work = runTurn(turn, body, config.model).finally(() => {
+  const work = runAgentRun(run, body, config.model).finally(() => {
     session.close();
   });
   event.waitUntil?.(work);
@@ -43,21 +43,21 @@ export default defineEventHandler(async (event) => {
 });
 
 // @docs-snippet core-route
-async function runTurn(
-  turn: ReturnType<ReturnType<typeof createAgentSession>["createRun"]>,
+async function runAgentRun(
+  run: ReturnType<ReturnType<typeof createAgentSession>["createRun"]>,
   body: Record<string, unknown>,
   model: string,
 ): Promise<void> {
-  await turn.start();
+  await run.start();
   try {
     const stream = hasGatewayKey()
-      ? await liveGatewayStream(body, model, turn.abortSignal)
+      ? await liveGatewayStream(body, model, run.abortSignal)
       : demoUiMessageStream(latestText(body));
-    await turn.streamResponse(stream);
-    await turn.end("complete");
+    await run.streamResponse(stream);
+    await run.end("complete");
   } catch (error) {
-    await turn.streamResponse(errorStream(error));
-    await turn.end("error");
+    await run.streamResponse(errorStream(error));
+    await run.end("error");
   }
 }
 // @docs-snippet-end
@@ -152,7 +152,7 @@ function demoUiMessageStream(prompt: string): ReadableStream<VercelOutput> {
           "regeneration",
           "history replay",
           "raw event inspection",
-          "active-turn cancellation",
+          "active-run cancellation",
         ],
       },
     },
@@ -169,7 +169,7 @@ function demoUiMessageStream(prompt: string): ReadableStream<VercelOutput> {
 }
 
 function offlineAnswer(prompt: string): string {
-  return `Offline mode received: "${prompt || "your prompt"}". No real model is being called because AI_GATEWAY_API_KEY is not set for this Nuxt process. Set AI_GATEWAY_API_KEY, restart the demo, then send the prompt again to get a live Vercel AI Gateway response. Sockudo still stores and streams this turn so the side panels can show raw frames, active state, branch history, cancellation, and multi-device sync. `;
+  return `Offline mode received: "${prompt || "your prompt"}". No real model is being called because AI_GATEWAY_API_KEY is not set for this Nuxt process. Set AI_GATEWAY_API_KEY, restart the demo, then send the prompt again to get a live Vercel AI Gateway response. Sockudo still stores and streams this run so the side panels can show raw frames, active state, branch history, cancellation, and multi-device sync. `;
 }
 
 function errorStream(error: unknown): ReadableStream<VercelOutput> {

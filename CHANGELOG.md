@@ -2,12 +2,100 @@
 
 ## Unreleased
 
+## [5.0.0] - 2026-08-17
+
+### Breaking Changes
+
+- AI Transport now uses the Session/Run public vocabulary. The TypeScript SDK renames the
+  Turn-named APIs and types, writes `run-continue` instead of `turn-continue`, and exposes the
+  four-arm run lifecycle (`start`, `suspend`, `resume`, and `end`). Existing `turn-continue`
+  history remains readable for migration compatibility.
+- The coordinated SDK release advances additive packages to 2.2.0. AI Transport and the Swift
+  client advance to 3.0.0 for their breaking public API and actor-isolation changes.
+
+Protocol V1 Pusher compatibility remains unchanged. The new Ably facade is opt-in and does not
+alter the native `/app/{appKey}` route.
+
+### Added
+
+- Opt-in `ably-compat` REST and WebSocket facade with JSON and MessagePack realtime support,
+  capability auth, presence, history, rewind, recovery, mutable messages, annotations, selected
+  push-recipient APIs, and AI Transport interoperability. The supported claim excludes Live
+  Objects and non-WebSocket realtime transports.
+- Pinned Node, Chromium, Go, strict-completeness, and AI Transport compatibility suites plus a
+  released-binary verification workflow and evidence scorecard.
+- Deterministic Sockudo simulator, storage and upgrade fault injection, failure shrinking,
+  outside-in binary chaos tooling, distributed correctness probes, and expanded fuzz targets for
+  protocol and durable-state boundaries.
+- `POST /apps/{appId}/users/{userId}/force_reconnect`, with matching helpers across all nine
+  server SDKs.
+- Per-node connection capacity limits, configuration-file `${VAR}` substitution, expanded
+  deployment guides, Caddy support, and a broader operator dashboard.
+- AI Transport steering, step lifecycle, run continuation, configurable header ceilings, and
+  recovery-aware branching/tool-result handling in `@sockudo/ai-transport`.
+
+### Changed
+
+- Queue backends use the Queue V2 worker model, Redis blocking behavior is bounded, and Iggy
+  batches offset commits for higher throughput.
+- Push admission, retry, dead-letter handling, provider failure classification, queue-age
+  backpressure, cleanup, repair, and durable status coordination now fail closed and expose
+  stronger operational controls.
+- Logging across the Rust workspace uses structured tracing fields with stable messages and safer
+  content handling.
+- Client SDKs share bounded reconnection behavior and corrected capability-token refresh,
+  expiration, and revocation handling.
+- Swift client coordination moved from `MainActor` to the dedicated `SockudoActor` to avoid
+  blocking the main thread while preserving serialized state access.
+
 ### Fixed
 
+- Applied `database.redis.master_tls` private-CA and mutual-TLS settings to direct Redis and Redis
+  Cluster connections across the adapter, cache, queue, rate limiter, and delta coordinator; cache
+  and rate limiting now use native Sentinel topology instead of passing an unsupported Sentinel URL.
+- Made Redis sliding-window admission atomic and safely retried one dropped-connection failure with
+  an idempotent member ID, preventing idle proxy disconnects from turning the next WebSocket
+  handshake into HTTP 500.
+- Updated the vulnerable `h2` dependency and made the NATS cross-node integration health assertion
+  wait through transient reconnect states.
 - Protocol V2 now uses the native nonce-based Ping/Pong heartbeat in `sockudo-ws` 2.0.1, lets the
   WebSocket engine provide native Pong responses, and closes missed Pong deadlines with code 4201,
   without running a duplicate application-level heartbeat. Protocol V1 and Ably compatibility keep
   their existing heartbeat behavior.
+- Restored Protocol V1 frame handling, corrected native auth and presence behavior, and hardened
+  Ably reconnect/recovery ordering and continuity failure handling.
+- Suppressed repeated Ably ACKable protocol serials on the same resumed transport while allowing
+  the first retry on a replacement transport, preventing duplicate processing and responses.
+- Released socket rate-limit entries, token-expiry tasks, disconnect tasks, and stats-map guards
+  promptly instead of retaining resources or holding guards across asynchronous work.
+- Skipped expensive webhook channel-count queries when filters exclude the channel and fixed
+  PostgreSQL user-status and JSON policy persistence edge cases.
+- Corrected the React Native client entrypoint and stabilized SDK, parser, fanout, and compatibility
+  CI lanes.
+- Refreshed the JavaScript and PHP SDK release dependency graphs to patched versions with clean
+  production security audits.
+
+### Performance
+
+- Reduced avoidable clones and per-subscriber payload work in adapter fanout, recovery, presence,
+  queues, webhooks, and the Ably compatibility facade.
+- Added regression budgets for compatibility parsing, fanout grouping, recovery, and real-topology
+  load evidence.
+
+## [4.7.0] - 2026-06-28
+
+### Added
+
+- Coordinated SDK 2.1.0 release with Protocol V2 capability-token auth, presence updates,
+  `until_attach` history, mutable-message helpers, append-rollup negotiation, and forward-compatible
+  decoding across the official client SDKs.
+- Forward-compatible webhook and mutation response handling across the official server SDKs.
+
+### Fixed
+
+- Kept V2-only versioned-message metadata out of Protocol V1 delivery.
+- Corrected MySQL durable-history index sizing, Swift reconnect and delta-decoder behavior, and
+  webhook hot-path allocation and filtering issues.
 
 ## [4.6.0] - 2026-06-17
 

@@ -13,7 +13,7 @@
     "@sockudo/ai-transport": "workspace:*",
     "@sockudo/client": "workspace:*",
     "ai": "^7.0.2",
-    "nuxt": "^4.0.0",
+    "nuxt": "^4.5.2",
     "vue": "^3.5.35",
     "zod": "^4.4.3"
   },

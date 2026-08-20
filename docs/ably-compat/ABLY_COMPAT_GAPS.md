@@ -12,7 +12,6 @@ manifest, excluding Live Objects and non-WebSocket realtime transports.
 | LiveObjects/object modes | Out of scope | `test/rest/liveobjects.test.js` and `test/realtime/liveobjects.test.js` are excluded in both manifests. |
 | Multiple and non-WebSocket realtime transports | Out of scope | `test/realtime/transports.test.js` is excluded; all active realtime cases are forced to `web_socket`. |
 | Behavior outside the selected manifests | Not claimed | A new or renamed upstream file makes the runner fail classification rather than silently reducing coverage. |
-| ably-go duplicate ACK panic | Upstream SDK patch, not an exclusion | `patches/ably-go/0002-ignore-duplicate-acks-after-canceled-publish.patch` makes the SDK ignore an ACK after its pending queue has drained, as its own comment requires. The loopback reconnect fixture otherwise exposes the upstream panic deterministically; no assertion or expected value is changed. |
 
 There are no per-test exclusions in the pinned Node or browser manifests. In latest-upstream CI,
 only three exact SDK/harness assertions are filtered: the Comet transport inventory and two SDK
@@ -31,6 +30,7 @@ suites have no test-body or assertion exclusions.
 
 | Finding | Resolution and evidence |
 | --- | --- |
+| Go pending-ACK queue panicked after reconnect | A low-latency reconnect can write the same queued `ProtocolMessage` twice on its replacement transport. Sockudo now tracks the inbound serial frontier per transport, processes and answers the first copy once, suppresses later copies on that transport, and starts a fresh frontier for a replacement transport so a genuinely lost ACK can be recovered. The upstream empty-queue panic remains enabled as a regression guard. |
 | Four `resume_lost_continuity` failures | The pinned upstream fixture accidentally called the return value of `recordPrivateApi(...)` because of a parenthesis/comma typo. That helper returns `undefined`, so the body stopped before its protocol assertion. Patch `0006` corrects only those setup statements; no assertion or expected value changes. All four JSON/MsgPack expansions now pass, and strict completeness is 250/250. |
 | Browser diagnostics made otherwise-passing assertions red | The local browser harness now distinguishes expected failed connections, uses browser-supported message decoding, and settles each upstream result once. Chromium defaults and strict completeness finish with zero assertion, page, console, context, or external-request errors. |
 | Second core SDK absent | ably-go is pinned and runs its official unit suite plus the official integration suite with `-race` in JSON and MsgPack. Latest-upstream CI also follows current `ably-go` `main`; every SDK patch hash is retained with the evidence. |

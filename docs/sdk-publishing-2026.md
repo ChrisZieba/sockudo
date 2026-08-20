@@ -2,6 +2,9 @@
 
 This is the source-of-truth release process for every imported Sockudo client and server SDK.
 
+For the coordinated Sockudo 5.0.0 release, also follow the
+[version matrix and release checklist](release-5.0.0.md).
+
 ## CI/CD Ownership
 
 - Root workflow: `.github/workflows/sdk-ci.yml`
@@ -156,7 +159,7 @@ Submit this repository URL to Packagist:
 https://github.com/sockudo/sockudo-http-php
 ```
 
-Stable Packagist versions come from Composer-compatible mirror tags such as `v2.1.0`. Create PHP
+Stable Packagist versions come from Composer-compatible mirror tags such as `v2.2.0`. Create PHP
 release tags in this monorepo as `server-php-vX.Y.Z`; the mirror workflow publishes the matching
 `vX.Y.Z` tag to `sockudo/sockudo-http-php`.
 

@@ -251,8 +251,6 @@ jobs:
           set -euo pipefail
           git -C .upstream/ably-go apply --check "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-local-tls.patch"
           git -C .upstream/ably-go apply "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-local-tls.patch"
-          git -C .upstream/ably-go apply --check "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-duplicate-ack.patch"
-          git -C .upstream/ably-go apply "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-duplicate-ack.patch"
           git -C .upstream/ably-go apply --check "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-local-fallback.patch"
           git -C .upstream/ably-go apply "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-local-fallback.patch"
           git -C .upstream/ably-go apply --check "${GITHUB_WORKSPACE}/tests/ably-compat/ably-go-local-internet-probe.patch"
