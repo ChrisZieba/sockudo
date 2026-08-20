@@ -8,6 +8,7 @@
 use bytes::Bytes;
 use crossfire::mpsc;
 use serde::Serialize;
+use sockudo_core::options::WebSocketConfig;
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -40,6 +41,16 @@ impl Default for OutboundLimits {
             data_messages: DEFAULT_DATA_MESSAGES,
             control_bytes: DEFAULT_CONTROL_BYTES,
             data_bytes: DEFAULT_DATA_BYTES,
+        }
+    }
+}
+
+impl OutboundLimits {
+    pub(crate) fn from_websocket(config: &WebSocketConfig) -> Self {
+        Self {
+            data_messages: config.max_messages.unwrap_or(DEFAULT_DATA_MESSAGES),
+            data_bytes: config.max_bytes.unwrap_or(DEFAULT_DATA_BYTES),
+            ..Self::default()
         }
     }
 }
@@ -432,6 +443,22 @@ mod tests {
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.encoded, 1);
         assert_eq!(snapshot.data_encoded, 0);
+    }
+
+    #[test]
+    fn data_queue_uses_configured_websocket_bounds() {
+        let config = WebSocketConfig {
+            max_messages: Some(123),
+            max_bytes: Some(456_789),
+            ..WebSocketConfig::default()
+        };
+
+        let limits = OutboundLimits::from_websocket(&config);
+
+        assert_eq!(limits.data_messages, 123);
+        assert_eq!(limits.data_bytes, 456_789);
+        assert_eq!(limits.control_messages, DEFAULT_CONTROL_MESSAGES);
+        assert_eq!(limits.control_bytes, DEFAULT_CONTROL_BYTES);
     }
 
     #[tokio::test]

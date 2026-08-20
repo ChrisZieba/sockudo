@@ -368,8 +368,9 @@ pub(super) async fn run_ably_realtime_socket(
         hub.forget_connection(requested_recovery_key).await;
     }
     let (mut reader, mut writer) = socket.split();
+    let outbound_limits = OutboundLimits::from_websocket(&handler.server_options().websocket);
     let (sender, mut outbound) =
-        AblyOutbound::channel(format, OutboundLimits::default(), Arc::clone(&hub.metrics));
+        AblyOutbound::channel(format, outbound_limits, Arc::clone(&hub.metrics));
     let (peer_close_tx, mut peer_close_rx) = crossfire::oneshot::oneshot();
     let mut peer_close_tx = Some(peer_close_tx);
     let (writer_shutdown_tx, mut writer_shutdown_rx) = crossfire::oneshot::oneshot();
@@ -800,7 +801,13 @@ pub(super) async fn run_ably_realtime_socket(
         .await;
     let attached_channel_count = attached_channels.len();
     if !graceful_close {
-        hub.mark_session_subscribers_recoverable(&app.id, &session_id);
+        hub.mark_session_subscribers_recoverable(
+            &app.id,
+            &session_id,
+            attached_channels
+                .values()
+                .map(|attachment| &attachment.channel),
+        );
     } else {
         for (requested, _) in attached_channels {
             if let Ok(channel) = AblyChannelName::parse(requested)

@@ -1247,6 +1247,7 @@ pub struct AblyCompatHub {
     tokens: DashMap<String, AblyTokenRecord>,
     revocations: Mutex<AblyRevocationStore>,
     live_sessions: DashMap<String, AblyLiveSession>,
+    node_session_owners: DashMap<AblyPresenceConnectionKey, String>,
     session_echo: DashMap<String, bool>,
     presence_removals: Arc<AblyPresenceRemovalQueue>,
     presence_registry: Arc<PresenceRegistry>,
@@ -1280,7 +1281,11 @@ pub trait AblyPushAdmissionGuard: Send + Sync {
 #[derive(Clone, Default)]
 pub struct AblyCompatDependencies {
     pub config: AblyCompatConfig,
+    /// Shared cache used as the cross-node compatibility coordination authority.
+    /// Leave unset for a process-local deployment.
     pub cache: Option<Arc<dyn CacheManager>>,
+    /// Optional persistence for time-bucketed compatibility statistics.
+    pub stats_cache: Option<Arc<dyn CacheManager>>,
     pub presence_registry: Arc<PresenceRegistry>,
     #[cfg(feature = "push")]
     pub push_store: Option<sockudo_push::DynPushStore>,
@@ -1298,8 +1303,12 @@ pub struct AblyCompatRuntime {
 impl AblyCompatRuntime {
     #[must_use]
     pub fn new(dependencies: AblyCompatDependencies) -> Self {
+        let stats_cache = dependencies
+            .stats_cache
+            .clone()
+            .or_else(|| dependencies.cache.clone());
         let stats = StatsAggregator::new(
-            dependencies.cache.clone(),
+            stats_cache,
             StatsRuntimeConfig {
                 queue_capacity: dependencies.config.stats_queue_capacity,
                 flush_interval: Duration::from_millis(dependencies.config.stats_flush_interval_ms),
@@ -2273,7 +2282,10 @@ impl AblyCompatHub {
         session_id: &str,
     ) -> bool {
         let Some(cache) = &self.cache else {
-            return true;
+            return self
+                .node_session_owners
+                .remove_if(key, |_, owner| owner == session_id)
+                .is_some();
         };
         match cache
             .compare_and_remove(
@@ -2463,6 +2475,10 @@ impl AblyCompatHub {
             self.metrics.expiry.fetch_add(1, Ordering::Relaxed);
         }
         for (connection_id, app_id) in expired_connections {
+            self.node_session_owners.remove(&AblyPresenceConnectionKey {
+                app_id: app_id.clone(),
+                connection_id: connection_id.clone(),
+            });
             self.remove_presence_connection(
                 &app_id,
                 &connection_id,
@@ -3078,55 +3094,54 @@ impl AblyCompatHub {
         (true, state.recovery_gates.remove(&key).unwrap_or_default())
     }
 
-    fn mark_session_subscribers_recoverable(&self, app_id: &str, session_id: &str) {
-        for entry in &self.channels {
-            if entry.key().app_id != app_id {
+    fn mark_session_subscribers_recoverable<'a>(
+        &self,
+        app_id: &str,
+        session_id: &str,
+        channels: impl IntoIterator<Item = &'a AblyChannelName>,
+    ) {
+        for channel in channels {
+            let Some(state) = self.channels.get(&channel_key(app_id, channel.base())) else {
+                continue;
+            };
+            let mut state = lock_channel_state(state.value());
+            let key = subscriber_key(session_id, channel.requested());
+            let recovery = {
+                let Some(subscriber) = state.subscribers.get_mut(&key) else {
+                    continue;
+                };
+                let direct_recovery = std::mem::take(&mut subscriber.direct_recovery_gate);
+                let direct_recovery = (!direct_recovery.messages.is_empty()
+                    || direct_recovery.overflowed)
+                    .then_some(direct_recovery);
+                subscriber.recoverable = true;
+                (
+                    subscriber.recovery_tail_start,
+                    Arc::clone(&subscriber.connection_id),
+                    subscriber.echo,
+                    subscriber.mode_flags,
+                    subscriber_uses_shared_recovery(&key, subscriber, channel.base()),
+                    direct_recovery,
+                )
+            };
+            if state.recovery_gates.contains_key(&key) {
                 continue;
             }
-            let base_channel = entry.key().channel.clone();
-            let mut state = lock_channel_state(entry.value());
-            let recovery_subscribers = state
-                .subscribers
-                .iter_mut()
-                .filter_map(|(key, subscriber)| {
-                    (key.session_id.as_ref() == session_id).then(|| {
-                        let direct_recovery = std::mem::take(&mut subscriber.direct_recovery_gate);
-                        let direct_recovery = (!direct_recovery.messages.is_empty()
-                            || direct_recovery.overflowed)
-                            .then_some(direct_recovery);
-                        subscriber.recoverable = true;
-                        (
-                            key.clone(),
-                            subscriber.recovery_tail_start,
-                            Arc::clone(&subscriber.connection_id),
-                            subscriber.echo,
-                            subscriber.mode_flags,
-                            subscriber_uses_shared_recovery(key, subscriber, &base_channel),
-                            direct_recovery,
-                        )
-                    })
-                })
-                .collect::<Vec<_>>();
-            for (key, start, connection_id, echo, mode_flags, shared_recovery, direct_recovery) in
-                recovery_subscribers
-            {
-                if state.recovery_gates.contains_key(&key) {
-                    continue;
-                }
-                let gate = if let Some(gate) = direct_recovery {
-                    gate
-                } else if shared_recovery {
-                    state.recovery_tail.gate_for_subscriber(
-                        start,
-                        connection_id.as_ref(),
-                        echo,
-                        mode_flags,
-                    )
-                } else {
-                    AblyAttachGate::default()
-                };
-                state.recovery_gates.insert(key, gate);
-            }
+            let (start, connection_id, echo, mode_flags, shared_recovery, direct_recovery) =
+                recovery;
+            let gate = if let Some(gate) = direct_recovery {
+                gate
+            } else if shared_recovery {
+                state.recovery_tail.gate_for_subscriber(
+                    start,
+                    connection_id.as_ref(),
+                    echo,
+                    mode_flags,
+                )
+            } else {
+                AblyAttachGate::default()
+            };
+            state.recovery_gates.insert(key, gate);
         }
     }
 
@@ -3886,6 +3901,13 @@ impl AblyCompatHub {
         session_id: &str,
     ) -> Result<(), AblyAuthError> {
         let Some(cache) = &self.cache else {
+            self.node_session_owners.insert(
+                AblyPresenceConnectionKey {
+                    app_id: app_id.to_string(),
+                    connection_id: connection_id.to_string(),
+                },
+                session_id.to_string(),
+            );
             return Ok(());
         };
         cache
@@ -3906,9 +3928,12 @@ impl AblyCompatHub {
     ) -> bool {
         let Some(cache) = &self.cache else {
             return self
-                .live_sessions
-                .get(connection_id)
-                .is_some_and(|session| session.session_id == session_id);
+                .node_session_owners
+                .get(&AblyPresenceConnectionKey {
+                    app_id: app_id.to_string(),
+                    connection_id: connection_id.to_string(),
+                })
+                .is_some_and(|owner| owner.as_str() == session_id);
         };
         match cache
             .compare_and_swap(
@@ -3936,9 +3961,12 @@ impl AblyCompatHub {
     ) -> bool {
         let Some(cache) = &self.cache else {
             return self
-                .live_sessions
-                .get(connection_id)
-                .is_some_and(|session| session.session_id == session_id);
+                .node_session_owners
+                .get(&AblyPresenceConnectionKey {
+                    app_id: app_id.to_string(),
+                    connection_id: connection_id.to_string(),
+                })
+                .is_some_and(|owner| owner.as_str() == session_id);
         };
         match cache
             .get(&session_owner_cache_key(app_id, connection_id))
@@ -3956,6 +3984,13 @@ impl AblyCompatHub {
 
     async fn release_session_owner(&self, app_id: &str, connection_id: &str, session_id: &str) {
         let Some(cache) = &self.cache else {
+            self.node_session_owners.remove_if(
+                &AblyPresenceConnectionKey {
+                    app_id: app_id.to_string(),
+                    connection_id: connection_id.to_string(),
+                },
+                |_, owner| owner == session_id,
+            );
             return;
         };
         if let Err(error) = cache

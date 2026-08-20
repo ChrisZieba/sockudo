@@ -567,7 +567,7 @@ max_events_per_channel = 1000
 
 [websocket]
 max_messages = 1000
-max_bytes = 1048576
+max_bytes = 4194304
 disconnect_on_buffer_full = false
 max_message_size = 67108864
 max_frame_size = 16777216

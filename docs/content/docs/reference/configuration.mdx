@@ -109,6 +109,12 @@ transport. The default is `accept`.
 `attach_timeout_ms` bounds the complete native presence/recovery/history attach
 path. On expiry Sockudo removes the partial subscription and returns
 `DETACHED`/`50003`; the default is 10 seconds.
+Ably realtime data queues use `[websocket].max_messages` and
+`[websocket].max_bytes`. When a slow session exceeds either configured bound,
+Sockudo marks its continuity lost and requires recovery instead of allowing the
+session to buffer beyond the operator-configured limit. The shipped
+configuration uses a 4 MiB byte bound so a healthy short burst of maximum-size
+application events is not mistaken for a stalled reader.
 Ably `delta=vcdiff` is negotiated per realtime channel and uses a fixed bounded
 compatibility cache; native `[delta_compression]` settings continue to configure
 only Sockudo's Pusher/V2 delta contract and do not select the Ably VCDIFF mode.
