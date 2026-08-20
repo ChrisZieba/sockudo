@@ -9,6 +9,9 @@ import { decode as vcdiffDecode } from "@ably/vcdiff-decoder";
 const fossilDeltaGlobal = typeof window !== "undefined" ? (window as any).fossilDelta : undefined;
 const vcdiffGlobal = typeof window !== "undefined" ? (window as any).vcdiff : undefined;
 
+const textDecoder = new TextDecoder();
+const textEncoder = new TextEncoder();
+
 /**
  * Base64 decode a string to Uint8Array
  */
@@ -29,14 +32,14 @@ function bytesToString(bytes: Uint8Array | number[]): string {
   if (Array.isArray(bytes) || !(bytes instanceof Uint8Array)) {
     bytes = new Uint8Array(bytes);
   }
-  return new TextDecoder().decode(bytes);
+  return textDecoder.decode(bytes);
 }
 
 /**
  * Convert string to Uint8Array
  */
 function stringToBytes(str: string): Uint8Array {
-  return new TextEncoder().encode(str);
+  return textEncoder.encode(str);
 }
 
 /**

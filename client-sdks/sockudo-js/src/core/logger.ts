@@ -50,6 +50,9 @@ class Logger {
   }
 
   private log(defaultLoggingFunction: (message: string) => void, ..._args: any[]) {
+    if (!config.log && !config.logToConsole) {
+      return;
+    }
     const message = stringify.apply(this, arguments);
     if (config.log) {
       config.log(message);

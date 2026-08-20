@@ -101,6 +101,9 @@ function toUint8Array(payload: unknown): Uint8Array {
 const JSON_SERIAL_FIELD_PATTERN = /("[-_A-Za-z0-9]*serial[-_A-Za-z0-9]*"\s*:\s*)(-?\d+)/g;
 
 function preserveUnsafeJsonSerials(raw: string): string {
+  if (raw.indexOf("serial") === -1) {
+    return raw;
+  }
   return raw.replace(JSON_SERIAL_FIELD_PATTERN, (match, prefix: string, literal: string) => {
     const serial = normalizeWireSerial(literal);
     return typeof serial === "string" ? `${prefix}${JSON.stringify(serial)}` : match;
