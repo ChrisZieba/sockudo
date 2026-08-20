@@ -2162,6 +2162,41 @@ async fn clean_recovered_attach_sets_the_resumed_flag() {
     assert_eq!(attached.flags, Some(ABLY_DEFAULT_MODE_FLAGS | FLAG_RESUMED));
 }
 
+#[test]
+fn explicit_channel_serial_uses_durable_recovery_on_a_resumed_attach() {
+    let mut options = AblyAttachOptions::from_wire(None, None);
+    let recovery_gate = AblyAttachGate {
+        messages: vec![empty_protocol_message(ACTION_MESSAGE)],
+        ..AblyAttachGate::default()
+    };
+    let channel_serial = encode_ably_channel_serial("stream-1", 7);
+
+    let recovery_gate = realtime::apply_resumed_attach_recovery(
+        true,
+        Some(channel_serial.as_str()),
+        &mut options,
+        recovery_gate,
+    );
+
+    assert!(options.attach_resume);
+    assert!(recovery_gate.messages.is_empty());
+}
+
+#[test]
+fn resumed_attach_without_a_channel_serial_keeps_the_live_recovery_tail() {
+    let mut options = AblyAttachOptions::from_wire(None, None);
+    let recovery_gate = AblyAttachGate {
+        messages: vec![empty_protocol_message(ACTION_MESSAGE)],
+        ..AblyAttachGate::default()
+    };
+
+    let recovery_gate =
+        realtime::apply_resumed_attach_recovery(true, None, &mut options, recovery_gate);
+
+    assert!(options.attach_resume);
+    assert_eq!(recovery_gate.messages.len(), 1);
+}
+
 #[tokio::test]
 async fn duplicate_remote_delivery_position_reaches_local_ably_subscriber_once() {
     let hub = AblyCompatHub::default();

@@ -1249,10 +1249,12 @@ pub(super) async fn handle_ably_protocol_message(
                     .is_empty();
             let (resumed_attach, recovery_gate) =
                 hub.take_resumed_subscriber_message(&app.id, &channel, session_id);
-            if resumed_attach {
-                inbound.channel_serial = None;
-                attach_options.attach_resume = true;
-            }
+            let recovery_gate = apply_resumed_attach_recovery(
+                resumed_attach,
+                inbound.channel_serial.as_deref(),
+                &mut attach_options,
+                recovery_gate,
+            );
             if recovery_gate.overflowed {
                 attached_channels.remove(channel.requested());
                 if let Err(error) = hub.unsubscribe(&app.id, &channel, session_id).await {
@@ -1933,6 +1935,27 @@ pub(super) async fn handle_ably_annotation(
             ..empty_protocol_message(ACTION_ACK)
         },
     );
+}
+
+pub(super) fn apply_resumed_attach_recovery(
+    resumed_attach: bool,
+    channel_serial: Option<&str>,
+    attach_options: &mut AblyAttachOptions,
+    recovery_gate: AblyAttachGate,
+) -> AblyAttachGate {
+    if !resumed_attach {
+        return recovery_gate;
+    }
+
+    attach_options.attach_resume = true;
+    if channel_serial.is_some() {
+        // An explicit channel position is the client's authoritative recovery
+        // boundary. Durable recovery will replay strictly after it, so mixing
+        // in the same-node in-memory tail could redeliver acknowledged data.
+        AblyAttachGate::default()
+    } else {
+        recovery_gate
+    }
 }
 
 pub(super) fn heartbeat_response(inbound: AblyProtocolMessage) -> AblyProtocolMessage {
