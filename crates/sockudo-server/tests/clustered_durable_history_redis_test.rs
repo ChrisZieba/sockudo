@@ -598,9 +598,14 @@ async fn run_cross_node_cold_recovery_test(history_store: Arc<dyn HistoryStore +
         .filter(|msg| matches!(msg.event.as_deref(), Some("cold-2" | "cold-3")))
         .filter_map(|msg| msg.message_id.clone())
         .collect();
+    let received = messages
+        .iter()
+        .map(|msg| (msg.event.clone(), msg.message_id.clone(), msg.serial))
+        .collect::<Vec<_>>();
     assert_eq!(
         replayed_ids,
-        vec!["cold-msg-2".to_string(), "cold-msg-3".to_string()]
+        vec!["cold-msg-2".to_string(), "cold-msg-3".to_string()],
+        "unexpected recovery sequence: {received:?}"
     );
 
     let aggregate = messages.last().unwrap();

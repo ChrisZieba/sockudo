@@ -16,6 +16,8 @@ use sockudo_app::AppManagerFactory;
 use sockudo_cache::CacheManagerFactory;
 use sockudo_core::auth::AuthValidator;
 use sockudo_core::error::{Error, Result};
+#[cfg(feature = "ably-compat")]
+use sockudo_core::options::CacheDriver;
 use sockudo_core::options::{AdapterDriver, DeltaCoordinationBackend, QueueDriver, ServerOptions};
 use sockudo_queue::QueueManagerFactory;
 use sockudo_rate_limiter::factory::RateLimiterFactory;
@@ -820,7 +822,17 @@ impl SockudoServer {
         let ably_compat = Arc::new(sockudo_ably_compat::AblyCompatRuntime::new(
             sockudo_ably_compat::AblyCompatDependencies {
                 config: config.ably_compat.clone(),
-                cache: Some(state.cache_manager.clone()),
+                // Process-local compatibility state must not share the bounded,
+                // evictable application memory cache. Redis-backed deployments
+                // use the cache as their cross-node coordination authority.
+                cache: matches!(
+                    config.cache.driver,
+                    CacheDriver::Redis | CacheDriver::RedisCluster
+                )
+                .then(|| state.cache_manager.clone() as Arc<dyn sockudo_core::cache::CacheManager>),
+                stats_cache: Some(
+                    state.cache_manager.clone() as Arc<dyn sockudo_core::cache::CacheManager>
+                ),
                 presence_registry: Arc::clone(&ably_presence_registry),
                 push_store: Some(state.push_store.clone()),
                 push_queue: Some(state.push_queue.clone()),

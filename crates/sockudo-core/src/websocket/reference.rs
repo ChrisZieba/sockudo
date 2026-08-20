@@ -25,7 +25,7 @@ use tracing::warn;
 #[derive(Clone)]
 pub struct WebSocketRef {
     pub broadcast_tx: SizedMessageSenderHandle,
-    pub message_sender: MessageSenderHandle,
+    pub(super) message_sender: MessageSenderHandle,
     pub channel_state: Arc<DashMap<Arc<str>, PerChannelState>>,
     continuity_gates: Arc<DashMap<Arc<str>, Arc<Mutex<RewindGate>>>>,
     pub socket_id: SocketId,

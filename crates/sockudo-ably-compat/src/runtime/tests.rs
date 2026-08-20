@@ -1254,6 +1254,9 @@ async fn abrupt_disconnect_presence_removal_runs_after_its_deadline() {
         )
         .expect("presence entry succeeds");
 
+    hub.claim_session_owner("app", "connection-a", "disconnected-session")
+        .await
+        .unwrap();
     hub.schedule_pending_presence_removal("app", "connection-a", "disconnected-session", 1)
         .await
         .expect("presence removal is scheduled");
@@ -1355,9 +1358,15 @@ async fn second_disconnect_uses_a_new_presence_removal_deadline() {
             },
         )
         .expect("presence entry succeeds");
+    hub.claim_session_owner("app", "connection-a", "first-session")
+        .await
+        .unwrap();
     hub.schedule_pending_presence_removal("app", "connection-a", "first-session", 20)
         .await
         .expect("first removal is scheduled");
+    hub.claim_session_owner("app", "connection-a", "second-session")
+        .await
+        .unwrap();
     let (command_tx, _command_rx) = crossfire::mpsc::bounded_async(1);
     hub.register_live_session(
         "connection-a".to_string(),
@@ -1651,6 +1660,44 @@ async fn auth_key_rotation_invalidates_previous_key_on_every_runtime() {
             .await,
         AblyConnectionStart::Resumed { .. }
     ));
+}
+
+#[tokio::test]
+async fn node_local_session_owner_survives_socket_registry_cleanup() {
+    let hub = AblyCompatHub::default();
+
+    hub.claim_session_owner("app", "connection-a", "session-a")
+        .await
+        .unwrap();
+    assert!(
+        hub.session_is_current("app", "connection-a", "session-a")
+            .await
+    );
+
+    hub.claim_session_owner("app", "connection-a", "session-b")
+        .await
+        .unwrap();
+    assert!(
+        !hub.session_is_current("app", "connection-a", "session-a")
+            .await
+    );
+    assert!(
+        hub.session_is_current("app", "connection-a", "session-b")
+            .await
+    );
+
+    hub.release_session_owner("app", "connection-a", "session-a")
+        .await;
+    assert!(
+        hub.session_is_current("app", "connection-a", "session-b")
+            .await
+    );
+    hub.release_session_owner("app", "connection-a", "session-b")
+        .await;
+    assert!(
+        !hub.session_is_current("app", "connection-a", "session-b")
+            .await
+    );
 }
 
 #[tokio::test]
@@ -2016,7 +2063,7 @@ async fn resumed_subscriber_replays_the_bounded_delivery_window_in_order() {
             None,
         );
     }
-    hub.mark_session_subscribers_recoverable("app", "old-session");
+    hub.mark_session_subscribers_recoverable("app", "old-session", std::iter::once(&channel));
 
     let (replacement, _replacement_receiver) = AblyOutbound::channel(
         AblyFormat::Json,
@@ -2106,7 +2153,7 @@ async fn resumed_subscriber_replays_the_shared_channel_tail_in_order() {
             None,
         );
     }
-    hub.mark_session_subscribers_recoverable("app", "old-session");
+    hub.mark_session_subscribers_recoverable("app", "old-session", std::iter::once(&channel));
 
     let (replacement, _replacement_receiver) = AblyOutbound::channel(
         AblyFormat::Json,
@@ -2127,6 +2174,54 @@ async fn resumed_subscriber_replays_the_shared_channel_tail_in_order() {
             Some(json!(format!("message-{index}")))
         );
     }
+}
+
+#[test]
+fn recoverable_marking_does_not_lock_unrelated_channels() {
+    let hub = Arc::new(AblyCompatHub::default());
+    let (sender, _receiver) = AblyOutbound::channel(
+        AblyFormat::Json,
+        OutboundLimits::default(),
+        Arc::clone(&hub.metrics),
+    );
+    let channel = AblyChannelName::parse("owned-channel".to_string()).unwrap();
+    hub.attach_clean(
+        "app",
+        &channel,
+        AblyAttachment {
+            connection_id: "connection",
+            session_id: "session",
+            sender,
+            filter: None,
+            params: HashMap::new(),
+            mode_flags: ABLY_DEFAULT_MODE_FLAGS,
+            echo: true,
+            presence: Vec::new(),
+        },
+        None,
+        Vec::new(),
+        false,
+    );
+
+    let unrelated = hub.channel_state("app", "unrelated-channel");
+    let unrelated_guard = lock_channel_state(&unrelated);
+    let worker_hub = Arc::clone(&hub);
+    let worker_channel = channel.clone();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        worker_hub.mark_session_subscribers_recoverable(
+            "app",
+            "session",
+            std::iter::once(&worker_channel),
+        );
+        done_tx.send(()).unwrap();
+    });
+
+    done_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("session cleanup waited on an unrelated channel lock");
+    drop(unrelated_guard);
+    worker.join().unwrap();
 }
 
 #[tokio::test]

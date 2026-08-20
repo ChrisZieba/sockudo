@@ -1849,7 +1849,8 @@ async fn rewind_live_handoff_across_nodes_has_no_gap_and_no_duplicates_via_redis
     assert!(
         ordered_events
             .windows(2)
-            .any(|events| { events[0] == "history-1" && events[1] == "history-2" })
+            .any(|events| { events[0] == "history-1" && events[1] == "history-2" }),
+        "rewind history was not contiguous: {ordered_events:?}"
     );
     assert!(
         ordered_events

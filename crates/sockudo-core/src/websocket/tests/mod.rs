@@ -859,6 +859,79 @@ async fn test_send_broadcast_delivers_without_lock() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn outbound_frames_preserve_enqueue_order_across_sources() {
+    use sockudo_ws::Message;
+
+    let socket_id = SocketId::new();
+    let (writer, mut client) = create_server_writer_with_client().await;
+    let ws_ref = WebSocketRef::new(WebSocket::new(socket_id, writer));
+
+    let mut protocol_message = PusherMessage::pong();
+    protocol_message.event = Some("protocol-before-broadcast".to_string());
+    ws_ref
+        .send_message(&protocol_message)
+        .expect("protocol frame should enqueue");
+    ws_ref
+        .send_broadcast(Bytes::from_static(
+            b"{\"event\":\"broadcast-after-protocol\"}",
+        ))
+        .expect("broadcast should enqueue");
+
+    let first = tokio::time::timeout(std::time::Duration::from_secs(1), client.next())
+        .await
+        .expect("timed out waiting for protocol frame")
+        .expect("client stream ended unexpectedly")
+        .expect("protocol frame read failed");
+    let second = tokio::time::timeout(std::time::Duration::from_secs(1), client.next())
+        .await
+        .expect("timed out waiting for broadcast frame")
+        .expect("client stream ended unexpectedly")
+        .expect("broadcast frame read failed");
+
+    let Message::Text(first_payload) = first else {
+        panic!("protocol frame must be text")
+    };
+    let Message::Text(second_payload) = second else {
+        panic!("broadcast frame must be text")
+    };
+    assert!(
+        std::str::from_utf8(&first_payload)
+            .expect("protocol frame must be UTF-8")
+            .contains("protocol-before-broadcast")
+    );
+    assert!(
+        std::str::from_utf8(&second_payload)
+            .expect("broadcast frame must be UTF-8")
+            .contains("broadcast-after-protocol")
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unified_outbound_queue_keeps_independent_source_bounds() {
+    let socket_id = SocketId::new();
+    let (writer, _client) = create_server_writer_with_client().await;
+    let ws_ref = WebSocketRef::new(WebSocket::with_buffer_config(
+        socket_id,
+        writer,
+        WebSocketBufferConfig::with_message_limit(2, true),
+    ));
+
+    assert!(ws_ref.send_message(&PusherMessage::pong()).is_ok());
+    assert!(ws_ref.send_message(&PusherMessage::pong()).is_ok());
+    assert!(matches!(
+        ws_ref.send_message(&PusherMessage::pong()),
+        Err(crate::error::Error::BufferFull(_))
+    ));
+
+    assert!(ws_ref.send_broadcast(Bytes::from_static(b"first")).is_ok());
+    assert!(ws_ref.send_broadcast(Bytes::from_static(b"second")).is_ok());
+    assert!(matches!(
+        ws_ref.send_broadcast(Bytes::from_static(b"third")),
+        Err(crate::error::Error::BufferFull(_))
+    ));
+}
+
 #[tokio::test]
 async fn test_send_after_close_returns_error() {
     use crate::error::Error;

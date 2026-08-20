@@ -367,26 +367,35 @@ raw annotation event nor the V2/Ably summary projection.
 Compatibility delivery is injected at the native local delivery boundary. It
 is interest-gated, synchronous, and non-blocking when no Ably session is
 attached to a channel. Active sessions use separate bounded control and data
-queues, each limited by both frame count and bytes. ACK, ERROR, heartbeat, and
+queues, each limited by both frame count and bytes. The data queue honors the
+server's `[websocket].max_messages` and `[websocket].max_bytes` bounds; unset
+limits retain bounded compatibility defaults. ACK, ERROR, heartbeat, and
 close-control frames are prioritized over data frames. A data overflow marks
-continuity lost, sends a recoverable `90003` error when possible, and removes
-the stalled subscriber; the next attach/recovery reads canonical Sockudo hot
-replay or durable history.
+continuity lost, stops further data for that session, and sends a recoverable
+`90003` error when possible; the next attach/recovery reads canonical Sockudo
+hot replay or durable history.
 
 Messages are encoded once for each active JSON/MessagePack group and shared as
 immutable bytes across that group's subscribers. Session, token, channel, and
-queue state has hard bounds and periodic expiry. No compatibility lock is held
+queue state have hard bounds and periodic expiry. No compatibility lock is held
 while encoding or fanning out, and the compatibility projection does not alter
 Protocol V1 delivery. `/operator/stats/ably-runtime` exposes `data_encoded` for
 these shared projections separately from `encoded`, which also includes
 connection, channel, ACK, and heartbeat control frames.
 
-Connection recovery keys are stored for the advertised connection-state TTL in
-the configured shared cache as well as the local runtime. A reconnect routed to
-another node can therefore validate the key and recover each reattached channel
-from canonical hot replay or durable history; a missing or expired `recover` key
-returns `80018`. The active key lease is refreshed at half the advertised TTL,
-then receives a full TTL from an ungraceful disconnect; an explicit `CLOSE`
+For process-local deployments, compatibility coordination state is kept in the
+runtime rather than the general bounded memory cache. Redis and Redis Cluster
+remain the shared coordination authority for multi-node deployments; the
+configured cache still persists compatibility statistics in both deployment
+modes.
+
+In Redis-backed deployments, connection recovery keys are stored for the
+advertised connection-state TTL in the shared cache as well as the local
+runtime. A reconnect routed to another node can therefore validate the key and
+recover each reattached channel from canonical hot replay or durable history; a
+missing or expired `recover` key returns `80018`. The active key lease is
+refreshed at half the advertised TTL, then receives a full TTL from an
+ungraceful disconnect; an explicit `CLOSE`
 invalidates the active key after sending `CLOSED`. Cached state never includes
 app secrets or provider credentials.
 

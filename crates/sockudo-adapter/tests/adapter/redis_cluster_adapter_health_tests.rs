@@ -12,13 +12,29 @@ use tokio::sync::Mutex;
 use tokio::time::sleep;
 use uuid::Uuid;
 
-/// Helper to check if Redis Cluster is available
-async fn is_redis_cluster_available() -> bool {
+fn redis_cluster_nodes() -> Vec<String> {
     let nodes = env::var("REDIS_CLUSTER_NODES").unwrap_or_else(|_| {
         "redis://127.0.0.1:7001,redis://127.0.0.1:7002,redis://127.0.0.1:7003".to_string()
     });
 
-    let node_list: Vec<String> = nodes.split(',').map(|s| s.to_string()).collect();
+    nodes
+        .split(',')
+        .filter_map(|node| {
+            let node = node.trim();
+            if node.is_empty() {
+                None
+            } else if node.contains("://") {
+                Some(node.to_string())
+            } else {
+                Some(format!("redis://{node}"))
+            }
+        })
+        .collect()
+}
+
+/// Helper to check if Redis Cluster is available
+async fn is_redis_cluster_available() -> bool {
+    let node_list = redis_cluster_nodes();
 
     if node_list.is_empty() {
         return false;
@@ -41,18 +57,11 @@ async fn is_redis_cluster_available() -> bool {
 /// Helper to create a RedisCluster adapter with cluster health enabled
 async fn create_redis_cluster_adapter(
     test_prefix: &str,
-    node_id: &str,
     cluster_config: &ClusterHealthConfig,
 ) -> RedisClusterAdapter {
-    let nodes = env::var("REDIS_CLUSTER_NODES").unwrap_or_else(|_| {
-        "redis://127.0.0.1:7001,redis://127.0.0.1:7002,redis://127.0.0.1:7003".to_string()
-    });
-
-    let node_list: Vec<String> = nodes.split(',').map(|s| s.to_string()).collect();
-
     let config = RedisClusterAdapterConfig {
-        nodes: node_list,
-        prefix: format!("{test_prefix}_{node_id}"),
+        nodes: redis_cluster_nodes(),
+        prefix: test_prefix.to_string(),
         request_timeout_ms: 5000,
         use_connection_manager: true,
         use_sharded_pubsub: false,
@@ -105,10 +114,8 @@ async fn test_redis_cluster_adapter_heartbeat() {
     let test_prefix = unique_test_prefix("cluster_heartbeat");
 
     // Create two adapters simulating two Sockudo nodes
-    let adapter1 =
-        create_redis_cluster_adapter(&test_prefix, "cluster_node1", &cluster_config).await;
-    let adapter2 =
-        create_redis_cluster_adapter(&test_prefix, "cluster_node2", &cluster_config).await;
+    let adapter1 = create_redis_cluster_adapter(&test_prefix, &cluster_config).await;
+    let adapter2 = create_redis_cluster_adapter(&test_prefix, &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -144,16 +151,32 @@ async fn test_redis_cluster_presence_synchronization() {
     let cluster_config = fast_cluster_health_config();
     let test_prefix = unique_test_prefix("cluster_presence_sync");
 
-    let adapter1 =
-        create_redis_cluster_adapter(&test_prefix, "cluster_node1", &cluster_config).await;
-    let adapter2 =
-        create_redis_cluster_adapter(&test_prefix, "cluster_node2", &cluster_config).await;
-    let adapter3 =
-        create_redis_cluster_adapter(&test_prefix, "cluster_node3", &cluster_config).await;
+    let adapter1 = create_redis_cluster_adapter(&test_prefix, &cluster_config).await;
+    let adapter2 = create_redis_cluster_adapter(&test_prefix, &cluster_config).await;
+    let adapter3 = create_redis_cluster_adapter(&test_prefix, &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
     adapter3.init().await;
+
+    assert!(
+        wait_until(
+            Duration::from_millis(1_500),
+            Duration::from_millis(20),
+            || {
+                let adapter1 = &adapter1;
+                let adapter2 = &adapter2;
+                let adapter3 = &adapter3;
+                async move {
+                    adapter1.horizontal.get_effective_node_count().await >= 3
+                        && adapter2.horizontal.get_effective_node_count().await >= 3
+                        && adapter3.horizontal.get_effective_node_count().await >= 3
+                }
+            }
+        )
+        .await,
+        "Cluster nodes did not discover one another before presence synchronization"
+    );
 
     let app_id = "test-app";
     let channel = "presence-cluster-test";
@@ -279,13 +302,28 @@ async fn test_redis_cluster_dead_node_cleanup() {
     };
     let test_prefix = unique_test_prefix("cluster_dead_node_cleanup");
 
-    let adapter1 =
-        create_redis_cluster_adapter(&test_prefix, "cluster_node1", &cluster_config).await;
-    let adapter2 =
-        create_redis_cluster_adapter(&test_prefix, "cluster_node2", &cluster_config).await;
+    let adapter1 = create_redis_cluster_adapter(&test_prefix, &cluster_config).await;
+    let adapter2 = create_redis_cluster_adapter(&test_prefix, &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
+
+    assert!(
+        wait_until(
+            Duration::from_millis(1_500),
+            Duration::from_millis(20),
+            || {
+                let adapter1 = &adapter1;
+                let adapter2 = &adapter2;
+                async move {
+                    adapter1.horizontal.get_effective_node_count().await >= 2
+                        && adapter2.horizontal.get_effective_node_count().await >= 2
+                }
+            }
+        )
+        .await,
+        "Cluster nodes did not discover one another before dead-node setup"
+    );
 
     let app_id = "test-app";
     let channel = "presence-cleanup-test";
@@ -359,8 +397,7 @@ async fn test_redis_cluster_sharding_consistency() {
 
     let cluster_config = fast_cluster_health_config();
     let test_prefix = unique_test_prefix("cluster_sharding");
-    let adapter =
-        create_redis_cluster_adapter(&test_prefix, "cluster_node1", &cluster_config).await;
+    let adapter = create_redis_cluster_adapter(&test_prefix, &cluster_config).await;
     adapter.init().await;
 
     // Test presence across different shards (different channel names will hash to different slots)
@@ -398,8 +435,7 @@ async fn test_redis_cluster_failover_handling() {
 
     let cluster_config = fast_cluster_health_config();
     let test_prefix = unique_test_prefix("cluster_failover");
-    let adapter =
-        create_redis_cluster_adapter(&test_prefix, "cluster_node1", &cluster_config).await;
+    let adapter = create_redis_cluster_adapter(&test_prefix, &cluster_config).await;
     adapter.init().await;
 
     // Add presence data
@@ -441,13 +477,8 @@ async fn test_redis_cluster_concurrent_multi_node_operations() {
     // Create multiple adapters
     let adapters = Arc::new(Mutex::new(Vec::new()));
 
-    for i in 0..3 {
-        let adapter = create_redis_cluster_adapter(
-            &test_prefix,
-            &format!("cluster_node_{}", i),
-            &cluster_config,
-        )
-        .await;
+    for _ in 0..3 {
+        let adapter = create_redis_cluster_adapter(&test_prefix, &cluster_config).await;
         adapter.init().await;
         adapters.lock().await.push(adapter);
     }
@@ -507,8 +538,7 @@ async fn test_redis_cluster_large_presence_data() {
     };
 
     let test_prefix = unique_test_prefix("cluster_large_presence");
-    let adapter =
-        create_redis_cluster_adapter(&test_prefix, "cluster_node1", &cluster_config).await;
+    let adapter = create_redis_cluster_adapter(&test_prefix, &cluster_config).await;
     adapter.init().await;
 
     // Create large user info object (near 2KB limit)
@@ -549,8 +579,7 @@ async fn test_redis_cluster_disabled_health_monitoring() {
     };
 
     let test_prefix = unique_test_prefix("cluster_health_disabled");
-    let adapter =
-        create_redis_cluster_adapter(&test_prefix, "cluster_node1", &cluster_config).await;
+    let adapter = create_redis_cluster_adapter(&test_prefix, &cluster_config).await;
     adapter.init().await;
 
     // Should still handle presence operations without health monitoring

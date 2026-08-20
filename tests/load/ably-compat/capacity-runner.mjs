@@ -113,7 +113,9 @@ async function runTopology(topology) {
       const started = performance.now();
       let outcome;
       try {
-        outcome = await runScenario(scenario, nodes);
+        outcome = await runScenario(scenario, nodes, (phase) => {
+          sampler.phase = phase;
+        });
       } catch (error) {
         outcome = { status: "failed", error: error.message };
       }
@@ -237,9 +239,9 @@ async function startNode(topology, index, port, metricsPort, topologyDir) {
   return node;
 }
 
-async function runScenario(scenario, nodes) {
+async function runScenario(scenario, nodes, setPhase) {
   if (["steady_publish", "burst", "payload_64k", "encrypted_binary", "fanout_1000", "slow_consumers"].includes(scenario.name)) {
-    return broadcastScenario(scenario, nodes);
+    return broadcastScenario(scenario, nodes, setPhase);
   }
   if (scenario.name === "recovery_storm") return recoveryScenario(scenario, nodes);
   if (scenario.name === "presence_churn") return presenceScenario(scenario, nodes);
@@ -249,7 +251,7 @@ async function runScenario(scenario, nodes) {
   throw new Error(`unsupported scenario ${scenario.name}`);
 }
 
-async function broadcastScenario(scenario, nodes) {
+async function broadcastScenario(scenario, nodes, setPhase) {
   const channel = `capacity:${runId}:${scenario.name}`;
   const slowCount = Math.floor(scenario.subscribers * (scenario.slowPercent ?? 0) / 100);
   const normalCount = scenario.subscribers - slowCount;
@@ -298,7 +300,10 @@ async function broadcastScenario(scenario, nodes) {
   const deliveryDelta = snapshotDelta(deliveryBefore, deliveryAfter);
   const encodeCount = deliveryDelta.reduce((sum, entry) => sum + (entry.delivery?.data_encoded ?? 0), 0);
   const expectedEncodeCount = normalCount > 0 || slowCount > 0 ? messages.length : 0;
-  if (slowCount > 0) await sleep(scenario.stallHoldMs ?? 30000);
+  if (slowCount > 0) {
+    setPhase(`${scenario.name}_stalled`);
+    await sleep(scenario.stallHoldMs ?? 30000);
+  }
   await Promise.all(clients.map((client) => client.close()));
   for (const peer of slow) peer.destroy();
   const duration = secondsSince(started);
@@ -333,7 +338,7 @@ async function recoveryScenario(scenario, nodes) {
     connectionId: client.connectionId,
     channelSerial: client.deliveryAudit.lastChannelSerial,
   }));
-  await Promise.all(original.map((client) => client.close()));
+  await Promise.all(original.map((client) => client.disconnect()));
   await sleep(50);
   for (let sequence = 1; sequence <= scenario.messages; sequence += 1) {
     await ablyRequest(nodes[0], "POST", `/channels/${encodeURIComponent(channel)}/messages`, {
@@ -491,7 +496,7 @@ class Subscriber {
       await client.waitFor((frame) => frame.action === 11 && frame.channel === channel, 15000);
       return client;
     } catch (error) {
-      await client.close();
+      await client.disconnect();
       throw new Error(`${stage}: ${error.message}`);
     }
   }
@@ -536,6 +541,14 @@ class Subscriber {
   }
   send(value) { this.ws.send(JSON.stringify(value)); }
   async close() {
+    if (this.ws.readyState === 1) {
+      const closed = this.waitFor((frame) => frame.action === 8, 5000).catch(() => undefined);
+      try { this.send({ action: 7 }); } catch {}
+      await closed;
+    }
+    await this.disconnect();
+  }
+  async disconnect() {
     this.ws.removeEventListener("message", this.messageListener);
     this.frames.length = 0;
     for (const waiter of this.waiters) {
@@ -684,7 +697,7 @@ function rssPlateau(samples, nodeCount) {
   const stalledPeersExercised = selected.some((scenario) => scenario.name === "slow_consumers" && (scenario.slowPercent ?? 0) > 0);
   const byNode = Array.from({ length: nodeCount }, (_, index) => samples.filter((sample) => sample.node === index + 1));
   const nodes = byNode.map((nodeSamples) => {
-    const stalled = nodeSamples.filter((sample) => sample.phase === "slow_consumers");
+    const stalled = nodeSamples.filter((sample) => sample.phase === "slow_consumers_stalled");
     const postDisconnect = nodeSamples.filter((sample) => sample.phase === "post_disconnect");
     const stalledSlope = linearSlope(stalled.map((sample) => [sample.atMs / 1000, sample.rssBytes]));
     const postDisconnectSlope = linearSlope(postDisconnect.map((sample) => [sample.atMs / 1000, sample.rssBytes]));
