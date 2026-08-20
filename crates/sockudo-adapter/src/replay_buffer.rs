@@ -148,6 +148,23 @@ impl ReplayBuffer {
         ReplayPosition { stream_id, serial }
     }
 
+    /// Return the newest position backed by an actual buffered message.
+    ///
+    /// Unlike [`Self::current_position`], this does not create an empty stream.
+    /// Protocols that also have a durable position authority must not advertise
+    /// a speculative hot-buffer stream before the first publish, because the
+    /// durable store may assign a different stream generation.
+    pub fn latest_stored_position(&self, app_id: &str, channel: &str) -> Option<ReplayPosition> {
+        let key = Self::buffer_key(app_id, channel);
+        let entry = self.buffers.get(&key)?;
+        let state = entry.state.lock();
+        let message = state.messages.iter().max_by_key(|message| message.serial)?;
+        Some(ReplayPosition {
+            stream_id: message.stream_id.clone()?,
+            serial: message.serial,
+        })
+    }
+
     pub fn ensure_position(
         &self,
         app_id: &str,
