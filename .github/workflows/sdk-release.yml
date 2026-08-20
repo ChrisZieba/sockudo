@@ -449,7 +449,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
 
       - name: Verify package
-        run: ./gradlew --no-daemon :lib:check :lib:publishToMavenLocal
+        run: ../../scripts/retry-gradle-transient-downloads.sh ./gradlew --no-daemon :lib:check :lib:publishToMavenLocal
 
       - name: Publish to Maven Central
         if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
@@ -498,7 +498,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
 
       - name: Verify package
-        run: ./gradlew --no-daemon check publishToMavenLocal
+        run: ../../scripts/retry-gradle-transient-downloads.sh ./gradlew --no-daemon check publishToMavenLocal
 
       - name: Publish to Maven Central
         if: ${{ github.event_name == 'push' || inputs.dry_run == false }}

@@ -6,6 +6,25 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[async_trait]
 pub trait VersionStore: Send + Sync {
+    /// Return the stable stream identifier for a channel, materializing an
+    /// empty stream when the backend assigns identifiers lazily. Lazy
+    /// backends must override this method; the default accepts only an
+    /// identifier already exposed by [`Self::stream_state`].
+    ///
+    /// This does not reserve a delivery serial. Callers can therefore expose
+    /// position zero before the first commit without creating a gap in the
+    /// version replay log.
+    async fn ensure_stream_id(&self, app_id: &str, channel: &str) -> Result<String> {
+        self.stream_state(app_id, channel)
+            .await?
+            .stream_id
+            .ok_or_else(|| {
+                Error::Configuration(
+                    "version store cannot provide a stable empty stream identifier".to_string(),
+                )
+            })
+    }
+
     async fn reserve_delivery_position(
         &self,
         app_id: &str,
@@ -138,6 +157,12 @@ pub struct NoopVersionStore;
 
 #[async_trait]
 impl VersionStore for NoopVersionStore {
+    async fn ensure_stream_id(&self, _app_id: &str, _channel: &str) -> Result<String> {
+        Err(Error::Configuration(
+            "Versioned message storage is not configured".to_string(),
+        ))
+    }
+
     async fn reserve_delivery_position(
         &self,
         _app_id: &str,

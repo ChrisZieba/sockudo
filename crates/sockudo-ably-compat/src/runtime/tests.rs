@@ -2162,6 +2162,178 @@ async fn clean_recovered_attach_sets_the_resumed_flag() {
     assert_eq!(attached.flags, Some(ABLY_DEFAULT_MODE_FLAGS | FLAG_RESUMED));
 }
 
+#[test]
+fn explicit_channel_serial_uses_durable_recovery_on_a_resumed_attach() {
+    let mut options = AblyAttachOptions::from_wire(None, None);
+    let recovery_gate = AblyAttachGate {
+        messages: vec![empty_protocol_message(ACTION_MESSAGE)],
+        ..AblyAttachGate::default()
+    };
+    let mut channel_serial = Some(encode_ably_channel_serial("stream-1", 7));
+
+    let recovery_gate = realtime::apply_resumed_attach_recovery(
+        true,
+        &mut channel_serial,
+        realtime::AblyChannelSerialSource::Version,
+        &mut options,
+        recovery_gate,
+    )
+    .unwrap();
+
+    assert!(options.attach_resume);
+    assert!(recovery_gate.messages.is_empty());
+    assert_eq!(channel_serial.as_deref(), Some("stream-1:7"));
+}
+
+#[test]
+fn channel_serial_source_never_falls_through_an_enabled_durable_authority() {
+    assert_eq!(
+        realtime::ably_channel_serial_source(true, true),
+        realtime::AblyChannelSerialSource::Version
+    );
+    assert_eq!(
+        realtime::ably_channel_serial_source(false, true),
+        realtime::AblyChannelSerialSource::History
+    );
+    assert_eq!(
+        realtime::ably_channel_serial_source(true, false),
+        realtime::AblyChannelSerialSource::HotReplay
+    );
+    assert_eq!(
+        realtime::ably_channel_serial_source(false, false),
+        realtime::AblyChannelSerialSource::HotReplay
+    );
+}
+
+#[tokio::test]
+async fn empty_version_stream_advertises_zero_without_consuming_the_first_position() {
+    let store = sockudo_core::version_store::MemoryVersionStore::new();
+
+    let channel_serial = realtime::current_ably_version_channel_serial(&store, "app", "channel")
+        .await
+        .expect("empty version stream position");
+    let position = parse_ably_channel_serial(&channel_serial).unwrap();
+    assert_eq!(position.serial, 0);
+
+    let reservation = sockudo_core::version_store::VersionStore::reserve_delivery_position(
+        &store, "app", "channel",
+    )
+    .await
+    .unwrap();
+    assert_eq!(reservation.stream_id, position.stream_id);
+    assert_eq!(reservation.delivery_serial, 1);
+}
+
+#[test]
+fn resumed_attach_without_a_channel_serial_keeps_the_live_recovery_tail() {
+    let mut options = AblyAttachOptions::from_wire(None, None);
+    let mut channel_serial = None;
+    let recovery_gate = AblyAttachGate {
+        messages: vec![empty_protocol_message(ACTION_MESSAGE)],
+        ..AblyAttachGate::default()
+    };
+
+    let recovery_gate = realtime::apply_resumed_attach_recovery(
+        true,
+        &mut channel_serial,
+        realtime::AblyChannelSerialSource::HotReplay,
+        &mut options,
+        recovery_gate,
+    )
+    .unwrap();
+
+    assert!(options.attach_resume);
+    assert_eq!(recovery_gate.messages.len(), 1);
+}
+
+#[test]
+fn hot_recovery_filters_the_live_tail_after_the_explicit_boundary() {
+    let mut options = AblyAttachOptions::from_wire(None, None);
+    let mut channel_serial = Some(encode_ably_channel_serial("stream-1", 7));
+    let recovery_gate = AblyAttachGate {
+        messages: [6, 7, 8, 9]
+            .into_iter()
+            .map(|serial| AblyProtocolMessage {
+                channel_serial: Some(encode_ably_channel_serial("stream-1", serial)),
+                ..empty_protocol_message(ACTION_MESSAGE)
+            })
+            .collect(),
+        ..AblyAttachGate::default()
+    };
+
+    let recovery_gate = realtime::apply_resumed_attach_recovery(
+        true,
+        &mut channel_serial,
+        realtime::AblyChannelSerialSource::HotReplay,
+        &mut options,
+        recovery_gate,
+    )
+    .unwrap();
+
+    assert!(options.attach_resume);
+    assert!(channel_serial.is_none());
+    assert_eq!(recovery_gate.messages.len(), 2);
+    assert_eq!(
+        recovery_gate.messages[0].channel_serial.as_deref(),
+        Some("stream-1:8")
+    );
+    assert_eq!(
+        recovery_gate.messages[1].channel_serial.as_deref(),
+        Some("stream-1:9")
+    );
+}
+
+#[test]
+fn hot_recovery_fails_closed_when_the_stream_changes() {
+    let mut options = AblyAttachOptions::from_wire(None, None);
+    let mut channel_serial = Some(encode_ably_channel_serial("stream-1", 7));
+    let recovery_gate = AblyAttachGate {
+        messages: vec![AblyProtocolMessage {
+            channel_serial: Some(encode_ably_channel_serial("stream-2", 8)),
+            ..empty_protocol_message(ACTION_MESSAGE)
+        }],
+        ..AblyAttachGate::default()
+    };
+
+    let failure = match realtime::apply_resumed_attach_recovery(
+        true,
+        &mut channel_serial,
+        realtime::AblyChannelSerialSource::HotReplay,
+        &mut options,
+        recovery_gate,
+    ) {
+        Ok(_) => panic!("stream mismatch must fail recovery"),
+        Err(failure) => failure,
+    };
+
+    assert_eq!(failure.code, 90005);
+    assert_eq!(channel_serial.as_deref(), Some("stream-1:7"));
+}
+
+#[test]
+fn hot_recovery_fails_closed_without_a_buffered_position() {
+    let mut options = AblyAttachOptions::from_wire(None, None);
+    let mut channel_serial = Some(encode_ably_channel_serial("stream-1", 7));
+    let recovery_gate = AblyAttachGate {
+        messages: vec![empty_protocol_message(ACTION_MESSAGE)],
+        ..AblyAttachGate::default()
+    };
+
+    let failure = match realtime::apply_resumed_attach_recovery(
+        true,
+        &mut channel_serial,
+        realtime::AblyChannelSerialSource::HotReplay,
+        &mut options,
+        recovery_gate,
+    ) {
+        Ok(_) => panic!("a missing buffered position must fail recovery"),
+        Err(failure) => failure,
+    };
+
+    assert_eq!(failure.code, 90005);
+    assert_eq!(channel_serial.as_deref(), Some("stream-1:7"));
+}
+
 #[tokio::test]
 async fn duplicate_remote_delivery_position_reaches_local_ably_subscriber_once() {
     let hub = AblyCompatHub::default();

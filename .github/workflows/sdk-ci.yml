@@ -341,7 +341,7 @@ jobs:
 
       - name: Verify package
         working-directory: ${{ matrix.path }}
-        run: ${{ matrix.command }}
+        run: ../../scripts/retry-gradle-transient-downloads.sh ${{ matrix.command }}
 
   swift-sdks:
     name: Swift SDKs / ${{ matrix.name }}

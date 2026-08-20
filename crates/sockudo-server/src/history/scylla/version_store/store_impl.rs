@@ -3,6 +3,10 @@ use super::*;
 #[cfg(feature = "versioned-messages")]
 #[async_trait::async_trait]
 impl VersionStore for ScyllaVersionStore {
+    async fn ensure_stream_id(&self, app_id: &str, channel: &str) -> Result<String> {
+        Ok(format!("{app_id}/{channel}"))
+    }
+
     async fn reserve_delivery_position(
         &self,
         app_id: &str,

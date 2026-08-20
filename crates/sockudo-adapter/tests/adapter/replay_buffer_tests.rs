@@ -1,7 +1,7 @@
 #[cfg(feature = "recovery")]
 mod replay_buffer_regression {
     use bytes::Bytes;
-    use sockudo_adapter::replay_buffer::{ReplayBuffer, ReplayLookup};
+    use sockudo_adapter::replay_buffer::{ReplayBuffer, ReplayLookup, ReplayPosition};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -43,6 +43,14 @@ mod replay_buffer_regression {
         buf.store("app1", "ch", Some("stream-1"), 2, Bytes::from("msg2"));
         buf.store("app1", "ch", Some("stream-1"), 1, Bytes::from("msg1"));
         buf.store("app1", "ch", Some("stream-1"), 3, Bytes::from("msg3"));
+
+        assert_eq!(
+            buf.latest_stored_position("app1", "ch"),
+            Some(ReplayPosition {
+                stream_id: "stream-1".to_string(),
+                serial: 3,
+            })
+        );
 
         match buf.get_messages_after_position("app1", "ch", Some("stream-1"), 0) {
             ReplayLookup::Recovered(messages) => {
@@ -232,6 +240,10 @@ mod replay_buffer_regression {
 
         let initial = buf.current_position("app1", "idle");
         assert_eq!(initial.serial, 0);
+        assert!(
+            buf.latest_stored_position("app1", "idle").is_none(),
+            "an initialized but empty hot stream is not an authoritative published position"
+        );
 
         match buf.get_messages_after_position(
             "app1",
@@ -252,6 +264,10 @@ mod replay_buffer_regression {
             Some(next.stream_id.as_str()),
             next.serial,
             Bytes::from("offline-msg"),
+        );
+        assert_eq!(
+            buf.latest_stored_position("app1", "idle"),
+            Some(next.clone())
         );
 
         match buf.get_messages_after_position(

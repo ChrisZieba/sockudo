@@ -63,6 +63,12 @@ impl MemoryVersionStore {
 
 #[async_trait]
 impl VersionStore for MemoryVersionStore {
+    async fn ensure_stream_id(&self, app_id: &str, channel: &str) -> Result<String> {
+        let key = Self::channel_key(app_id, channel);
+        let mut channels = self.channels.write().await;
+        Ok(channels.entry(key).or_default().stream_id.clone())
+    }
+
     async fn reserve_delivery_position(
         &self,
         app_id: &str,

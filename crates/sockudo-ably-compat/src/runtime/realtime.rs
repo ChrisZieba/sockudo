@@ -1249,10 +1249,39 @@ pub(super) async fn handle_ably_protocol_message(
                     .is_empty();
             let (resumed_attach, recovery_gate) =
                 hub.take_resumed_subscriber_message(&app.id, &channel, session_id);
-            if resumed_attach {
-                inbound.channel_serial = None;
-                attach_options.attach_resume = true;
-            }
+            let channel_serial_source = ably_channel_serial_source(
+                handler.server_options().versioned_messages.enabled,
+                app.resolved_history(channel.base(), &handler.server_options().history)
+                    .enabled,
+            );
+            let recovery_gate = match apply_resumed_attach_recovery(
+                resumed_attach,
+                &mut inbound.channel_serial,
+                channel_serial_source,
+                &mut attach_options,
+                recovery_gate,
+            ) {
+                Ok(recovery_gate) => recovery_gate,
+                Err(failure) => {
+                    attached_channels.remove(channel.requested());
+                    if let Err(error) = hub.unsubscribe(&app.id, &channel, session_id).await {
+                        tracing::warn!(
+                            error = %error,
+                            app_id = %app.id,
+                            channel = channel.base(),
+                            "recovered subscriber cleanup after attach failure failed"
+                        );
+                    }
+                    send_channel_error(
+                        sender,
+                        channel.requested(),
+                        failure.status,
+                        failure.code,
+                        failure.message,
+                    );
+                    return Ok(AblyProtocolControl::Continue);
+                }
+            };
             if recovery_gate.overflowed {
                 attached_channels.remove(channel.requested());
                 if let Err(error) = hub.unsubscribe(&app.id, &channel, session_id).await {
@@ -1935,6 +1964,62 @@ pub(super) async fn handle_ably_annotation(
     );
 }
 
+pub(super) fn apply_resumed_attach_recovery(
+    resumed_attach: bool,
+    channel_serial: &mut Option<String>,
+    serial_source: AblyChannelSerialSource,
+    attach_options: &mut AblyAttachOptions,
+    mut recovery_gate: AblyAttachGate,
+) -> Result<AblyAttachGate, AblyRecoveryFailure> {
+    if !resumed_attach {
+        return Ok(recovery_gate);
+    }
+
+    attach_options.attach_resume = true;
+    let Some(position) = channel_serial
+        .as_deref()
+        .map(parse_ably_channel_serial)
+        .transpose()?
+    else {
+        return Ok(recovery_gate);
+    };
+
+    if serial_source != AblyChannelSerialSource::HotReplay {
+        // An explicit durable position is the client's authoritative recovery
+        // boundary. Cold recovery will replay strictly after it, so mixing in
+        // the same-node in-memory tail could redeliver acknowledged data.
+        return Ok(AblyAttachGate::default());
+    }
+
+    // Without durable history, the live recovery gate is the only replay
+    // source. Keep only messages after the client's boundary and fail closed
+    // if their continuity cannot be proven. Clearing the inbound serial makes
+    // the clean attach advertise the current hot-buffer position instead of
+    // incorrectly attempting cold recovery against a disabled store.
+    let mut messages = Vec::with_capacity(recovery_gate.messages.len());
+    for message in recovery_gate.messages {
+        let raw_position = message.channel_serial.as_deref().ok_or_else(|| {
+            AblyRecoveryFailure::channel(
+                90005,
+                "unable to recover channel because a buffered message has no channel serial",
+            )
+        })?;
+        let message_position = parse_ably_channel_serial(raw_position)?;
+        if message_position.stream_id != position.stream_id {
+            return Err(AblyRecoveryFailure::channel(
+                90005,
+                "unable to recover channel because the stream changed",
+            ));
+        }
+        if message_position.serial > position.serial {
+            messages.push(message);
+        }
+    }
+    recovery_gate.messages = messages;
+    *channel_serial = None;
+    Ok(recovery_gate)
+}
+
 pub(super) fn heartbeat_response(inbound: AblyProtocolMessage) -> AblyProtocolMessage {
     AblyProtocolMessage {
         action: ACTION_HEARTBEAT,
@@ -2115,43 +2200,84 @@ pub(super) async fn handle_ably_attach(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AblyChannelSerialSource {
+    Version,
+    History,
+    HotReplay,
+}
+
+pub(super) const fn ably_channel_serial_source(
+    versioned_messages_enabled: bool,
+    history_enabled: bool,
+) -> AblyChannelSerialSource {
+    if versioned_messages_enabled && history_enabled {
+        AblyChannelSerialSource::Version
+    } else if history_enabled {
+        AblyChannelSerialSource::History
+    } else {
+        AblyChannelSerialSource::HotReplay
+    }
+}
+
+pub(super) async fn current_ably_version_channel_serial(
+    version_store: &dyn sockudo_core::version_store::VersionStore,
+    app_id: &str,
+    channel: &str,
+) -> Option<String> {
+    let stream_id = version_store.ensure_stream_id(app_id, channel).await.ok()?;
+    let state = version_store.stream_state(app_id, channel).await.ok()?;
+    if state.stream_id.as_deref().is_some_and(|id| id != stream_id) {
+        return None;
+    }
+    Some(encode_ably_channel_serial(
+        &stream_id,
+        state.newest_available_delivery_serial.unwrap_or(0),
+    ))
+}
+
 pub(super) async fn current_ably_channel_serial(
     handler: &Arc<ConnectionHandler>,
     app: &App,
     channel: &str,
 ) -> Option<String> {
-    if handler.server_options().versioned_messages.enabled
-        && let Ok(state) = handler.version_store().stream_state(&app.id, channel).await
-        && let (Some(stream_id), Some(serial)) =
-            (state.stream_id, state.newest_available_delivery_serial)
-    {
-        return Some(encode_ably_channel_serial(&stream_id, serial));
-    }
-    if app
+    let history_enabled = app
         .resolved_history(channel, &handler.server_options().history)
-        .enabled
-        && let Ok(inspection) = handler
+        .enabled;
+    match ably_channel_serial_source(
+        handler.server_options().versioned_messages.enabled,
+        history_enabled,
+    ) {
+        AblyChannelSerialSource::Version => {
+            current_ably_version_channel_serial(handler.version_store().as_ref(), &app.id, channel)
+                .await
+        }
+        AblyChannelSerialSource::History => handler
             .history_store()
             .stream_inspection(&app.id, channel)
             .await
-        && let (Some(stream_id), Some(next_serial)) = (inspection.stream_id, inspection.next_serial)
-    {
-        return Some(encode_ably_channel_serial(
-            &stream_id,
-            next_serial.saturating_sub(1),
-        ));
-    }
-    #[cfg(feature = "recovery")]
-    {
-        handler.replay_buffer().map(|replay_buffer| {
-            let position = replay_buffer.current_position(&app.id, channel);
-            encode_ably_channel_serial(&position.stream_id, position.serial)
-        })
-    }
-    #[cfg(not(feature = "recovery"))]
-    {
-        let _ = (handler, app, channel);
-        None
+            .ok()
+            .and_then(|inspection| inspection.stream_id.zip(inspection.next_serial))
+            .map(|(stream_id, next_serial)| {
+                encode_ably_channel_serial(&stream_id, next_serial.saturating_sub(1))
+            }),
+        AblyChannelSerialSource::HotReplay => {
+            #[cfg(feature = "recovery")]
+            {
+                handler.replay_buffer().and_then(|replay_buffer| {
+                    let position = replay_buffer.latest_stored_position(&app.id, channel)?;
+                    Some(encode_ably_channel_serial(
+                        &position.stream_id,
+                        position.serial,
+                    ))
+                })
+            }
+            #[cfg(not(feature = "recovery"))]
+            {
+                let _ = (handler, app, channel);
+                None
+            }
+        }
     }
 }
 
