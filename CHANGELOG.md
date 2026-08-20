@@ -74,8 +74,8 @@ alter the native `/app/{appKey}` route.
   PostgreSQL user-status and JSON policy persistence edge cases.
 - Corrected the React Native client entrypoint and stabilized SDK, parser, fanout, and compatibility
   CI lanes.
-- Refreshed the JavaScript and PHP SDK release dependency graphs to patched versions with clean
-  production security audits.
+- Refreshed the JavaScript and PHP SDK release dependency graphs, documentation toolchain, and
+  nested Rust SDK/benchmark lockfiles to patched versions with clean security audits.
 
 ### Performance
 
