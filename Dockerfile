@@ -79,7 +79,9 @@ RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook
 # Generate lockfile if missing
 RUN test -f Cargo.lock || cargo generate-lockfile
 
-ARG SOCKUDO_FEATURES=full
+# The release image runs the in-process push pipeline workers. Custom worker/API
+# images can still override this build argument with a narrower feature set.
+ARG SOCKUDO_FEATURES=full,monolith
 # The full feature graph exceeds the standard ARM64 runner's memory with fat LTO.
 # Thin LTO keeps cross-architecture images optimized while bounding link memory.
 ARG CARGO_PROFILE_RELEASE_LTO=thin

@@ -1275,6 +1275,14 @@ pub trait AblyPushAdmissionGuard: Send + Sync {
         required_providers: &BTreeSet<PushProviderKind>,
         expected_recipients: u64,
     ) -> Option<String>;
+
+    /// Return whether this node has an active worker for the provider.
+    ///
+    /// The default keeps existing admission guards fail-closed when worker
+    /// capability reporting is unavailable.
+    fn provider_worker_active(&self, _provider: PushProviderKind) -> bool {
+        false
+    }
 }
 
 /// Dependencies used to construct an isolated compatibility runtime.
@@ -1415,7 +1423,8 @@ impl AblyCompatRuntime {
     pub fn bind_handler(&self, handler: &Arc<ConnectionHandler>) {
         if self.hub.handler.set(Arc::downgrade(handler)).is_ok() {
             #[cfg(feature = "push")]
-            if let Some(queue) = self.hub.push_queue.clone()
+            if self.realtime_push_worker_enabled()
+                && let Some(queue) = self.hub.push_queue.clone()
                 && let Ok(runtime) = tokio::runtime::Handle::try_current()
             {
                 let dispatcher = Arc::new(AblyRealtimePushDispatcher::new(Arc::downgrade(handler)));
@@ -1434,6 +1443,14 @@ impl AblyCompatRuntime {
                 });
             }
         }
+    }
+
+    #[cfg(feature = "push")]
+    fn realtime_push_worker_enabled(&self) -> bool {
+        self.hub.config.enabled
+            && self.hub.push_admission.as_deref().is_some_and(|admission| {
+                admission.provider_worker_active(PushProviderKind::Realtime)
+            })
     }
 
     /// Build the compatibility router with this runtime installed as an

@@ -155,6 +155,12 @@ impl PushAdmissionSnapshot {
             .collect()
     }
 
+    fn has_active_provider_worker(&self, provider: PushProviderKind) -> bool {
+        self.providers
+            .get(&provider)
+            .is_some_and(|capability| matches!(capability.status, PushProviderStatus::Active))
+    }
+
     pub(crate) fn backpressure_lag_threshold_secs(&self) -> u64 {
         self.backpressure_lag_threshold_secs
     }
@@ -293,6 +299,10 @@ impl sockudo_ably_compat::AblyPushAdmissionGuard for PushAdmissionSnapshot {
                     .find_map(|provider| self.provider_rejection(*provider))
             })
             .map(|rejection| rejection.message())
+    }
+
+    fn provider_worker_active(&self, provider: PushProviderKind) -> bool {
+        self.has_active_provider_worker(provider)
     }
 }
 
@@ -809,6 +819,35 @@ mod tests {
                 .rejection_for(&targets, &BTreeSet::from([PushProviderKind::Realtime]), 1,)
                 .is_none()
         );
+    }
+
+    #[cfg(feature = "ably-compat")]
+    #[tokio::test]
+    async fn realtime_worker_capability_requires_compat_and_monolith() {
+        use sockudo_ably_compat::AblyPushAdmissionGuard;
+
+        let mut config = ServerOptions::default();
+        let store: DynPushStore = Arc::new(MemoryPushStore::new());
+
+        let disabled = PushAdmissionSnapshot::from_config(&config, &store).await;
+        assert!(!AblyPushAdmissionGuard::provider_worker_active(
+            &disabled,
+            PushProviderKind::Realtime,
+        ));
+
+        config.ably_compat.enabled = true;
+        let enabled = PushAdmissionSnapshot::from_config(&config, &store).await;
+        assert_eq!(
+            AblyPushAdmissionGuard::provider_worker_active(&enabled, PushProviderKind::Realtime,),
+            cfg!(feature = "monolith")
+        );
+
+        config.push.dispatch_worker_count = 0;
+        let worker_disabled = PushAdmissionSnapshot::from_config(&config, &store).await;
+        assert!(!AblyPushAdmissionGuard::provider_worker_active(
+            &worker_disabled,
+            PushProviderKind::Realtime,
+        ));
     }
 
     #[test]
