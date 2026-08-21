@@ -1,6 +1,5 @@
 mod store_impl;
 
-use super::state::*;
 use super::*;
 
 // =================== SurrealVersionStore ===================
