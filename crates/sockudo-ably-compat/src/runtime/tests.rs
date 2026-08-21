@@ -4848,6 +4848,67 @@ fn constructed_runtimes_do_not_share_compatibility_state() {
     assert!(!Arc::ptr_eq(&first_state, &second_state));
 }
 
+#[cfg(feature = "push")]
+struct TestPushAdmission {
+    realtime_worker_active: bool,
+}
+
+#[cfg(feature = "push")]
+impl AblyPushAdmissionGuard for TestPushAdmission {
+    fn rejection_for(
+        &self,
+        _targets: &[PublishTarget],
+        _required_providers: &BTreeSet<PushProviderKind>,
+        _expected_recipients: u64,
+    ) -> Option<String> {
+        None
+    }
+
+    fn provider_worker_active(&self, provider: PushProviderKind) -> bool {
+        self.realtime_worker_active && provider == PushProviderKind::Realtime
+    }
+}
+
+#[cfg(feature = "push")]
+#[test]
+fn realtime_push_worker_requires_enabled_compat_and_active_capability() {
+    let queue: DynPushQueue = Arc::new(sockudo_push::MemoryPushQueue::new());
+    let active_admission: Arc<dyn AblyPushAdmissionGuard> = Arc::new(TestPushAdmission {
+        realtime_worker_active: true,
+    });
+
+    let disabled = AblyCompatRuntime::new(AblyCompatDependencies {
+        push_queue: Some(queue.clone()),
+        push_admission: Some(active_admission.clone()),
+        ..Default::default()
+    });
+    assert!(!disabled.realtime_push_worker_enabled());
+
+    let enabled = AblyCompatRuntime::new(AblyCompatDependencies {
+        config: AblyCompatConfig {
+            enabled: true,
+            ..Default::default()
+        },
+        push_queue: Some(queue.clone()),
+        push_admission: Some(active_admission),
+        ..Default::default()
+    });
+    assert!(enabled.realtime_push_worker_enabled());
+
+    let inactive = AblyCompatRuntime::new(AblyCompatDependencies {
+        config: AblyCompatConfig {
+            enabled: true,
+            ..Default::default()
+        },
+        push_queue: Some(queue),
+        push_admission: Some(Arc::new(TestPushAdmission {
+            realtime_worker_active: false,
+        })),
+        ..Default::default()
+    });
+    assert!(!inactive.realtime_push_worker_enabled());
+}
+
 #[tokio::test]
 async fn expiry_sweep_removes_expired_sessions_and_tokens() {
     let hub = AblyCompatHub::default();

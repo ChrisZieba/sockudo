@@ -199,7 +199,9 @@ mod tests {
             .collect::<String>();
         let decoded = encoded
             .as_bytes()
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|chunk| {
                 u8::from_str_radix(std::str::from_utf8(&chunk[1..]).expect("ASCII hex"), 16)
                     .expect("valid hex")

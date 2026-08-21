@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- Started the Ably realtime push worker only when compatibility and its local provider capability
+  are active, preventing repeated unsupported-stage warnings, and compiled the standard Docker
+  image with the in-process `monolith` push workers.
+
 ## [5.0.0] - 2026-08-17
 
 ### Breaking Changes

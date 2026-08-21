@@ -469,6 +469,10 @@ provider worker. External FCM, APNs, Web Push, HMS, and WNS outcomes are never
 synthesized: delivery requires the corresponding native provider feature,
 worker, and real credentials.
 
+The standard Sockudo Docker image includes `monolith`. Custom images that
+override the `SOCKUDO_FEATURES` build argument must include it when Ably push
+compatibility uses a broker-backed `push.queue_driver`.
+
 ## Additional compatibility surfaces
 
 | Surface | Status | Scope |
