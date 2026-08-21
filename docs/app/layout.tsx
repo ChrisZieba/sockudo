@@ -17,7 +17,7 @@ export const metadata: Metadata = {
     template: '%s | Sockudo Docs',
   },
   description:
-    'Professional documentation for Sockudo, the Rust realtime server with Pusher compatibility, Protocol V2, recovery, history, push, and official SDKs.',
+    'Documentation for Sockudo, the self-hosted Rust realtime server with Pusher compatibility, opt-in Ably REST and WebSocket compatibility excluding Live Objects, Protocol V2, recovery, push, AI Transport, and official SDKs.',
   applicationName: 'Sockudo Docs',
   icons: {
     icon: '/favicon.svg',
@@ -28,7 +28,7 @@ export const metadata: Metadata = {
     siteName: 'Sockudo Docs',
     title: 'Sockudo Docs',
     description:
-      'Build and operate self-hosted realtime infrastructure with Sockudo.',
+      'Build self-hosted realtime infrastructure with Pusher compatibility and opt-in Ably REST and WebSocket compatibility excluding Live Objects.',
     images: ['/logo.svg'],
   },
 };
