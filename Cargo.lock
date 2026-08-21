@@ -7896,7 +7896,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "aes-gcm",
  "ahash 0.8.12",
@@ -7958,7 +7958,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-ably-compat"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "aes-gcm",
  "ahash 0.8.12",
@@ -7996,7 +7996,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-adapter"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "ahash 0.8.12",
  "async-nats",
@@ -8047,7 +8047,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-ai-benches"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "criterion",
@@ -8060,7 +8060,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-ai-transport"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "ahash 0.8.12",
  "bytes",
@@ -8074,7 +8074,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-app"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -8101,7 +8101,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-cache"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -8114,7 +8114,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-core"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -8155,7 +8155,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-delta"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "ahash 0.8.12",
  "async-nats",
@@ -8175,7 +8175,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-filter"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "ahash 0.8.12",
  "criterion",
@@ -8191,7 +8191,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-metrics"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -8208,7 +8208,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-protocol"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "ahash 0.8.12",
  "criterion",
@@ -8223,7 +8223,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-push"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -8257,7 +8257,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-queue"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "ahash 0.8.12",
  "async-nats",
@@ -8289,7 +8289,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-rate-limiter"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -8311,7 +8311,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-simulator"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "bytes",
  "clap",
@@ -8328,7 +8328,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-webhook"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
