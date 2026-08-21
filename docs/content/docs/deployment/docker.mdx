@@ -23,7 +23,7 @@ docker run -d \
   --env-file "$PWD/sockudo.env" \
   -p 6001:6001 \
   -p 127.0.0.1:9601:9601 \
-  ghcr.io/sockudo/sockudo:5.0.0 \
+  ghcr.io/sockudo/sockudo:5.0.1 \
   sockudo --config /app/config/production.toml
 ```
 
@@ -44,7 +44,7 @@ name: sockudo
 
 services:
   sockudo:
-    image: ghcr.io/sockudo/sockudo:5.0.0
+    image: ghcr.io/sockudo/sockudo:5.0.1
     command: ["sockudo", "--config", "/app/config/production.toml"]
     restart: unless-stopped
     init: true
