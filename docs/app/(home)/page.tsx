@@ -1,7 +1,6 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import {
-  Activity,
   ArrowRight,
   BellRing,
   Blocks,
@@ -9,9 +8,7 @@ import {
   Bot,
   CheckCircle2,
   ChevronRight,
-  CircleDot,
   CloudCog,
-  Code2,
   Coffee,
   Database,
   GitBranch,
@@ -22,7 +19,6 @@ import {
   RadioTower,
   Route,
   Server,
-  ShieldCheck,
   Smartphone,
   Sparkles,
   Terminal,
@@ -38,11 +34,11 @@ const paths = [
     meta: 'Start here',
   },
   {
-    title: 'Connect clients',
-    description: 'Use JavaScript, Swift, Kotlin, Flutter, and .NET clients with Protocol V1 or Protocol V2.',
-    href: '/docs/clients',
+    title: 'Choose a client path',
+    description: 'Keep Pusher clients, use the opt-in Ably REST/WebSocket facade, or adopt Protocol V2 SDKs.',
+    href: '/docs/reference/compatibility',
     icon: Smartphone,
-    meta: 'Realtime SDKs',
+    meta: 'Compatibility + SDKs',
   },
   {
     title: 'Operate the cluster',
@@ -63,8 +59,13 @@ const paths = [
 const capabilities = [
   {
     title: 'Pusher-compatible edge',
-    description: 'Protocol V1 keeps Channels clients, Laravel Echo, and server SDK expectations intact.',
+    description: 'Protocol V1 preserves Channels clients, Laravel Echo, auth shapes, and server publish flows.',
     icon: Route,
+  },
+  {
+    title: 'Ably compatibility facade',
+    description: 'Opt-in REST and WebSocket compatibility over JSON and MessagePack, excluding Live Objects.',
+    icon: RadioTower,
   },
   {
     title: 'Protocol V2 control',
@@ -82,14 +83,30 @@ const capabilities = [
     icon: History,
   },
   {
-    title: 'Push and webhooks',
-    description: 'Device registration, provider status, scheduled notifications, retries, and delivery signals.',
+    title: 'Push and operations',
+    description: 'Push, webhooks, metrics, readiness, quotas, retries, provider status, and delivery signals.',
     icon: BellRing,
   },
+];
+
+const compatibilityPaths = [
   {
-    title: 'Operator visibility',
-    description: 'Health probes, readiness, Prometheus metrics, webhooks, auth, quotas, and failure surfaces.',
-    icon: ShieldCheck,
+    title: 'Pusher clients',
+    protocol: 'Protocol V1',
+    detail: 'pusher-js · Laravel Echo',
+    icon: Route,
+  },
+  {
+    title: 'Ably REST + WebSocket',
+    protocol: 'Opt-in compatibility',
+    detail: 'JSON · MessagePack · no Live Objects',
+    icon: RadioTower,
+  },
+  {
+    title: 'Sockudo SDKs',
+    protocol: 'Protocol V2',
+    detail: 'Recovery · AI Transport',
+    icon: GitBranch,
   },
 ];
 
@@ -128,33 +145,6 @@ const blogPosts = [
   },
 ];
 
-const eventRows = [
-  {
-    name: 'Presence sync',
-    detail: 'cluster registry',
-    value: '4 nodes',
-    state: 'healthy',
-  },
-  {
-    name: 'Order fanout',
-    detail: 'cross-node publish',
-    value: '18.4k/s',
-    state: 'fanout',
-  },
-  {
-    name: 'History rewind',
-    detail: 'continuity check',
-    value: '12 ms',
-    state: 'gapless',
-  },
-  {
-    name: 'Push publish',
-    detail: 'provider queue',
-    value: 'queued',
-    state: 'durable',
-  },
-];
-
 export default function HomePage() {
   return (
     <div className="home-page">
@@ -171,7 +161,7 @@ export default function HomePage() {
                   style={{ width: 20, height: 20 }}
                   aria-hidden="true"
                 />
-                Sockudo documentation
+                Open-source realtime infrastructure
               </span>
               <Link
                 className="home-support-link"
@@ -185,12 +175,12 @@ export default function HomePage() {
             </div>
 
             <h1 id="home-hero-title">
-              Own realtime infrastructure without giving up Pusher compatibility.
+              Own realtime infrastructure. Keep the clients you already ship.
             </h1>
             <p className="home-lede">
-              Sockudo is a Rust realtime server for teams that want the familiar Pusher protocol,
-              Protocol V2 durability, horizontal fanout, recovery, push, SDKs, and AI transport in
-              one self-hosted control plane.
+              Sockudo is a self-hosted Rust realtime server. Keep Pusher clients on Protocol V1, or
+              opt into Ably REST and WebSocket compatibility, excluding Live Objects. Move to
+              Protocol V2 durability, horizontal fanout, push, and AI Transport when you need them.
             </p>
 
             <div className="home-actions" aria-label="Primary documentation links">
@@ -198,114 +188,78 @@ export default function HomePage() {
                 Start building
                 <ArrowRight className="size-4" />
               </Link>
-              <Link className="home-button home-button-secondary" href="/docs/getting-started/first-connection">
-                First connection
+              <Link className="home-button home-button-secondary" href="/docs/getting-started/migration">
+                Migration guide
                 <Zap className="size-4" />
               </Link>
-              <Link className="home-button home-button-ghost" href="/docs/reference/protocol">
-                Protocol reference
+              <Link
+                className="home-button home-button-ghost"
+                href="/docs/server/ably-ai-transport-compatibility"
+              >
+                Ably compatibility
+              </Link>
+            </div>
+          </div>
+
+          <div
+            className="home-compatibility-map"
+            aria-label="Pusher, Ably, and native Sockudo client paths converging on one self-hosted server"
+          >
+            <div className="compatibility-header">
+              <div>
+                <span>Client compatibility</span>
+                <strong>Choose the edge. Keep control of the server.</strong>
+              </div>
+              <Link href="/docs/reference/compatibility">
+                View scope
+                <ArrowRight className="size-4" />
               </Link>
             </div>
 
-          </div>
+            <div className="compatibility-routes">
+              {compatibilityPaths.map((path) => (
+                <article className="compatibility-route" key={path.title}>
+                  <span className="compatibility-route-icon">
+                    <path.icon className="size-5" />
+                  </span>
+                  <span className="compatibility-route-protocol">{path.protocol}</span>
+                  <strong>{path.title}</strong>
+                  <small>{path.detail}</small>
+                </article>
+              ))}
+            </div>
 
-          <div className="home-control-plane" aria-label="Sockudo realtime control plane preview">
-            <div className="control-header">
-              <div className="control-brand">
-                <span className="control-logo">
-                  <RadioTower className="size-5" />
-                </span>
-                <div>
-                  <strong>sockudo-control</strong>
-                  <span>localhost:6001</span>
-                </div>
+            <div className="compatibility-merge" aria-hidden="true">
+              <span />
+              <em>one self-hosted edge</em>
+              <span />
+            </div>
+
+            <div className="compatibility-server">
+              <span className="compatibility-server-logo">
+                <Image
+                  src="/sockudo-logo/sockudo-icon-color.svg"
+                  alt=""
+                  width={52}
+                  height={52}
+                  style={{ width: 52, height: 52 }}
+                />
+              </span>
+              <div>
+                <span>Deployed in your infrastructure</span>
+                <strong>Sockudo</strong>
+                <small>Rust + Tokio · one server, multiple protocol edges</small>
               </div>
-              <span className="status-pill">
-                <CircleDot className="size-3" />
-                Online
+              <span className="compatibility-owned">
+                <CheckCircle2 className="size-4" />
+                Open source
               </span>
             </div>
 
-            <div className="control-topology" aria-hidden="true">
-              <span className="topology-protocol topology-protocol-v1">Protocol V1</span>
-              <span className="topology-protocol topology-protocol-v2">Protocol V2</span>
-              <div className="topology-flow">
-                <div className="topology-card topology-card-clients">
-                  <Smartphone className="size-4" />
-                  <span>Clients</span>
-                  <small>pusher-js / Echo</small>
-                </div>
-                <div className="topology-core">
-                  <Image
-                    src="/sockudo-logo/sockudo-icon-color.svg"
-                    alt=""
-                    width={44}
-                    height={44}
-                    style={{ width: 44, height: 44 }}
-                  />
-                  <strong>Sockudo</strong>
-                  <small>Rust + Tokio</small>
-                </div>
-                <div className="topology-card topology-card-backends">
-                  <Server className="size-4" />
-                  <span>Backends</span>
-                  <small>HTTP API</small>
-                </div>
-                <div className="topology-card topology-card-adapter">
-                  <Database className="size-4" />
-                  <span>Adapter</span>
-                  <small>Redis / NATS</small>
-                </div>
-              </div>
-            </div>
-
-            <div className="control-grid">
-              <div className="control-panel">
-                <div className="panel-heading">
-                  <Code2 className="size-4" />
-                  Quick start
-                </div>
-                <div className="control-steps">
-                  <div className="control-step">
-                    <span>01</span>
-                    <div>
-                      <strong>Run the server</strong>
-                      <code>cargo run --release --features full</code>
-                    </div>
-                  </div>
-                  <div className="control-step">
-                    <span>02</span>
-                    <div>
-                      <strong>Connect a client</strong>
-                      <code>protocolVersion: 2</code>
-                    </div>
-                  </div>
-                  <div className="control-step">
-                    <span>03</span>
-                    <div>
-                      <strong>Publish safely</strong>
-                      <code>idempotency_key: order-created</code>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="event-stream">
-                <div className="panel-heading">
-                  <Activity className="size-4" />
-                  Live delivery
-                </div>
-                {eventRows.map(({ name, detail, value, state }) => (
-                  <div className="event-row" key={name}>
-                    <span className="event-label">
-                      <span>{name}</span>
-                      <small>{detail}</small>
-                    </span>
-                    <strong>{value}</strong>
-                    <em>{state}</em>
-                  </div>
-                ))}
-              </div>
+            <div className="compatibility-outcomes" aria-label="Native Sockudo capabilities">
+              <span>Horizontal fanout</span>
+              <span>Durable recovery</span>
+              <span>Push + AI Transport</span>
             </div>
           </div>
         </div>

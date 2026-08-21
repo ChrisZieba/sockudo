@@ -189,7 +189,7 @@ body {
 
 .home-hero {
   position: relative;
-  padding-block: 8.5rem 0;
+  padding-block: 8.5rem 6.5rem;
 }
 
 .home-hero .home-container {
@@ -199,8 +199,8 @@ body {
 .home-hero-grid {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 0.92fr) minmax(34rem, 1.08fr);
-  gap: 3.5rem;
+  grid-template-columns: minmax(0, 1.04fr) minmax(31rem, 0.96fr);
+  gap: 4rem;
   align-items: center;
 }
 
@@ -268,7 +268,7 @@ body {
 
 .home-hero h1 {
   max-width: 14.5ch;
-  margin: 0 0 2rem;
+  margin: 0 0 1.5rem;
   color: var(--app-heading);
   font-size: clamp(2.75rem, 4.6vw, 4rem);
   font-weight: 800;
@@ -281,8 +281,8 @@ body {
   max-width: 68ch;
   margin: 0;
   color: var(--app-body);
-  font-size: clamp(1rem, 0.4vw + 0.95rem, 1.25rem);
-  line-height: 1.7;
+  font-size: clamp(1rem, 0.3vw + 0.95rem, 1.15rem);
+  line-height: 1.65;
   text-wrap: pretty;
 }
 
@@ -291,7 +291,7 @@ body {
   flex-wrap: wrap;
   gap: 1rem;
   align-items: center;
-  margin-top: 2rem;
+  margin-top: 1.75rem;
 }
 
 .home-button {
@@ -349,26 +349,6 @@ body {
   background: color-mix(in srgb, var(--app-primary) 8%, var(--app-surface));
 }
 
-.home-control-plane {
-  --control-radius: 24px;
-  --control-padding: 16px;
-  --control-inner-radius: calc(var(--control-radius) - var(--control-padding));
-  overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--app-primary) 20%, var(--app-border));
-  border-radius: var(--control-radius);
-  background: color-mix(in srgb, var(--app-surface) 78%, transparent);
-  padding: var(--control-padding);
-  box-shadow: var(--app-shadow-2xl);
-  backdrop-filter: blur(18px);
-}
-
-.control-header,
-.control-brand,
-.status-pill,
-.panel-heading,
-.event-row,
-.event-label,
-.control-step,
 .home-card-action,
 .home-inline-link,
 .home-security-panel div,
@@ -377,367 +357,244 @@ body {
   align-items: center;
 }
 
-.control-header {
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 1rem;
+.home-compatibility-map {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--app-primary) 22%, var(--app-border));
+  border-radius: 24px;
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--app-primary) 8%, transparent), transparent 42%),
+    color-mix(in srgb, var(--app-surface) 90%, transparent);
+  padding: 1.25rem;
+  box-shadow: var(--app-shadow-2xl);
+  backdrop-filter: blur(18px);
 }
 
-.control-brand {
-  gap: 0.75rem;
+.compatibility-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.compatibility-header > div {
   min-width: 0;
 }
 
-.control-logo,
-.home-card-icon {
+.compatibility-header > div > span {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--app-primary);
+  font-size: 0.72rem;
+  font-weight: 780;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.compatibility-header strong {
+  display: block;
+  max-width: 25ch;
+  color: var(--app-heading);
+  font-size: 1.05rem;
+  font-weight: 760;
+  line-height: 1.35;
+}
+
+.compatibility-header a {
   display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: var(--app-radius-pill);
+  background: color-mix(in srgb, var(--app-primary) 10%, var(--app-surface));
+  padding: 0.5rem 0.75rem;
+  color: var(--app-primary);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.compatibility-header a:hover {
+  background: color-mix(in srgb, var(--app-primary) 16%, var(--app-surface));
+}
+
+.compatibility-routes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.compatibility-route {
+  display: flex;
+  min-width: 0;
+  min-height: 10.5rem;
+  align-items: flex-start;
+  flex-direction: column;
+  border: 1px solid var(--app-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--app-surface) 92%, transparent);
+  padding: 0.9rem;
+  box-shadow: var(--app-shadow-xs);
+}
+
+.compatibility-route-icon {
+  display: inline-flex;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border-radius: var(--app-radius-pill);
+  border-radius: 12px;
   background: color-mix(in srgb, var(--app-primary) 11%, var(--app-surface));
   color: var(--app-primary);
 }
 
-.control-logo {
-  width: 2.5rem;
-  height: 2.5rem;
-  flex: 0 0 2.5rem;
-  margin: 0;
-}
-
-.control-logo svg {
-  display: block;
-  width: 1.125rem;
-  height: 1.125rem;
-}
-
-.control-brand strong,
-.panel-heading {
-  margin: 0;
-  color: var(--app-heading);
-  font-size: 0.875rem;
-  font-weight: 700;
-  line-height: 1.2;
-}
-
-.control-brand > div > span {
-  display: block;
-  margin-top: 0.25rem;
-  color: var(--app-body-subtle);
-  font-size: 0.875rem;
-  line-height: 1.2;
-}
-
-.status-pill {
-  min-height: 2rem;
-  flex-shrink: 0;
-  gap: 0.375rem;
-  border-radius: var(--app-radius-pill);
-  background: color-mix(in srgb, var(--app-success) 12%, var(--app-surface));
-  padding: 0 0.75rem;
-  color: #047857;
-  font-size: 0.875rem;
-  font-weight: 700;
-}
-
-.dark .status-pill {
-  color: #6ee7b7;
-}
-
-.control-topology {
-  position: relative;
-  min-height: 15.5rem;
-  overflow: hidden;
-  border-radius: var(--control-inner-radius);
-  background:
-    linear-gradient(color-mix(in srgb, #ffffff 8%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, #ffffff 8%, transparent) 1px, transparent 1px),
-    radial-gradient(circle at 50% 46%, color-mix(in srgb, var(--app-primary) 34%, transparent), transparent 32%),
-    #08070d;
-  background-size:
-    32px 32px,
-    32px 32px,
-    auto,
-    auto;
-}
-
-.control-topology::before,
-.control-topology::after {
-  content: '';
-  position: absolute;
-}
-
-.control-topology::before {
-  top: 50%;
-  left: 12%;
-  right: 12%;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, #8b5cf6 16%, #10b981 50%, #8b5cf6 84%, transparent);
-}
-
-.control-topology::after {
-  top: 22%;
-  bottom: 14%;
-  left: 50%;
-  width: 1px;
-  background: linear-gradient(180deg, transparent, color-mix(in srgb, #10b981 55%, transparent), transparent);
-}
-
-.topology-protocol,
-.topology-card,
-.topology-core {
-  position: absolute;
-  z-index: 1;
-}
-
-.topology-protocol {
-  display: inline-flex;
-  min-height: 2rem;
-  align-items: center;
-  border: 1px solid color-mix(in srgb, #ffffff 16%, transparent);
-  border-radius: var(--app-radius-pill);
-  background: color-mix(in srgb, #ffffff 10%, transparent);
-  padding: 0 0.75rem;
-  color: #f7f7fb;
-  font-size: 0.8125rem;
-  font-weight: 720;
-  line-height: 1.2;
-  box-shadow: 0 10px 24px rgb(0 0 0 / 0.24);
-}
-
-.topology-protocol-v1 {
-  top: 1.25rem;
-  left: 1.25rem;
-}
-
-.topology-protocol-v2 {
-  right: 1.25rem;
-  bottom: 1.25rem;
-}
-
-.topology-flow {
-  position: absolute;
-  inset: 3.75rem 1.25rem 3.25rem;
-}
-
-.topology-card,
-.topology-core {
-  display: grid;
-  justify-items: center;
-  min-width: 7rem;
-  border: 1px solid color-mix(in srgb, #ffffff 14%, transparent);
-  background: color-mix(in srgb, #ffffff 9%, transparent);
-  color: #f7f7fb;
-  box-shadow: 0 18px 40px rgb(0 0 0 / 0.28);
-}
-
-.topology-card {
-  gap: 0.25rem;
-  border-radius: 18px;
-  padding: 0.75rem 0.875rem;
-}
-
-.topology-card svg {
-  color: #a78bfa;
-}
-
-.topology-card span,
-.topology-core strong {
-  font-size: 0.875rem;
-  font-weight: 760;
-  line-height: 1.1;
-}
-
-.topology-card small,
-.topology-core small {
-  color: #d4d4d8;
-  font-size: 0.75rem;
-  font-weight: 600;
-  line-height: 1.2;
-  white-space: nowrap;
-}
-
-.topology-core {
-  top: 50%;
-  left: 50%;
-  gap: 0.375rem;
-  min-width: 8.75rem;
-  border-color: color-mix(in srgb, #ffffff 24%, transparent);
-  border-radius: 28px;
-  background: color-mix(in srgb, #ffffff 92%, transparent);
-  padding: 1rem;
-  color: #09090b;
-  box-shadow: var(--app-shadow-lg);
-  transform: translate(-50%, -50%);
-}
-
-.topology-core small {
-  color: #52525b;
-}
-
-.topology-card-clients {
-  top: 0;
-  left: 0;
-}
-
-.topology-card-backends {
-  top: 0;
-  right: 0;
-}
-
-.topology-card-adapter {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 0.4rem;
-  bottom: -1.1rem;
-  left: 50%;
-  padding: 0.5rem 0.75rem;
-  transform: translateX(-50%);
-}
-
-.topology-card-adapter small {
-  display: none;
-}
-
-.control-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
-  gap: 0.75rem;
-  margin-top: 0.75rem;
-}
-
-.control-panel,
-.event-stream {
-  min-width: 0;
-  border: 1px solid var(--app-border);
-  border-radius: var(--control-inner-radius);
-  background: var(--app-surface);
-  padding: 0.875rem;
-  box-shadow: var(--app-shadow-xs);
-}
-
-.panel-heading {
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
-}
-
-.control-steps {
-  display: grid;
-  gap: 0.625rem;
-}
-
-.control-step {
-  gap: 0.75rem;
-  align-items: flex-start;
-  border-radius: 16px;
-  background: var(--app-surface-soft);
-  padding: 0.625rem 0.75rem;
-}
-
-.control-step > span {
-  display: inline-flex;
-  width: 2rem;
-  height: 2rem;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--app-radius-pill);
-  background: color-mix(in srgb, var(--app-primary) 12%, var(--app-surface));
+.compatibility-route-protocol {
+  margin-top: 0.85rem;
   color: var(--app-primary);
-  font-size: 0.75rem;
-  font-weight: 820;
-  line-height: 1;
-}
-
-.control-step div {
-  min-width: 0;
-}
-
-.control-step strong {
-  display: block;
-  margin-bottom: 0.35rem;
-  color: var(--app-heading);
-  font-size: 0.875rem;
-  font-weight: 760;
+  font-size: 0.68rem;
+  font-weight: 780;
+  letter-spacing: 0.04em;
   line-height: 1.2;
+  text-transform: uppercase;
 }
 
-.control-step code {
-  display: block;
-  color: var(--app-body);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.75rem;
+.compatibility-route strong {
+  margin-top: 0.3rem;
+  color: var(--app-heading);
+  font-size: 0.88rem;
+  font-weight: 760;
+  line-height: 1.25;
+}
+
+.compatibility-route small {
+  margin-top: auto;
+  padding-top: 0.65rem;
+  color: var(--app-body-subtle);
+  font-size: 0.7rem;
+  font-weight: 620;
   line-height: 1.35;
-  overflow-wrap: anywhere;
 }
 
-.event-stream {
+.compatibility-merge {
   display: grid;
-  align-content: start;
-  gap: 0.5rem;
-}
-
-.event-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.625rem;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 0.75rem;
   align-items: center;
-  border-radius: 18px;
-  background: var(--app-surface-soft);
-  padding: 0.56rem 0.7rem;
+  margin: 0.85rem 0;
 }
 
-.event-label {
-  grid-row: 1 / span 2;
-  min-width: 0;
-  align-items: flex-start;
-  flex-direction: column;
-  gap: 0.25rem;
+.compatibility-merge span {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--app-primary) 45%, var(--app-border)));
 }
 
-.event-label span {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--app-heading);
-  font-size: 0.875rem;
-  font-weight: 760;
-  line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.compatibility-merge span:last-child {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--app-primary) 45%, var(--app-border)), transparent);
 }
 
-.event-label small {
-  overflow: hidden;
-  max-width: 100%;
+.compatibility-merge em {
   color: var(--app-body-subtle);
-  font-size: 0.75rem;
-  font-weight: 600;
-  line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.event-row strong {
-  color: var(--app-heading);
-  font-size: 0.95rem;
-  font-weight: 700;
-  line-height: 1.2;
-  white-space: nowrap;
-}
-
-.event-row em {
-  grid-column: 2;
-  justify-self: end;
-  border-radius: var(--app-radius-pill);
-  background: color-mix(in srgb, var(--app-primary) 10%, var(--app-surface));
-  padding: 0.2rem 0.55rem;
-  color: var(--app-primary);
-  font-size: 0.75rem;
+  font-size: 0.68rem;
   font-style: normal;
   font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.compatibility-server {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.9rem;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, #a78bfa 28%, transparent);
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 15% 20%, rgb(124 58 237 / 0.25), transparent 12rem),
+    #0b0811;
+  padding: 1rem;
+  color: #f7f7fb;
+  box-shadow: 0 20px 46px rgb(9 6 14 / 0.22);
+}
+
+.compatibility-server-logo {
+  display: inline-flex;
+  width: 4rem;
+  height: 4rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 18px;
+  background: rgb(255 255 255 / 0.92);
+}
+
+.compatibility-server > div {
+  min-width: 0;
+}
+
+.compatibility-server > div > span {
+  display: block;
+  color: #a78bfa;
+  font-size: 0.68rem;
+  font-weight: 760;
+  letter-spacing: 0.04em;
   line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.compatibility-server strong {
+  display: block;
+  margin-top: 0.2rem;
+  color: #ffffff;
+  font-size: 1.2rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.compatibility-server small {
+  display: block;
+  margin-top: 0.25rem;
+  color: #c4b5d7;
+  font-size: 0.72rem;
+  font-weight: 580;
+  line-height: 1.35;
+}
+
+.compatibility-owned {
+  display: inline-flex;
+  min-height: 2rem;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid rgb(110 231 183 / 0.2);
+  border-radius: var(--app-radius-pill);
+  background: rgb(16 185 129 / 0.12);
+  padding: 0 0.7rem;
+  color: #6ee7b7;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
   white-space: nowrap;
+}
+
+.compatibility-outcomes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+}
+
+.compatibility-outcomes span {
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-pill);
+  background: var(--app-surface);
+  padding: 0.42rem 0.65rem;
+  color: var(--app-body);
+  font-size: 0.7rem;
+  font-weight: 650;
+  line-height: 1;
 }
 
 .home-section {
@@ -1948,7 +1805,7 @@ body {
   }
 
   .home-hero-grid {
-    gap: 5rem;
+    gap: 3.5rem;
   }
 
   .home-section {
@@ -1979,7 +1836,7 @@ body {
     white-space: normal;
   }
 
-  .control-grid,
+  .compatibility-routes,
   .home-path-grid,
   .home-feature-grid,
   .home-sdk-grid,
@@ -2113,40 +1970,21 @@ body {
     padding: 1.25rem;
   }
 
-  .home-control-plane {
-    padding: 0.75rem;
+  .home-compatibility-map {
+    padding: 0.9rem;
   }
 
-  .control-topology {
-    min-height: 16rem;
+  .compatibility-route {
+    min-height: auto;
   }
 
-  .topology-flow {
-    inset: 3.5rem 0.75rem 3rem;
+  .compatibility-server {
+    grid-template-columns: auto minmax(0, 1fr);
   }
 
-  .topology-protocol-v1 {
-    left: 0.75rem;
-  }
-
-  .topology-protocol-v2 {
-    right: 0.75rem;
-  }
-
-  .topology-card {
-    min-width: 5.8rem;
-    padding: 0.65rem;
-  }
-
-  .topology-core {
-    min-width: 7.5rem;
-    border-radius: 22px;
-    padding: 0.75rem;
-  }
-
-  .topology-card small,
-  .topology-core small {
-    font-size: 0.6875rem;
+  .compatibility-owned {
+    grid-column: 2;
+    justify-self: start;
   }
 
   .blog-layout,
@@ -2172,13 +2010,22 @@ body {
     font-size: 1.85rem;
   }
 
-  .control-header {
+  .compatibility-header {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .status-pill {
-    width: fit-content;
+  .compatibility-header a {
+    align-self: stretch;
+    justify-content: center;
+  }
+
+  .compatibility-server {
+    grid-template-columns: 1fr;
+  }
+
+  .compatibility-owned {
+    grid-column: auto;
   }
 }
 
@@ -2383,17 +2230,17 @@ body {
 }
 
 .home-hero {
-  padding-top: 7.5rem;
+  padding: 6.75rem 0 6rem;
 }
 
 .home-hero h1 {
-  max-width: 13.2ch;
-  font-size: clamp(2.8rem, 4.4vw, 3.85rem);
+  max-width: 17.5ch;
+  font-size: clamp(2.75rem, 4vw, 3.55rem);
   line-height: 1.015;
   letter-spacing: -0.04em;
 }
 
-.home-control-plane,
+.home-compatibility-map,
 .home-card,
 .home-sdk-card,
 .home-architecture-panel,
@@ -2402,12 +2249,6 @@ body {
 .blog-tile {
   border-color: color-mix(in srgb, var(--app-primary) 20%, var(--app-border));
   box-shadow: 0 26px 68px -52px color-mix(in srgb, var(--app-primary) 58%, transparent);
-}
-
-.home-control-plane {
-  background:
-    linear-gradient(145deg, color-mix(in srgb, var(--app-primary) 8%, transparent), transparent 42%),
-    color-mix(in srgb, var(--app-surface) 88%, transparent);
 }
 
 .home-card:hover,
@@ -2441,6 +2282,6 @@ body {
   }
 
   .home-hero {
-    padding-top: 6.5rem;
+    padding: 6rem 0 4.5rem;
   }
 }
