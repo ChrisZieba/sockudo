@@ -187,6 +187,33 @@ place would keep overriding a connection-count metric.
 `dashboard.autoscaling.api.metrics` and `dashboard.autoscaling.web.metrics` behave the same
 way for the dashboard deployments.
 
+## Capacity readiness
+
+Set the readiness probe to `/ready` to stop routing new connections to a node at
+95% of `SOCKUDO_MAX_CONNECTIONS`. It becomes ready again at 85%; existing
+connections stay open. Watermarks are configurable fractions:
+
+```yaml
+config:
+  httpApi:
+    readiness:
+      highWatermark: 0.95
+      lowWatermark: 0.85
+extraEnv:
+  - name: SOCKUDO_MAX_CONNECTIONS
+    value: "100000"
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: http
+```
+
+The node limit must be nonzero for capacity gating. The count includes live native
+WebSocket sessions and excludes sockets waiting for disconnect cleanup. `/ready`
+also checks dependencies and shutdown state. The chart keeps `/up` as its default
+readiness path; `/up` remains independent of connection capacity. Keep liveness and
+startup probes on `/live`.
+
 ## Dashboard
 
 The dashboard is disabled by default:
@@ -201,8 +228,16 @@ To enable it in production:
 - use a durable app manager: `mysql`, `pgsql`/`postgres`, or `dynamodb`
 - keep `HTTP_API_USAGE_ENABLED` and Prometheus metrics enabled
 - provide a strong `DASHBOARD_SESSION_SECRET` through an existing Kubernetes Secret
+- optionally provide `DASHBOARD_TOTP_ENCRYPTION_KEY` through `dashboard.totpEncryptionKey.existingSecret` to allow per-user two-factor enrollment
 - seed the first admin through an existing Secret or create users after install
 - expose the dashboard through TLS and restrict network access
+
+For optional two-factor login, generate a separate 32-byte base64 key with
+`openssl rand -base64 32` and store it as `dashboard-totp-encryption-key` in the
+Secret referenced by `dashboard.totpEncryptionKey.existingSecret`. Keep this key
+stable, backed up, and identical across API replicas: it decrypts enrolled TOTP
+secrets. Leave `existingSecret` empty to omit the setting. Each user enables
+two-factor login from their profile after the key is configured.
 
 Example:
 
@@ -227,6 +262,8 @@ dashboard:
   enabled: true
   sessionSecret:
     existingSecret: sockudo-dashboard-session
+  totpEncryptionKey:
+    existingSecret: sockudo-dashboard-totp
   seedAdmin:
     enabled: true
     existingSecret: sockudo-dashboard-seed

@@ -27,6 +27,8 @@ function mapUser(row: Record<string, unknown>): DashboardUser {
     active: toBoolean(row.active),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
+    totp_state: String(row.totp_state ?? "{}"),
+    auth_version: String(row.auth_version ?? ""),
   };
 }
 
@@ -42,7 +44,7 @@ export class UsersRepository {
 
   async list(): Promise<DashboardUser[]> {
     const rows = await this.db.query<Record<string, unknown>>(
-      `SELECT id, email, password_hash, name, role, active, created_at, updated_at
+      `SELECT id, email, password_hash, name, role, active, created_at, updated_at, totp_state, auth_version
        FROM dashboard_users ORDER BY created_at ASC`,
     );
     return rows.map(mapUser);
@@ -50,7 +52,7 @@ export class UsersRepository {
 
   async findById(id: string): Promise<DashboardUser | null> {
     const rows = await this.db.query<Record<string, unknown>>(
-      `SELECT id, email, password_hash, name, role, active, created_at, updated_at
+      `SELECT id, email, password_hash, name, role, active, created_at, updated_at, totp_state, auth_version
        FROM dashboard_users WHERE id = ?`,
       [id],
     );
@@ -59,7 +61,7 @@ export class UsersRepository {
 
   async findByEmail(email: string): Promise<DashboardUser | null> {
     const rows = await this.db.query<Record<string, unknown>>(
-      `SELECT id, email, password_hash, name, role, active, created_at, updated_at
+      `SELECT id, email, password_hash, name, role, active, created_at, updated_at, totp_state, auth_version
        FROM dashboard_users WHERE email = ?`,
       [email.toLowerCase()],
     );
@@ -75,9 +77,9 @@ export class UsersRepository {
     const active = input.active ?? true;
 
     await this.db.execute(
-      `INSERT INTO dashboard_users (id, email, password_hash, name, role, active)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [id, email, password_hash, name, role, active],
+      `INSERT INTO dashboard_users (id, email, password_hash, name, role, active, totp_state)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, email, password_hash, name, role, active, "{}"],
     );
 
     const created = await this.findById(id);
@@ -115,5 +117,32 @@ export class UsersRepository {
       [id],
     );
     if (!affected) throw new Error("User not found");
+  }
+
+  // One conditional write consumes challenges/codes across all dashboard replicas.
+  async compareAndSetTotp(
+    user: DashboardUser,
+    state: string,
+    rotateCredentials = false,
+  ): Promise<DashboardUser | null> {
+    const authVersion = rotateCredentials
+      ? crypto.randomUUID()
+      : (user.auth_version ?? "");
+    const affected = await this.db.execute(
+      `UPDATE dashboard_users SET totp_state = ?, auth_version = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND totp_state = ? AND auth_version = ? AND password_hash = ? AND active = ?`,
+      [
+        state,
+        authVersion,
+        user.id,
+        user.totp_state ?? "{}",
+        user.auth_version ?? "",
+        user.password_hash,
+        true,
+      ],
+    );
+    return affected
+      ? { ...user, totp_state: state, auth_version: authVersion }
+      : null;
   }
 }

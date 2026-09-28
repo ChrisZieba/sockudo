@@ -173,6 +173,14 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
     );
 
     // --- HTTP API ---
+    options.http_api.readiness.high_watermark = parse_env::<f64>(
+        "HTTP_API_READINESS_HIGH_WATERMARK",
+        options.http_api.readiness.high_watermark,
+    );
+    options.http_api.readiness.low_watermark = parse_env::<f64>(
+        "HTTP_API_READINESS_LOW_WATERMARK",
+        options.http_api.readiness.low_watermark,
+    );
     options.http_api.usage_enabled =
         parse_bool_env("HTTP_API_USAGE_ENABLED", options.http_api.usage_enabled);
     options.http_api.accept_traffic.enabled = parse_bool_env(

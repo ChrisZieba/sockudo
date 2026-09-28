@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onUnmounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
   Activity,
@@ -18,12 +18,30 @@ const route = useRoute();
 
 const email = ref("admin@sockudo.local");
 const password = ref("");
+const code = ref("");
+const useRecoveryCode = ref(false);
+
+onUnmounted(() => { auth.challenge = null; });
+
+function restartLogin() {
+  auth.challenge = null;
+  auth.error = null;
+  password.value = "";
+  code.value = "";
+  useRecoveryCode.value = false;
+}
 
 async function submit() {
   try {
-    await auth.login(email.value, password.value);
-    const redirect = (route.query.redirect as string) || "/";
-    router.push(redirect);
+    if (auth.challenge) {
+      await auth.verifyTotp(code.value);
+    } else {
+      await auth.login(email.value, password.value);
+      password.value = "";
+    }
+    if (!auth.user) return;
+    const redirect = route.query.redirect;
+    await router.push(typeof redirect === "string" && redirect.startsWith("/") && !redirect.startsWith("//") ? redirect : "/");
   } catch {
     // error shown via store
   }
@@ -109,14 +127,15 @@ async function submit() {
               >
                 <LockKeyhole class="h-5 w-5" />
               </div>
-              <h2 class="text-xl font-semibold tracking-tight text-surface-50">Welcome back</h2>
+              <h2 class="text-xl font-semibold tracking-tight text-surface-50">{{ auth.challenge ? "Two-factor verification" : "Welcome back" }}</h2>
               <p class="mt-2 text-sm leading-6 text-surface-500">
-                Sign in with your operator account to continue.
+                {{ auth.challenge ? email : "Sign in with your operator account to continue." }}
               </p>
             </div>
 
             <form class="space-y-5 px-6 py-6 sm:px-8 sm:py-7" @submit.prevent="submit">
-              <div>
+              <p v-if="route.query.password_changed && !auth.challenge" role="status" class="text-sm text-emerald-300">Password changed. Sign in with your new password.</p>
+              <div v-if="!auth.challenge">
                 <label for="login-email" class="field-label">Email address</label>
                 <input
                   id="login-email"
@@ -128,7 +147,7 @@ async function submit() {
                   required
                 />
               </div>
-              <div>
+              <div v-if="!auth.challenge">
                 <label for="login-password" class="field-label">Password</label>
                 <input
                   id="login-password"
@@ -141,6 +160,12 @@ async function submit() {
                 />
               </div>
 
+              <div v-if="auth.challenge">
+                <label for="login-code" class="field-label">{{ useRecoveryCode ? "Recovery code" : "Authenticator code" }}</label>
+                <input id="login-code" v-model="code" class="input-field font-mono" type="text" :inputmode="useRecoveryCode ? 'text' : 'numeric'" autocomplete="one-time-code" :pattern="useRecoveryCode ? undefined : '[0-9]{6}'" :maxlength="useRecoveryCode ? 64 : 6" required />
+                <button type="button" class="text-button mt-3" @click="useRecoveryCode = !useRecoveryCode; code = ''">{{ useRecoveryCode ? "Use authenticator code" : "Use a recovery code" }}</button>
+              </div>
+
               <p v-if="auth.error" class="alert alert-error" role="alert">{{ auth.error }}</p>
 
               <button
@@ -149,8 +174,9 @@ async function submit() {
                 :disabled="auth.loading"
               >
                 <LoaderCircle v-if="auth.loading" class="h-4 w-4 animate-spin" />
-                {{ auth.loading ? "Signing in..." : "Sign in to dashboard" }}
+                {{ auth.loading ? "Signing in..." : auth.challenge ? "Verify and sign in" : "Sign in to dashboard" }}
               </button>
+              <button v-if="auth.challenge" type="button" class="btn-secondary w-full" :disabled="auth.loading" @click="restartLogin">Back to sign in</button>
             </form>
 
             <div class="border-t border-surface-800/80 bg-surface-950/25 px-6 py-4 sm:px-8">

@@ -7,6 +7,7 @@ export const useAuthStore = defineStore("auth", () => {
   const user = ref<DashboardUser | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
+  const challenge = ref<string | null>(null);
 
   const email = computed(() => user.value?.email ?? null);
   const isAdmin = computed(() => user.value?.role === "admin");
@@ -23,7 +24,14 @@ export const useAuthStore = defineStore("auth", () => {
     loading.value = true;
     error.value = null;
     try {
-      user.value = await api.login(loginEmail, password);
+      challenge.value = null;
+      const result = await api.login(loginEmail, password);
+      if ("mfa_required" in result) {
+        user.value = null;
+        challenge.value = result.challenge;
+      } else {
+        user.value = result;
+      }
     } catch (err) {
       error.value = err instanceof ApiError ? err.message : "Login failed";
       throw err;
@@ -32,10 +40,31 @@ export const useAuthStore = defineStore("auth", () => {
     }
   }
 
-  async function logout() {
-    await api.logout();
-    user.value = null;
+  async function verifyTotp(code: string) {
+    if (!challenge.value) return;
+    loading.value = true;
+    error.value = null;
+    try {
+      user.value = await api.verifyTotp(challenge.value, code.trim());
+      challenge.value = null;
+    } catch (err) {
+      error.value = err instanceof ApiError ? err.message : "Verification failed";
+      throw err;
+    } finally {
+      loading.value = false;
+    }
   }
 
-  return { user, email, isAdmin, loading, error, bootstrap, login, logout };
+  function clearSession() {
+    user.value = null;
+    challenge.value = null;
+    error.value = null;
+  }
+
+  async function logout() {
+    await api.logout();
+    clearSession();
+  }
+
+  return { user, email, isAdmin, loading, error, challenge, bootstrap, login, verifyTotp, clearSession, logout };
 });

@@ -374,6 +374,21 @@ pub async fn accept_traffic(
         .body(admission_state.to_string())?)
 }
 
+/// GET /ready: capacity-aware load-balancer probe with the same dependency checks as `/up`.
+pub async fn ready(
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Result<axum::response::Response, AppError> {
+    if handler.is_accepting() && !handler.is_capacity_ready() {
+        return Ok((
+            StatusCode::SERVICE_UNAVAILABLE,
+            [("X-Health-Check", "CAPACITY")],
+            "CAPACITY",
+        )
+            .into_response());
+    }
+    Ok(up(None, State(handler)).await?.into_response())
+}
+
 /// GET /up or /up/{app_id}
 #[instrument(skip(handler), fields(app_id = field::Empty))]
 pub async fn up(
@@ -527,6 +542,111 @@ mod tests {
         MemoryPresenceHistoryStore, PresenceHistoryDurableState, PresenceHistoryStreamRuntimeState,
     };
     use sonic_rs::{JsonValueTrait, Value};
+
+    #[tokio::test]
+    async fn ready_reports_capacity_without_changing_up_and_recovers_on_disconnect() {
+        use futures_util::StreamExt;
+        use sockudo_adapter::ConnectionManager;
+        use sockudo_protocol::{AppendMode, ProtocolVersion, WireFormat};
+        use sockudo_ws::axum_integration::WebSocket;
+        use sockudo_ws::client::WebSocketClient;
+        use sockudo_ws::{Config, Http1};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::net::{TcpListener, TcpStream};
+
+        let apps = Arc::new(MemoryAppManager::new());
+        apps.create_app(test_app()).await.unwrap();
+        let adapter = Arc::new(LocalAdapter::new());
+        adapter.init().await;
+        let running = Arc::new(AtomicBool::new(true));
+        let handler = Arc::new(
+            ConnectionHandlerBuilder::new(
+                apps,
+                adapter.clone(),
+                Arc::new(MemoryCacheManager::new(
+                    "ready-test".into(),
+                    MemoryCacheOptions::default(),
+                )),
+                sockudo_core::options::ServerOptions {
+                    max_connections: 1,
+                    ..Default::default()
+                },
+            )
+            .local_adapter(adapter)
+            .running(running.clone())
+            .build(),
+        );
+        assert_eq!(
+            ready(State(handler.clone())).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let handshake_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            sockudo_ws::handshake::server_handshake(&mut stream)
+                .await
+                .unwrap();
+            WebSocket::from_tcp(stream, Config::default())
+        });
+        let (mut client, _) = WebSocketClient::<Http1>::new(Config::default())
+            .connect(
+                TcpStream::connect(address).await.unwrap(),
+                &address.to_string(),
+                "/",
+                None,
+            )
+            .await
+            .unwrap();
+        let socket = handshake_task.await.unwrap();
+        let socket_handler = handler.clone();
+        let socket_task = tokio::spawn(async move {
+            socket_handler
+                .handle_socket(
+                    socket,
+                    "key".into(),
+                    None,
+                    ProtocolVersion::V1,
+                    WireFormat::Json,
+                    true,
+                    AppendMode::Delta,
+                    None,
+                )
+                .await
+        });
+        timeout(Duration::from_secs(2), client.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let response = ready(State(handler.clone())).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()["X-Health-Check"], "CAPACITY");
+        assert_eq!(
+            up(None, State(handler.clone()))
+                .await
+                .unwrap()
+                .into_response()
+                .status(),
+            StatusCode::OK
+        );
+
+        drop(client);
+        timeout(Duration::from_secs(2), socket_task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            ready(State(handler.clone())).await.unwrap().status(),
+            StatusCode::OK
+        );
+        running.store(false, Ordering::Release);
+        let response = ready(State(handler)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()["X-Health-Check"], "DRAINING");
+    }
 
     #[tokio::test]
     async fn accept_traffic_fails_open_when_memory_admission_is_disabled() {

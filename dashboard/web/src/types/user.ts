@@ -6,6 +6,7 @@ export interface DashboardUser {
   name: string;
   role: UserRole;
   active: boolean;
+  totp_enabled: boolean;
   created_at: string;
   updated_at: string;
 }

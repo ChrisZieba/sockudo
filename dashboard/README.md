@@ -17,7 +17,7 @@ dashboard/
 
 Bun + Hono service on port **3460** (`/api/v1/*`):
 
-- **Auth** — email/password login, JWT session cookies, logout, `/auth/me`
+- **Auth** — email/password login, optional per-user TOTP and recovery codes, JWT session cookies, logout, `/auth/me`
 - **Users** — DB-backed operators with `admin` and `operator` roles; create, update, delete, change password
 - **Apps** — list, create, update, delete Sockudo applications; rotate app secrets; manage the
   complete app policy (limits, features, channels, namespaces, history, recovery, and idempotency)
@@ -42,6 +42,8 @@ Vue 3 + Vite operator UI on port **5174**:
 - **Push manager** — upload APNs, FCM, Web Push, HMS, or WNS credentials; inspect devices and
   subscriptions; publish notifications; inspect status and replay dead letters
 - **Users** — admin-only user management
+- **Account** — every operator can edit their display name, change their password, and manage
+  optional two-factor authentication from the account link or icon
 
 Docker services: `dashboard-api`, `dashboard-web` (see [Docker](#docker) below).
 
@@ -221,15 +223,65 @@ bun run seed:admin <email> <password> [name]
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
 | POST | `/api/v1/auth/login` | Public | Login with email/password |
+| POST | `/api/v1/auth/totp/verify` | Login challenge | Complete login using a TOTP or recovery code |
+| POST | `/api/v1/auth/totp/setup` | Auth + password | Create a pending authenticator enrollment |
+| POST | `/api/v1/auth/totp/enable` | Auth + password + TOTP | Confirm enrollment and receive recovery codes |
+| POST | `/api/v1/auth/totp/disable` | Auth + password + second factor | Disable TOTP |
+| POST | `/api/v1/auth/totp/recovery-codes` | Auth + password + second factor | Replace recovery codes |
 | GET | `/api/v1/auth/me` | Auth | Current user |
 | GET | `/api/v1/users` | Admin | List users |
 | POST | `/api/v1/users` | Admin | Create user |
 | GET | `/api/v1/users/:id` | Admin or self | Get user |
-| PUT | `/api/v1/users/:id` | Admin or self | Update user |
+| PUT | `/api/v1/users/:id` | Admin or self | Update profile; self-service password changes require `change-password` |
 | DELETE | `/api/v1/users/:id` | Admin | Delete user |
 | POST | `/api/v1/users/:id/change-password` | Admin or self | Change password |
 
 Roles: `admin` (full access including user management), `operator` (apps/webhooks/metrics).
+
+Open **Account** (`/profile`) using your identity in the desktop navigation or the account icon
+on mobile. Changing your own password requires your current password, a new password of at least
+eight characters, and confirmation. Successful changes sign you out so you can authenticate with
+the new password. Administrators can reset another user's password from **Users**; the reset
+invalidates that user's sessions and preserves any enrolled second factor. Email remains read-only
+in self-service account settings.
+
+### Optional two-factor authentication
+
+Set `DASHBOARD_TOTP_ENCRYPTION_KEY` to a **separate** random 32-byte base64 key generated with
+`openssl rand -base64 32`. Keep it identical across dashboard API replicas and preserve it securely
+alongside database backups. AES-256-GCM encrypts each authenticator secret with authenticated
+user binding; the key is deliberately separate from the session signing key so session-key
+rotation does not lose authenticator enrollments. There is no automatic encryption-key rotation:
+retain the old key until users disable TOTP and enroll again with the replacement. Removing or
+changing this key prevents enrolled users from authenticating with their authenticator; a missing
+key disables all TOTP routes and fails enrolled-user login closed. Password-only users keep their
+existing login flow. Migrations run for SQLite, PostgreSQL, and MySQL.
+
+In **Account**, enter your current password to start setup, scan the QR code or copy the secret
+into an authenticator, then enter its six-digit code to confirm. Setup expires after ten minutes;
+TOTP is not active until confirmation succeeds. Save the ten displayed recovery codes outside
+the dashboard. Each code has 128 bits of random entropy, is stored only as a SHA-256 hash, and
+can be used once in place of the authenticator code. Replacing recovery codes invalidates the
+entire previous set. Disabling TOTP and replacing recovery codes both require the current password
+and an unused authenticator or recovery code. Password resets do not disable an enrolled factor.
+
+For enrolled users, `/auth/login` accepts `{ "email": "...", "password": "..." }` and returns
+`{ "mfa_required": true, "challenge": "..." }` without issuing a session. Submit
+`{ "challenge": "...", "code": "..." }` to `/auth/totp/verify` to receive the public user and
+session cookie. A challenge expires after five minutes, permits at most five attempts, and is
+replaced by the next password login. Its hash and attempt counter are persisted, so verification
+can reach any API replica. Successful verification consumes the challenge and factor atomically;
+authenticator codes cannot be reused, including the code used to confirm enrollment. Wait for
+the authenticator's next code when performing another security action immediately after enrollment.
+
+`/auth/totp/setup` accepts `{ "password": "..." }` and returns `{ "secret": "...", "otpauth_uri": "..." }`.
+`/auth/totp/enable` accepts `{ "password": "...", "code": "..." }` and returns
+`{ "user": { ... }, "recovery_codes": ["..."] }`. Disable and recovery-code replacement accept the
+same request shape; disable returns the public user and replacement returns `{ "recovery_codes": ["..."] }`.
+Enabling, disabling, or replacing codes refreshes the caller's session and invalidates older sessions
+and pending login challenges. Public user responses include `totp_enabled` and never include
+authenticator secrets, recovery hashes, or pending challenges. Sensitive authentication responses
+use `Cache-Control: no-store`.
 
 ## Environment variables
 
@@ -238,6 +290,7 @@ Roles: `admin` (full access including user management), `operator` (apps/webhook
 | `APP_MANAGER_DRIVER` | Sockudo app store: `mysql`, `pgsql`, `dynamodb` |
 | `DASHBOARD_DATABASE_DRIVER` | Override dashboard DB driver |
 | `DASHBOARD_SESSION_SECRET` | Required JWT session signing secret (at least 32 bytes; no fallback) |
+| `DASHBOARD_TOTP_ENCRYPTION_KEY` | Optional separate 32-byte base64 encryption key required for TOTP; preserve with database backups |
 | `DASHBOARD_TRUST_PROXY` | Trust the first `X-Forwarded-For` address for login limits; enable only behind a proxy that replaces the header |
 | `DASHBOARD_SQLITE_PATH` | SQLite path when using sqlite driver |
 | `DATABASE_*` | Shared DB credentials (mysql/pgsql) |
@@ -277,7 +330,8 @@ multi-node aggregation, and long-range queries.
 - Use strong passwords (min 8 chars) for all dashboard users.
 - Set a random, unique `DASHBOARD_SESSION_SECRET` in every environment. The API fails at startup if it is missing, shorter than 32 bytes, or a documented placeholder. Generate one with `openssl rand -base64 32`.
 - Login attempts are limited in bounded in-process windows by both source IP and normalized account identity. Successful authentication clears the account window; source-IP attempts remain counted. Multi-replica deployments should also enforce a shared limit at the ingress.
-- Existing sessions are rejected immediately when their user is deleted or disabled, and password changes invalidate previously issued sessions. Current database roles are applied on every protected request, so demotions take effect immediately.
+- Existing sessions are rejected immediately when their user is deleted or disabled; password changes and confirmed TOTP configuration changes invalidate previously issued sessions. Current database roles are applied on every protected request, so demotions take effect immediately.
+- TOTP verification and security-management attempts also have bounded per-IP and per-account limits. Login challenges additionally enforce a durable five-attempt cap across replicas. Enforce shared ingress limits for multi-replica password and management attempts.
 - Deploying this hardening change invalidates older dashboard cookies that lack the credential-version, issuer, and audience claims; operators must sign in again once.
 - Put the dashboard behind TLS and restrict network access.
 - Push credential uploads and notification publishing are admin-only. Signed upstream URLs,

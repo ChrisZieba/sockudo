@@ -1,6 +1,10 @@
 import type { UsersRepository } from "../db/users-repository.ts";
 import { verifyPassword } from "../auth/password.ts";
-import { toPublicUser, type CreateUserInput, type UpdateUserInput } from "../types/user.ts";
+import {
+  toPublicUser,
+  type CreateUserInput,
+  type UpdateUserInput,
+} from "../types/user.ts";
 import type { AppContext } from "../types/hono.ts";
 
 export class UsersController {
@@ -46,6 +50,13 @@ export class UsersController {
     const body = await c.req.json<UpdateUserInput>();
     const session = c.get("session");
     const targetId = c.req.param("id") ?? "";
+
+    if (session.userId === targetId && Object.hasOwn(body, "password")) {
+      return c.json(
+        { error: "Use change-password with your current password" },
+        400,
+      );
+    }
 
     if (body.password && body.password.length < 8) {
       return c.json({ error: "password must be at least 8 characters" }, 400);
@@ -101,7 +112,10 @@ export class UsersController {
     }>();
 
     if (!body.new_password || body.new_password.length < 8) {
-      return c.json({ error: "new_password must be at least 8 characters" }, 400);
+      return c.json(
+        { error: "new_password must be at least 8 characters" },
+        400,
+      );
     }
 
     const user = await this.users.findById(targetId);
@@ -112,7 +126,10 @@ export class UsersController {
       if (!body.current_password) {
         return c.json({ error: "current_password is required" }, 400);
       }
-      const valid = await verifyPassword(body.current_password, user.password_hash);
+      const valid = await verifyPassword(
+        body.current_password,
+        user.password_hash,
+      );
       if (!valid) return c.json({ error: "Invalid current password" }, 401);
     } else if (session.role !== "admin") {
       return c.json({ error: "Forbidden" }, 403);

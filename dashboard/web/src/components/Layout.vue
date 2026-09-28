@@ -9,6 +9,7 @@ import {
   Radio,
   ShieldCheck,
   Users,
+  UserRound,
 } from "lucide-vue-next";
 import { useAuthStore } from "@/stores/auth";
 import { api } from "@/api/client";
@@ -76,7 +77,7 @@ async function logout() {
         <RouterLink
           to="/"
           class="group flex items-center gap-3 rounded-xl px-3 py-3 text-sm text-surface-400 transition hover:bg-surface-800/60 hover:text-surface-100"
-          active-class="!bg-brand-500/12 !text-brand-200 ring-1 ring-inset ring-brand-400/15"
+          exact-active-class="!bg-brand-500/12 !text-brand-200 ring-1 ring-inset ring-brand-400/15"
         >
           <LayoutGrid class="h-4 w-4 text-surface-500 group-hover:text-surface-300" />
           <span class="font-medium">Applications</span>
@@ -138,7 +139,7 @@ async function logout() {
         >
           {{ initials }}
         </div>
-        <div class="min-w-0 flex-1">
+        <RouterLink to="/profile" class="min-w-0 flex-1 rounded-lg hover:text-white" title="Profile and security" aria-label="Profile and security">
           <p class="truncate text-xs font-medium text-surface-200">
             {{ auth.user?.name || auth.email }}
           </p>
@@ -146,7 +147,7 @@ async function logout() {
             <ShieldCheck v-if="auth.isAdmin" class="h-3 w-3 text-brand-400" />
             {{ auth.isAdmin ? "Administrator" : "Operator" }}
           </p>
-        </div>
+        </RouterLink>
         <button
           class="icon-button"
           title="Sign out"
@@ -175,6 +176,9 @@ async function logout() {
             </div>
           </div>
           <div class="flex items-center gap-2">
+            <RouterLink to="/profile" class="icon-button" title="Profile and security" aria-label="Profile and security">
+              <UserRound class="h-3.5 w-3.5" />
+            </RouterLink>
             <span
               v-if="driver"
               class="hidden items-center gap-1.5 rounded-full border border-surface-800 bg-surface-900 px-2.5 py-1 font-mono text-[0.62rem] text-surface-500 sm:flex"
@@ -203,7 +207,7 @@ async function logout() {
           <RouterLink
             to="/"
             class="flex min-w-0 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-[0.68rem] font-medium text-surface-500 sm:text-xs"
-            active-class="!bg-brand-500/12 !text-brand-200"
+            exact-active-class="!bg-brand-500/12 !text-brand-200"
           >
             <LayoutGrid class="h-3.5 w-3.5" />
             Applications

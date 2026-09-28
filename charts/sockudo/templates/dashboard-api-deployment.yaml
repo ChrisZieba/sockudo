@@ -68,6 +68,13 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.dashboard.sessionSecret.existingSecret | default (include "sockudo.dashboardSecretName" .) }}
                   key: {{ .Values.dashboard.sessionSecret.key }}
+            {{- if .Values.dashboard.totpEncryptionKey.existingSecret }}
+            - name: DASHBOARD_TOTP_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.dashboard.totpEncryptionKey.existingSecret }}
+                  key: {{ .Values.dashboard.totpEncryptionKey.key }}
+            {{- end }}
             - name: APP_MANAGER_DRIVER
               value: {{ $appManagerDriver | quote }}
             {{- if $dashboardDbDriver }}

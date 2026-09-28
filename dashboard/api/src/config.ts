@@ -1,5 +1,8 @@
 import "./load-env.ts";
-import { resolveSessionSecret } from "./auth/configuration.ts";
+import {
+  resolveSessionSecret,
+  resolveTotpEncryptionKey,
+} from "./auth/configuration.ts";
 
 export type AppManagerDriver = "mysql" | "pgsql" | "dynamodb";
 export type DashboardDbDriver = "pgsql" | "mysql" | "sqlite";
@@ -18,7 +21,9 @@ function resolveDashboardDbDriver(): DashboardDbDriver {
   if (explicit === "mysql") return "mysql";
   if (explicit === "pgsql" || explicit === "postgres") return "pgsql";
 
-  const appDriver = normalizeAppDriver(process.env.APP_MANAGER_DRIVER ?? "pgsql");
+  const appDriver = normalizeAppDriver(
+    process.env.APP_MANAGER_DRIVER ?? "pgsql",
+  );
   if (appDriver === "mysql") return "mysql";
   if (appDriver === "pgsql") return "pgsql";
   return "sqlite";
@@ -28,6 +33,7 @@ export const config = {
   port: parseInt(process.env.DASHBOARD_API_PORT ?? "3460", 10),
   corsOrigin: process.env.DASHBOARD_CORS_ORIGIN ?? "http://localhost:5174",
   sessionSecret: resolveSessionSecret(process.env),
+  totpEncryptionKey: resolveTotpEncryptionKey(process.env),
   appManagerDriver: normalizeAppDriver(
     process.env.APP_MANAGER_DRIVER ?? "pgsql",
   ),

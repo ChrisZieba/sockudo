@@ -94,6 +94,11 @@ config:
   # -- HTTP API settings
   httpApi:
     usageEnabled: true
+    readiness:
+      # -- Live connection fraction that makes /ready unavailable
+      highWatermark: 0.95
+      # -- Fraction at or below which /ready recovers
+      lowWatermark: 0.85
     acceptTraffic:
       # -- Reject only new WebSocket connections when process RSS reaches the threshold
       enabled: false
@@ -306,6 +311,12 @@ dashboard:
     key: dashboard-session-secret
     # -- Plain value for chart-managed secret. Required when dashboard.enabled=true and no existingSecret is set.
     value: ""
+
+  # -- Optional 32-byte base64 encryption key for per-user TOTP enrollment.
+  # Keep stable and share across API replicas. Supply it through an existing Secret.
+  totpEncryptionKey:
+    existingSecret: ""
+    key: dashboard-totp-encryption-key
 
   # -- Optional first admin seed. The API only creates this user when no dashboard users exist.
   seedAdmin:
@@ -588,6 +599,7 @@ livenessProbe:
 
 readinessProbe:
   httpGet:
+    # -- Use /ready to opt into capacity-aware routing; /up checks dependencies only
     path: /up
     port: http
   initialDelaySeconds: 5

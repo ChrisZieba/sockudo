@@ -256,6 +256,7 @@ Push list endpoints use cursor pagination with `limit` and opaque `cursor`.
 | `GET` | `/live` | None | Liveness probe. Does not perform dependency checks. |
 | `GET` | `/accept-traffic` | None | New-connection admission probe. Returns `503` while draining or shedding for memory pressure, without closing established connections. |
 | `GET` | `/up` | None | Global health probe. |
+| `GET` | `/ready` | None | Dependency and live native WebSocket capacity probe, with configurable high/low watermarks. |
 | `GET` | `/up/{appId}` | None | App-specific health probe. |
 | `GET` | `/usage` | None, when enabled | Memory usage snapshot. Enabled by `HTTP_API_USAGE_ENABLED`. |
 | `GET` | `/stats` | Dispatches by auth | Native operator summary without Ably credentials; Ably interval stats with an Ably key or bearer token. |
@@ -270,6 +271,14 @@ Pagination is anchored to interval IDs and a fixed query horizon.
 
 Disable `/usage`, `/operator/stats`, and operator aggregation stats in exposed
 production environments unless they are behind trusted ingress controls.
+
+`/ready` returns the same dependency status as `/up` while below capacity. It returns
+`503 CAPACITY` with `X-Health-Check: CAPACITY` at the high watermark (default 95% of
+`max_connections`) and stays unavailable until occupancy falls to the low watermark
+(default 85%). Only live native WebSocket connections count, excluding pending
+disconnect cleanup. A zero connection limit disables this capacity gate. During
+shutdown it returns `503 DRAINING`. `/up` remains independent of capacity, allowing
+rollout health checks to succeed even when a pod is full.
 
 `/accept-traffic` returns `200 ACCEPTING` when new connections may be admitted, including when the
 memory sampler is disabled or unavailable (fail-open). It returns `503 MEMORY_PRESSURE` while the

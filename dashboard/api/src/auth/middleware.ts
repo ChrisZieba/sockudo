@@ -21,7 +21,7 @@ async function authenticate(
   if (
     !user ||
     !user.active ||
-    !sessionMatchesPasswordHash(session, user.password_hash)
+    !sessionMatchesPasswordHash(session, user.password_hash, user.auth_version)
   ) {
     return false;
   }
