@@ -225,8 +225,18 @@ redis:
   # -- Redis password (optional)
   password: ""
   # -- Use an existing secret for Redis credentials
-  # Must contain keys: redis-password (and optionally redis-username)
+  # Must contain keys: redis-password (and optionally redis-username,
+  # redis-sentinel-password)
   existingSecret: ""
+  # -- Sentinel master name (`database.redis.name`). Used when `sentinels` is set.
+  sentinelMasterName: mymaster
+  # -- Sentinel hosts. When non-empty, Sockudo discovers the Redis master via Sentinel.
+  # Each entry needs `host` and `port` (default Sentinel port is 26379).
+  sentinels: []
+  #   - host: redis-ha-announce-0.redis.svc.cluster.local
+  #     port: 26379
+  # -- Optional Sentinel requirepass. Stored as redis-sentinel-password.
+  sentinelPassword: ""
 
 # -- Redis Cluster configuration
 redisCluster:

@@ -182,9 +182,11 @@ spec:
               value: {{ .Values.config.openTelemetry.propagationBaggage | quote }}
             {{- end }}
             # Redis
+            {{- if or .Values.redis.host .Values.redis.sentinels }}
             {{- if .Values.redis.host }}
             - name: DATABASE_REDIS_HOST
               value: {{ .Values.redis.host | quote }}
+            {{- end }}
             - name: DATABASE_REDIS_PORT
               value: {{ .Values.redis.port | quote }}
             - name: DATABASE_REDIS_DB
@@ -205,6 +207,14 @@ spec:
                   name: {{ .Values.redis.existingSecret | default (include "sockudo.secretName" .) }}
                   key: redis-username
                   optional: true
+            {{- end }}
+            {{- if and .Values.redis.sentinels (or .Values.redis.existingSecret .Values.redis.sentinelPassword) }}
+            - name: DATABASE_REDIS_SENTINEL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.existingSecret | default (include "sockudo.secretName" .) }}
+                  key: redis-sentinel-password
+                  optional: {{ if .Values.redis.sentinelPassword }}false{{ else }}true{{ end }}
             {{- end }}
             {{- end }}
             # Redis Cluster
