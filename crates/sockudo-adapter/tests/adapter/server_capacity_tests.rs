@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use sockudo_adapter::ConnectionManager;
 use sockudo_adapter::handler::ConnectionHandler;
 use sockudo_adapter::local_adapter::LocalAdapter;
@@ -438,4 +439,64 @@ async fn server_max_connections_zero_disables_limit() {
             "max_connections = 0 should disable limit, got {inner:?}"
         ),
     }
+}
+
+#[tokio::test]
+async fn capacity_readiness_recovers_before_disconnect_cleanup() {
+    let app_manager = Arc::new(MemoryAppManager::new());
+    app_manager.create_app(make_app(0)).await.unwrap();
+    let adapter = Arc::new(LocalAdapter::new());
+    adapter.init().await;
+    let (tx, rx) = crossfire::mpsc::bounded_async(10);
+    let handler = Arc::new(
+        ConnectionHandler::builder(
+            app_manager,
+            adapter.clone(),
+            Arc::new(NullCacheManager),
+            ServerOptions {
+                max_connections: 1,
+                ..Default::default()
+            },
+        )
+        .local_adapter(adapter.clone())
+        .cleanup_queue(sockudo_adapter::cleanup::CleanupSender::Direct(tx))
+        .build(),
+    );
+    let (server_ws, mut client) = make_full_ws_pair().await;
+    let socket_handler = handler.clone();
+    let socket_task = tokio::spawn(async move {
+        socket_handler
+            .handle_socket(
+                server_ws,
+                APP_KEY.into(),
+                None,
+                ProtocolVersion::V1,
+                WireFormat::Json,
+                true,
+                sockudo_protocol::AppendMode::Delta,
+                None,
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), client.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(!handler.is_capacity_ready());
+    assert!(handler.is_accepting(), "capacity must not change /up");
+    drop(client);
+    tokio::time::timeout(Duration::from_secs(2), socket_task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(handler.is_capacity_ready());
+    assert_eq!(adapter.get_total_sockets_count(), 1, "cleanup has not run");
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .is_ok()
+    );
 }

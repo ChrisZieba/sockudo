@@ -34,6 +34,10 @@ data:
       },
       "http_api": {
         "usage_enabled": {{ .Values.config.httpApi.usageEnabled }},
+        "readiness": {
+          "high_watermark": {{ .Values.config.httpApi.readiness.highWatermark }},
+          "low_watermark": {{ .Values.config.httpApi.readiness.lowWatermark }}
+        },
         "accept_traffic": {
           "enabled": {{ .Values.config.httpApi.acceptTraffic.enabled }},
           "memory_threshold": {{ .Values.config.httpApi.acceptTraffic.memoryThreshold }},

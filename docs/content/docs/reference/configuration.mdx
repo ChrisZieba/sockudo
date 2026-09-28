@@ -46,6 +46,32 @@ For endpoint availability details see
 For capacity and operational metrics see
 [Capacity planning — API pod topology](/docs/deployment/capacity-planning#api-pod-topology).
 
+## Capacity readiness
+
+`GET /ready` runs the same dependency checks as `/up` and also reports `503 CAPACITY`
+when live native WebSocket connections reach the high watermark of `max_connections`.
+It stays unavailable until occupancy reaches the low watermark, avoiding repeated
+load-balancer changes near the limit. Disconnect cleanup backlog is excluded. Existing
+connections stay open; this endpoint does not rebalance them.
+
+```toml
+max_connections = 10000
+
+[http_api.readiness]
+high_watermark = 0.95
+low_watermark = 0.85
+```
+
+Watermarks must satisfy `0 <= low_watermark < high_watermark <= 1`. A zero
+`max_connections` disables capacity gating. Use `/ready` for load-balancer admission,
+`/up` for dependency health and rollout checks, and `/live` for process liveness.
+Capacity does not change `/up`, so a full pod can still pass deployment health checks.
+
+Standalone Redis adapter health probes reuse a dedicated reconnecting connection,
+separate from command, event, and blocking queue connections. Probes still execute
+`PING` and fail on dependency errors or timeouts; they do not open a new connection
+on every probe. There is no adapter connection-pool size to tune.
+
 ## Memory-pressure connection admission
 
 Memory-pressure admission control is opt-in under `[http_api.accept_traffic]`:
@@ -77,6 +103,62 @@ current state and rejected connection count.
 | `[app_manager]` | Select app storage driver. |
 | `[app_manager.array]` | Static in-config app definitions. |
 | `[[app_manager.array.apps]]` | App ID, key, secret, enabled flag, limits, and policy. |
+
+## Channel namespaces
+
+Configure namespace rules per app under `policy.channels.channel_namespaces`
+(`[[app_manager.array.apps.policy.channels.channel_namespaces]]` in TOML).
+For example, `private-chat:room-1` selects the namespace named `chat`: Sockudo
+strips the channel type prefix and uses the text before the first `:`. The first
+entry with that exact name wins. The regex validates that namespace's channel
+names; it does not select a namespace. A channel containing `:` with no matching
+namespace is rejected. Channels without `:` do not match a namespace.
+
+The three `allow_*_for_client` permission flags apply to **Protocol V2** client
+operations. **Unset or `null` means allowed**, preserving the existing default.
+Set `allow_publish_for_client = false` explicitly for server-published namespaces.
+These flags do not grant access by themselves: app-level client-message settings,
+private/presence channel authentication, subscription requirements, and connection
+capabilities still apply. They do not restrict authenticated server HTTP publishes
+and do not replace Protocol V1's Pusher-compatible authorization rules.
+
+| Field | Meaning and unset behavior |
+| --- | --- |
+| `name` | Required, non-empty namespace name, without `:`. Exact match after stripping a channel type prefix. |
+| `channel_name_pattern` | Optional Rust regular expression applied to the logical channel name, including `name:`, without `private-`, `private-encrypted-`, or `presence-` and without a `#user1,user2` suffix. Unset adds no regex restriction; use `^` and `$` for a whole-name match. |
+| `max_channel_name_length` | Positive limit in bytes for the complete wire channel name, including prefix and user suffix. Unset inherits `policy.limits.max_channel_name_length`, then `200`. |
+| `allow_user_limited_channels` | Allows V2 `#user1,user2` channel syntax. Unset means **denied**. The authenticated user's identity must also satisfy the channel access check. |
+| `allow_subscribe_for_client` | V2 client subscription permission. Unset means **allowed**; `false` rejects client subscriptions. |
+| `allow_publish_for_client` | V2 client publish permission. Unset means **allowed**; `false` rejects client publishes. |
+| `allow_presence_for_client` | V2 presence subscription permission. Unset means **allowed**; `false` rejects subscriptions to `presence-` channels in this namespace. `allow_subscribe_for_client = false` also denies presence subscriptions. |
+| `annotations_enabled` | Inherits `policy.channels.annotations_enabled`, then `false`. Enabling annotations requires the global annotation feature and implies durable message history for the namespace. |
+| `history` | Optional overrides: `rewind_enabled`, `retention_window_seconds`, `max_messages_per_channel`, `max_bytes_per_channel`. Each omitted field inherits app `policy.history`, then global `[history]`. There is no namespace `history.enabled` field. |
+| `presence_history` | Optional overrides: `enabled`, `retention_window_seconds`, `max_events_per_channel`, `max_bytes_per_channel`. Each omitted field inherits app `policy.presence_history`, then global `[presence_history]`. |
+
+An explicit read-only client policy for a server-published namespace:
+
+```toml
+[[app_manager.array.apps.policy.channels.channel_namespaces]]
+name = "broadcast"
+channel_name_pattern = "^broadcast:[A-Za-z0-9._-]+$"
+max_channel_name_length = 200
+allow_user_limited_channels = false
+allow_subscribe_for_client = true
+allow_publish_for_client = false
+allow_presence_for_client = false
+
+[app_manager.array.apps.policy.channels.channel_namespaces.history]
+rewind_enabled = true
+retention_window_seconds = 3600
+max_messages_per_channel = 1000
+max_bytes_per_channel = 10485760
+```
+
+The equivalent app JSON nests `channel_namespaces` inside `policy.channels`.
+JSON does not support comments; the shipped JSON example spells out the permissive
+client flags. Set its publish flag to `false` wherever clients must only receive
+server-authored events. The dashboard exposes the same settings in the app's channel
+namespace editor.
 
 ## Ably compatibility keys
 

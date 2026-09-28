@@ -258,6 +258,11 @@ allowed_origins = ["*"]
 name = "ticker"
 channel_name_pattern = "^ticker:[A-Za-z0-9._-]+$"
 max_channel_name_length = 200
+# V2 client permissions default to allowed when omitted. Set publish to false
+# for server-authored channels. See /docs/reference/configuration#channel-namespaces.
+allow_subscribe_for_client = true
+allow_publish_for_client = true
+allow_presence_for_client = true
 
 [[app_manager.array.apps.policy.channels.channel_namespaces]]
 name = "price"
@@ -505,6 +510,12 @@ v2_ungraceful_timeout_seconds = 15
 
 [http_api]
 request_limit_in_mb = 10
+
+# /ready load-balancer capacity thresholds, as fractions of max_connections.
+# /up continues to report dependency health independently of capacity.
+[http_api.readiness]
+high_watermark = 0.95
+low_watermark = 0.85
 
 # Optional Linux memory-pressure admission control. This rejects only new
 # WebSocket connections; established connections and /up remain unaffected.

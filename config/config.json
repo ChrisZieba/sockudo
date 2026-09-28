@@ -101,16 +101,25 @@
                 {
                   "name": "ticker",
                   "channel_name_pattern": "^ticker:[A-Za-z0-9._-]+$",
+                  "allow_subscribe_for_client": true,
+                  "allow_publish_for_client": true,
+                  "allow_presence_for_client": true,
                   "max_channel_name_length": 200
                 },
                 {
                   "name": "price",
                   "channel_name_pattern": "^price:[A-Za-z0-9._-]+$",
+                  "allow_subscribe_for_client": true,
+                  "allow_publish_for_client": true,
+                  "allow_presence_for_client": true,
                   "max_channel_name_length": 200
                 },
                 {
                   "name": "chat",
                   "channel_name_pattern": "^chat:[A-Za-z0-9._-]+$",
+                  "allow_subscribe_for_client": true,
+                  "allow_publish_for_client": true,
+                  "allow_presence_for_client": true,
                   "max_channel_name_length": 200,
                   "allow_user_limited_channels": true
                 }

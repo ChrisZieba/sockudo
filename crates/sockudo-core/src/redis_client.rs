@@ -49,6 +49,7 @@ struct Inner {
     manager_config: ConnectionManagerConfig,
     connection: Mutex<Option<ConnectionManager>>,
     events_connection: Mutex<Option<ConnectionManager>>,
+    health_connection: Mutex<Option<ConnectionManager>>,
 }
 
 /// Cheap-to-clone handle over standalone Redis/rediss or a Sentinel primary.
@@ -117,6 +118,7 @@ impl RedisClient {
                 manager_config,
                 connection: Mutex::new(None),
                 events_connection: Mutex::new(None),
+                health_connection: Mutex::new(None),
             }),
         };
         let _ = client.command_connection().await?;
@@ -174,6 +176,11 @@ impl RedisClient {
         self.get_or_build(&self.inner.events_connection).await
     }
 
+    /// Independent, reconnecting probe connection, reused across health checks.
+    pub async fn health_connection(&self) -> Result<ConnectionManager> {
+        self.get_or_build(&self.inner.health_connection).await
+    }
+
     /// Returns an independently multiplexed connection suitable for a worker
     /// that may issue a blocking command.
     pub async fn fresh_connection_manager(&self) -> Result<ConnectionManager> {
@@ -200,6 +207,7 @@ impl RedisClient {
         if matches!(self.inner.source, ClientSource::Sentinel(_)) {
             *self.inner.connection.lock() = None;
             *self.inner.events_connection.lock() = None;
+            *self.inner.health_connection.lock() = None;
         }
     }
 

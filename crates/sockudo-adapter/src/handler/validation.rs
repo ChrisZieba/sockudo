@@ -623,6 +623,43 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
+    fn namespace_permissions_preserve_permissive_unset_defaults() {
+        for allowed in [None, Some(true)] {
+            let namespace = ChannelNamespace {
+                name: "chat".to_string(),
+                allow_subscribe_for_client: allowed,
+                allow_publish_for_client: allowed,
+                allow_presence_for_client: allowed,
+                ..Default::default()
+            };
+            assert!(validate_namespace_permission(&namespace, "chat:room", "subscribe").is_ok());
+            assert!(
+                validate_namespace_permission(&namespace, "private-chat:room", "publish").is_ok()
+            );
+            assert!(
+                validate_namespace_permission(&namespace, "presence-chat:room", "subscribe")
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn namespace_presence_permission_only_denies_presence_subscriptions() {
+        let namespace = ChannelNamespace {
+            name: "chat".to_string(),
+            allow_presence_for_client: Some(false),
+            ..Default::default()
+        };
+        assert!(
+            validate_namespace_permission(&namespace, "presence-chat:room", "subscribe").is_err()
+        );
+        assert!(
+            validate_namespace_permission(&namespace, "private-chat:room", "subscribe").is_ok()
+        );
+        assert!(validate_namespace_permission(&namespace, "presence-chat:room", "publish").is_ok());
+    }
+
+    #[test]
     fn namespace_permission_denies_subscribe_when_flag_disabled() {
         let namespace = ChannelNamespace {
             name: "chat".to_string(),
