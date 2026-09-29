@@ -37,3 +37,5 @@ wns_channel_uris.txt
 # Java LSP / compiler output
 client-sdks/sockudo-kotlin/lib/bin/
 server-sdks/sockudo-http-java/bin/
+
+audits
