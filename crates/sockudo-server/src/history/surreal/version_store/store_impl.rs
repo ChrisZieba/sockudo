@@ -1,4 +1,8 @@
+use super::append_runs::{FORMAT_FENCE, WRITE_SEEDS, seed_writes};
+use super::mutation::{MutationState, mutation_arguments};
 use super::*;
+use sockudo_core::version_store::append_storage::{AppendRunPlan, AppendRunRef};
+use sockudo_core::versioned_messages::VersionSerial;
 
 #[cfg(feature = "versioned-messages")]
 #[async_trait::async_trait]
@@ -116,158 +120,81 @@ impl VersionStore for SurrealVersionStore {
     }
 
     async fn append_version(&self, record: StoredVersionRecord) -> Result<()> {
-        let app_id = record.app_id.as_str();
-        let channel = record.channel.as_str();
-        let msg_serial = record.message_serial().as_str();
-        let ver_serial = record.version_serial().as_str();
-        let delivery_serial = record.delivery_serial();
-        let history_serial = record.history_serial();
+        let format = self.append_format().await?;
+        let plan = if format.enabled {
+            AppendRunPlan::for_seed_record(&record)
+        } else {
+            AppendRunPlan::Full
+        };
         let now_ms = sockudo_core::history::now_ms();
-
-        let payload_bytes = sonic_rs::to_vec(&record)
-            .map_err(|e| Error::Internal(format!("Failed to serialize version record: {e}")))?;
-
-        let entry_id = deterministic_key([app_id, channel, msg_serial, ver_serial].into_iter());
+        let payload_bytes = sockudo_core::version_store::append_storage::encode_full(&record)?;
+        let entry_id = deterministic_key(
+            [
+                record.app_id.as_str(),
+                record.channel.as_str(),
+                record.message_serial().as_str(),
+                record.version_serial().as_str(),
+            ]
+            .into_iter(),
+        );
+        let message_id = deterministic_key(
+            [
+                record.app_id.as_str(),
+                record.channel.as_str(),
+                record.message_serial().as_str(),
+            ]
+            .into_iter(),
+        );
+        let stream_id =
+            deterministic_key([record.app_id.as_str(), record.channel.as_str()].into_iter());
         let entry = StoredVersionEntryRec {
-            app_id: app_id.to_string(),
-            channel: channel.to_string(),
-            message_serial: msg_serial.to_string(),
-            version_serial: ver_serial.to_string(),
-            delivery_serial: delivery_serial as i64,
-            payload_bytes: payload_bytes.clone(),
+            app_id: record.app_id.clone(),
+            channel: record.channel.clone(),
+            message_serial: record.message_serial().as_str().to_string(),
+            version_serial: record.version_serial().as_str().to_string(),
+            delivery_serial: record.delivery_serial() as i64,
+            payload_bytes: payload_bytes.clone().into(),
             created_at_ms: now_ms,
         };
-
-        // Write entry idempotently (IF NOT EXISTS via create, ignore "already exists")
-        let create_entry: std::result::Result<Option<StoredVersionEntryRec>, _> = self
-            .db
-            .create((self.tables.entries.clone(), entry_id.clone()))
-            .content(entry)
-            .await;
-        if let Err(e) = create_entry {
-            let err_text = e.to_string();
-            if !err_text.contains("already exists")
-                && !err_text.contains("already been created")
-                && !err_text.contains("Database record")
-            {
-                return Err(Error::Internal(format!(
-                    "Failed to write SurrealDB version entry: {e}"
-                )));
-            }
-        }
-
-        // Upsert version_messages — advance latest_version_serial pointer only when newer
-        let msg_id = deterministic_key([app_id, channel, msg_serial].into_iter());
-        let existing_msg: Option<StoredVersionMessageRec> = self
-            .db
-            .select((self.tables.messages.clone(), msg_id.clone()))
-            .await
-            .map_err(|e| {
-                Error::Internal(format!(
-                    "Failed to fetch SurrealDB version message record: {e}"
-                ))
-            })?;
-
-        let advance_msg = |db: &Surreal<Any>,
-                           tables: &VersionStoreTables,
-                           msg_id: String,
-                           entry_id: String,
-                           ver_serial: String,
-                           now_ms: i64| {
-            let db = db.clone();
-            let tables = tables.clone();
-            async move {
-                let mut response = db
-                    .query("UPDATE ONLY type::record($table, $id) SET latest_version_serial = $ver, latest_entry_key = $key, updated_at_ms = $now WHERE latest_version_serial < $ver RETURN AFTER")
-                    .bind(("table", tables.messages.clone()))
-                    .bind(("id", msg_id))
-                    .bind(("ver", ver_serial))
-                    .bind(("key", entry_id))
-                    .bind(("now", now_ms))
-                    .await
-                    .map_err(|e| Error::Internal(format!("Failed to advance SurrealDB version message pointer: {e}")))?;
-                let _: std::result::Result<Option<StoredVersionMessageRec>, _> =
-                    response.take(0usize);
-                Ok::<(), Error>(())
-            }
+        let message = StoredVersionMessageRec {
+            app_id: record.app_id.clone(),
+            channel: record.channel.clone(),
+            message_serial: record.message_serial().as_str().to_string(),
+            latest_version_serial: record.version_serial().as_str().to_string(),
+            latest_entry_key: entry_id.clone(),
+            history_serial: record.history_serial() as i64,
+            latest_payload_bytes: payload_bytes.clone().into(),
+            append_count: i64::from(
+                record.message.action == sockudo_core::versioned_messages::MessageAction::Append,
+            ),
+            is_open_stream: record.is_open_ai_stream(),
+            updated_at_ms: now_ms,
+            latest_append_run: plan.run().map(|run| run.run.as_str().to_string()),
+            latest_append_len: plan.run().map(|run| run.data_len as i64),
+            latest_append_head: plan
+                .run()
+                .map(|_| record.version_serial().as_str().to_string()),
+            latest_append_pinned: plan.run().map(|_| false),
+            latest_append_generation: plan.run().and_then(|run| run.generation.clone()),
         };
-
-        match existing_msg {
-            None => {
-                let msg_record = StoredVersionMessageRec {
-                    app_id: app_id.to_string(),
-                    channel: channel.to_string(),
-                    message_serial: msg_serial.to_string(),
-                    latest_version_serial: ver_serial.to_string(),
-                    latest_entry_key: entry_id.clone(),
-                    history_serial: history_serial as i64,
-                    latest_payload_bytes: payload_bytes.clone(),
-                    append_count: i64::from(
-                        record.message.action
-                            == sockudo_core::versioned_messages::MessageAction::Append,
-                    ),
-                    is_open_stream: record.is_open_ai_stream(),
-                    updated_at_ms: now_ms,
-                };
-                let create_msg: std::result::Result<Option<StoredVersionMessageRec>, _> = self
-                    .db
-                    .create((self.tables.messages.clone(), msg_id.clone()))
-                    .content(msg_record)
-                    .await;
-                if let Err(e) = create_msg {
-                    let err_text = e.to_string();
-                    if !err_text.contains("already exists")
-                        && !err_text.contains("already been created")
-                        && !err_text.contains("Database record")
-                    {
-                        return Err(Error::Internal(format!(
-                            "Failed to create SurrealDB version message record: {e}"
-                        )));
-                    }
-                    // Race: another writer created it first — still try to advance the pointer
-                    advance_msg(
-                        &self.db,
-                        &self.tables,
-                        msg_id,
-                        entry_id,
-                        ver_serial.to_string(),
-                        now_ms,
-                    )
-                    .await?;
-                }
-            }
-            Some(existing) if ver_serial > existing.latest_version_serial.as_str() => {
-                advance_msg(
-                    &self.db,
-                    &self.tables,
-                    msg_id,
-                    entry_id,
-                    ver_serial.to_string(),
-                    now_ms,
-                )
-                .await?;
-            }
-            Some(_) => {
-                // New version is not newer than the current pointer — nothing to update
-            }
-        }
-
-        // Update version_streams window: maintain oldest/newest delivery_serial bounds
-        let stream_record_id = deterministic_key([app_id, channel].into_iter());
-        let _: std::result::Result<_, _> = self
-            .db
-            .query(
-                "UPDATE ONLY type::record($table, $id) SET \
-                 oldest_delivery_serial = IF oldest_delivery_serial IS NONE OR $delivery < oldest_delivery_serial THEN $delivery ELSE oldest_delivery_serial END, \
-                 newest_delivery_serial = IF newest_delivery_serial IS NONE OR $delivery > newest_delivery_serial THEN $delivery ELSE newest_delivery_serial END, \
-                 updated_at_ms = $now",
-            )
-            .bind(("table", self.tables.streams.clone()))
-            .bind(("id", stream_record_id))
-            .bind(("delivery", delivery_serial as i64))
-            .bind(("now", now_ms))
-            .await;
-
+        // The imported entry stays full. Its seed and latest pointer become
+        // visible atomically, so the first following append only rewrites a tail.
+        self.db.query(format!(
+            "BEGIN TRANSACTION; {FORMAT_FENCE} IF (SELECT * FROM ONLY type::record($entry_table, $entry_id)) = NONE {{ CREATE ONLY type::record($entry_table, $entry_id) CONTENT $entry_content; }}; LET $existing = SELECT * FROM ONLY type::record($message_table, $message_id); IF $existing = NONE {{ CREATE ONLY type::record($message_table, $message_id) CONTENT $message_content; {WRITE_SEEDS} }} ELSE IF $existing.latest_version_serial < $version {{ UPDATE ONLY type::record($message_table, $message_id) SET latest_version_serial = $version, latest_entry_key = $entry_id, latest_payload_bytes = $payload, updated_at_ms = $now, latest_append_run = $run, latest_append_len = $len, latest_append_head = $head, latest_append_pinned = $pinned, latest_append_generation = $generation WHERE latest_version_serial < $version; {WRITE_SEEDS} }}; UPDATE ONLY type::record($stream_table, $stream_id) SET oldest_delivery_serial = IF oldest_delivery_serial IS NONE OR $delivery < oldest_delivery_serial THEN $delivery ELSE oldest_delivery_serial END, newest_delivery_serial = IF newest_delivery_serial IS NONE OR $delivery > newest_delivery_serial THEN $delivery ELSE newest_delivery_serial END, updated_at_ms = $now; COMMIT TRANSACTION;"
+        ))
+            .bind(("format_table", self.tables.format.clone())).bind(("format_epoch", format.epoch)).bind(("format_enabled", format.enabled))
+            .bind(("entry_table", self.tables.entries.clone())).bind(("entry_id", entry_id)).bind(("entry_content", entry))
+            .bind(("message_table", self.tables.messages.clone())).bind(("message_id", message_id))
+            .bind(("run", message.latest_append_run.clone())).bind(("len", message.latest_append_len))
+            .bind(("head", message.latest_append_head.clone())).bind(("pinned", message.latest_append_pinned))
+            .bind(("generation", message.latest_append_generation.clone())).bind(("message_content", message))
+            .bind(("version", record.version_serial().as_str().to_string())).bind(("payload", payload_bytes))
+            .bind(("run_table", self.tables.runs.clone())).bind(("chunk_table", self.tables.chunks.clone()))
+            .bind(("seeds", seed_writes(&record, &plan, now_ms)?))
+            .bind(("stream_table", self.tables.streams.clone())).bind(("stream_id", stream_id))
+            .bind(("delivery", record.delivery_serial() as i64)).bind(("now", now_ms))
+            .await.and_then(|response| response.check())
+            .map_err(|e| Error::Internal(format!("failed to import version and append seed: {e}")))?;
         Ok(())
     }
 
@@ -329,6 +256,12 @@ impl VersionStore for SurrealVersionStore {
         let record = request
             .record
             .with_delivery_position(&stream_id, next_delivery);
+        let format = self.append_format().await?;
+        let plan = if format.enabled {
+            AppendRunPlan::for_seed_record(&record)
+        } else {
+            AppendRunPlan::Full
+        };
         let payload_bytes = sonic_rs::to_vec(&record)
             .map_err(|e| Error::Internal(format!("Failed to serialize create record: {e}")))?;
         let now_ms = sockudo_core::history::now_ms();
@@ -347,7 +280,7 @@ impl VersionStore for SurrealVersionStore {
             message_serial: record.message_serial().as_str().to_string(),
             version_serial: record.version_serial().as_str().to_string(),
             delivery_serial: next_delivery as i64,
-            payload_bytes: payload_bytes.clone(),
+            payload_bytes: payload_bytes.clone().into(),
             created_at_ms: now_ms,
         };
         let message = StoredVersionMessageRec {
@@ -357,10 +290,17 @@ impl VersionStore for SurrealVersionStore {
             latest_version_serial: record.version_serial().as_str().to_string(),
             latest_entry_key: entry_id.clone(),
             history_serial: record.history_serial() as i64,
-            latest_payload_bytes: payload_bytes,
+            latest_payload_bytes: payload_bytes.into(),
             append_count: 0,
             is_open_stream: record.is_open_ai_stream(),
             updated_at_ms: now_ms,
+            latest_append_run: plan.run().map(|run| run.run.as_str().to_string()),
+            latest_append_len: plan.run().map(|run| run.data_len as i64),
+            latest_append_head: plan
+                .run()
+                .map(|_| record.version_serial().as_str().to_string()),
+            latest_append_pinned: plan.run().map(|_| false),
+            latest_append_generation: plan.run().and_then(|run| run.generation.clone()),
         };
         let next_open = open_count + usize::from(record.is_open_ai_stream());
         let (stream_statement, stream_content) = if let Some(stream) = existing_stream {
@@ -385,11 +325,17 @@ impl VersionStore for SurrealVersionStore {
             updated_at_ms: now_ms,
         });
         let sql = format!(
-            "BEGIN TRANSACTION; {stream_statement} LET $message_write = CREATE ONLY type::record($message_table, $message_id) CONTENT $message_content; LET $entry_write = CREATE ONLY type::record($entry_table, $entry_id) CONTENT $entry_content; COMMIT TRANSACTION;"
+            "BEGIN TRANSACTION; {FORMAT_FENCE} {stream_statement} LET $message_write = CREATE ONLY type::record($message_table, $message_id) CONTENT $message_content; LET $entry_write = CREATE ONLY type::record($entry_table, $entry_id) CONTENT $entry_content; {WRITE_SEEDS} COMMIT TRANSACTION;"
         );
         let response = self
             .db
             .query(sql)
+            .bind(("format_table", self.tables.format.clone()))
+            .bind(("format_epoch", format.epoch))
+            .bind(("format_enabled", format.enabled))
+            .bind(("run_table", self.tables.runs.clone()))
+            .bind(("chunk_table", self.tables.chunks.clone()))
+            .bind(("seeds", seed_writes(&record, &plan, now_ms)?))
             .bind(("stream_table", self.tables.streams.clone()))
             .bind(("stream_id", stream_record_id))
             .bind(("stream_content", stream))
@@ -429,6 +375,8 @@ impl VersionStore for SurrealVersionStore {
         &self,
         request: VersionMutationRequest,
     ) -> Result<VersionMutationResult> {
+        #[cfg(test)]
+        let wire_before = crate::history::c2_wire_meter::phase_snapshot();
         let stream_record_id =
             deterministic_key([request.app_id.as_str(), request.channel.as_str()].into_iter());
         let Some(stream): Option<StoredVersionStreamRec> = self
@@ -439,6 +387,8 @@ impl VersionStore for SurrealVersionStore {
         else {
             return Ok(VersionMutationResult::Conflict { current: None });
         };
+        #[cfg(test)]
+        crate::history::c2_wire_meter::report_phase("surrealdb.stream", wire_before);
         if let Some(operation) = request.idempotency.as_ref() {
             let receipt_id = deterministic_key(
                 [
@@ -460,15 +410,23 @@ impl VersionStore for SurrealVersionStore {
                 if receipt.operation_fingerprint != operation.payload_fingerprint {
                     return Err(Error::IdempotencyConflict);
                 }
-                let record = sonic_rs::from_slice(&receipt.payload_bytes).map_err(|e| {
-                    Error::Internal(format!("Failed to decode mutation receipt: {e}"))
-                })?;
+                let record = self
+                    .materialize_payloads(
+                        &request.app_id,
+                        &request.channel,
+                        vec![receipt.payload_bytes],
+                    )
+                    .await?
+                    .pop()
+                    .ok_or_else(|| Error::Internal("mutation receipt is empty".to_string()))?;
                 return Ok(VersionMutationResult::Duplicate {
                     record,
                     stream_id: stream.stream_id,
                 });
             }
         }
+        #[cfg(test)]
+        let wire_before = crate::history::c2_wire_meter::phase_snapshot();
         let message_id = deterministic_key(
             [
                 request.app_id.as_str(),
@@ -477,7 +435,7 @@ impl VersionStore for SurrealVersionStore {
             ]
             .into_iter(),
         );
-        let Some(message): Option<StoredVersionMessageRec> = self
+        let Some(mut message): Option<StoredVersionMessageRec> = self
             .db
             .select((self.tables.messages.clone(), message_id.clone()))
             .await
@@ -485,15 +443,54 @@ impl VersionStore for SurrealVersionStore {
         else {
             return Ok(VersionMutationResult::Conflict { current: None });
         };
+        #[cfg(test)]
+        crate::history::c2_wire_meter::report_phase("surrealdb.message", wire_before);
+        #[cfg(test)]
+        let wire_before = crate::history::c2_wire_meter::phase_snapshot();
+        let format = self.append_format().await?;
+        #[cfg(test)]
+        crate::history::c2_wire_meter::report_phase("surrealdb.marker", wire_before);
+
+        #[cfg(test)]
+        let wire_before = crate::history::c2_wire_meter::phase_snapshot();
         let current = if message.latest_payload_bytes.is_empty() {
             self.get_latest(&request.app_id, &request.channel, &request.message_serial)
                 .await?
                 .ok_or_else(|| Error::Internal("Latest version entry is missing".to_string()))?
         } else {
-            sonic_rs::from_slice(&message.latest_payload_bytes).map_err(|e| {
-                Error::Internal(format!("Failed to decode mutation predecessor: {e}"))
-            })?
+            self.materialize_payloads(
+                &request.app_id,
+                &request.channel,
+                vec![std::mem::take(&mut message.latest_payload_bytes)],
+            )
+            .await?
+            .pop()
+            .ok_or_else(|| Error::Internal("mutation predecessor is empty".to_string()))?
         };
+        #[cfg(test)]
+        crate::history::c2_wire_meter::report_phase("surrealdb.materialize", wire_before);
+        // The run pointer is written with the latest-state record, naming the
+        // version it describes; older releases never update it, so it is used
+        // only while it still names this predecessor. The transaction
+        // re-checks the run head.
+        let mut predecessor_run = None;
+        let mut run_pinned = false;
+        if let (Some(run), Some(data_len), Some(head)) = (
+            message.latest_append_run.as_deref(),
+            message
+                .latest_append_len
+                .and_then(|value| u64::try_from(value).ok()),
+            message.latest_append_head.as_deref(),
+        ) && head == current.version_serial().as_str()
+            && current.data_bytes()? as u64 == data_len
+        {
+            run_pinned = message.latest_append_pinned.unwrap_or(false);
+            predecessor_run = Some(AppendRunRef {
+                run: VersionSerial::new(run)?,
+                data_len,
+                generation: message.latest_append_generation.clone(),
+            });
+        }
         let delivery_serial =
             (stream.next_delivery_serial as u64).max(current.delivery_serial().saturating_add(1));
         let outcome = request.apply_to(
@@ -515,94 +512,66 @@ impl VersionStore for SurrealVersionStore {
                 VersionMutationRejection::OpenStreamingMessages { limit },
             ));
         }
-        let payload_bytes = sonic_rs::to_vec(&record)
-            .map_err(|e| Error::Internal(format!("Failed to serialize mutation record: {e}")))?;
-        let now_ms = sockudo_core::history::now_ms();
-        let entry_id = deterministic_key(
-            [
-                record.app_id.as_str(),
-                record.channel.as_str(),
-                record.message_serial().as_str(),
-                record.version_serial().as_str(),
-            ]
-            .into_iter(),
-        );
-        let entry = StoredVersionEntryRec {
-            app_id: record.app_id.clone(),
-            channel: record.channel.clone(),
-            message_serial: record.message_serial().as_str().to_string(),
-            version_serial: record.version_serial().as_str().to_string(),
-            delivery_serial: delivery_serial as i64,
-            payload_bytes: payload_bytes.clone(),
-            created_at_ms: now_ms,
-        };
-        let next_open = stream.open_stream_count + i64::from(opens) - i64::from(closes);
-        let next_append = message.append_count
-            + i64::from(matches!(
-                request.mutation,
-                sockudo_core::version_store::VersionMutation::Append(_)
-            ));
-        let (receipt_statement, receipt_id, receipt) = if let Some(operation) =
-            request.idempotency.as_ref()
-        {
-            (
-                "LET $receipt_write = CREATE ONLY type::record($receipt_table, $receipt_id) CONTENT $receipt_content;",
-                deterministic_key(
-                    [
-                        request.app_id.as_str(),
-                        request.channel.as_str(),
-                        operation.cache_key.as_str(),
-                    ]
-                    .into_iter(),
-                ),
-                StoredVersionReceiptRec {
-                    operation_fingerprint: operation.payload_fingerprint.clone(),
-                    payload_bytes: payload_bytes.clone(),
-                    created_at_ms: now_ms,
-                },
+        let payload_plan = if format.enabled {
+            AppendRunPlan::for_record_chunked(
+                current.version_serial(),
+                predecessor_run.as_ref(),
+                &record,
             )
         } else {
-            (
-                "",
-                "unused".to_string(),
-                StoredVersionReceiptRec {
-                    operation_fingerprint: String::new(),
-                    payload_bytes: Vec::new(),
-                    created_at_ms: now_ms,
-                },
-            )
+            AppendRunPlan::Full
         };
-        let query = self
-            .db
-            .query(format!(
-                "BEGIN TRANSACTION; LET $stream_write = UPDATE ONLY type::record($stream_table, $stream_id) SET next_delivery_serial = $next_delivery, open_stream_count = $next_open, newest_delivery_serial = $delivery, updated_at_ms = $now WHERE next_delivery_serial = $expected_delivery AND open_stream_count = $expected_open RETURN AFTER; IF $stream_write = NONE {{ THROW 'version_conflict'; }}; LET $message_write = UPDATE ONLY type::record($message_table, $message_id) SET latest_version_serial = $next_version, latest_entry_key = $entry_id, latest_payload_bytes = $payload, append_count = $next_append, is_open_stream = $is_open, updated_at_ms = $now WHERE latest_version_serial = $expected_version RETURN AFTER; IF $message_write = NONE {{ THROW 'version_conflict'; }}; LET $entry_write = CREATE ONLY type::record($entry_table, $entry_id) CONTENT $entry_content; {receipt_statement} COMMIT TRANSACTION;"
-            ))
-            .bind(("stream_table", self.tables.streams.clone()))
-            .bind(("stream_id", stream_record_id))
-            .bind(("next_delivery", (delivery_serial + 1) as i64))
-            .bind(("next_open", next_open))
-            .bind(("delivery", delivery_serial as i64))
-            .bind(("now", now_ms))
-            .bind(("expected_delivery", stream.next_delivery_serial))
-            .bind(("expected_open", stream.open_stream_count))
-            .bind(("message_table", self.tables.messages.clone()))
-            .bind(("message_id", message_id))
-            .bind(("next_version", record.version_serial().as_str().to_string()))
-            .bind(("payload", payload_bytes.clone()))
-            .bind(("next_append", next_append))
-            .bind(("is_open", record.is_open_ai_stream()))
-            .bind(("expected_version", current.version_serial().as_str().to_string()))
-            .bind(("entry_table", self.tables.entries.clone()))
-            .bind(("entry_id", entry_id))
-            .bind(("entry_content", entry))
-            .bind(("receipt_table", self.tables.receipts.clone()))
-            .bind(("receipt_id", receipt_id))
-            .bind(("receipt_content", receipt));
-        match query.await.and_then(|response| response.check()) {
-            Ok(_) => Ok(VersionMutationResult::Applied {
-                record,
-                stream_id: stream.stream_id,
-            }),
+        // The explicit store marker is the rollout gate. Compact latest state
+        // is never written while older nodes can still participate.
+        let payload_bytes = payload_plan.encode(&record)?;
+        let receipt_references_run = request.idempotency.is_some() && payload_plan.run().is_some();
+        let plan = if format.enabled && matches!(payload_plan, AppendRunPlan::Full) {
+            AppendRunPlan::for_seed_record(&record)
+        } else {
+            payload_plan
+        };
+        let run_pinned =
+            (matches!(plan, AppendRunPlan::Extend { .. }) && run_pinned) || receipt_references_run;
+        let args = mutation_arguments(
+            &record,
+            payload_bytes,
+            &current,
+            &stream,
+            &format,
+            &plan,
+            MutationState {
+                now_ms: sockudo_core::history::now_ms(),
+                next_open: stream.open_stream_count + i64::from(opens) - i64::from(closes),
+                next_append: message.append_count
+                    + i64::from(matches!(
+                        request.mutation,
+                        sockudo_core::version_store::VersionMutation::Append(_)
+                    )),
+                run_pinned,
+                receipt: request.idempotency.as_ref(),
+            },
+        )?;
+        #[cfg(test)]
+        let wire_before = crate::history::c2_wire_meter::phase_snapshot();
+        let committed = self.commit_mutation_function(args).await;
+        #[cfg(test)]
+        crate::history::c2_wire_meter::report_phase("surrealdb.commit", wire_before);
+        match committed {
+            Ok(_) => {
+                if let (Some(run), Some(snapshot)) = (plan.run(), plan.snapshot_after(&record)) {
+                    self.append_cache.insert(
+                        &record.app_id,
+                        &record.channel,
+                        record.message_serial(),
+                        run,
+                        snapshot.to_string(),
+                    );
+                }
+                Ok(VersionMutationResult::Applied {
+                    record,
+                    stream_id: stream.stream_id,
+                })
+            }
             Err(error)
                 if error.to_string().contains("version_conflict")
                     || error.to_string().contains("already exists")
@@ -640,12 +609,10 @@ impl VersionStore for SurrealVersionStore {
         };
 
         if !msg.latest_payload_bytes.is_empty() {
-            let record = sonic_rs::from_slice(&msg.latest_payload_bytes).map_err(|e| {
-                Error::Internal(format!(
-                    "Failed to deserialize SurrealDB latest version: {e}"
-                ))
-            })?;
-            return Ok(Some(record));
+            return Ok(self
+                .materialize_payloads(app_id, channel, vec![msg.latest_payload_bytes])
+                .await?
+                .pop());
         }
 
         let entry: Option<StoredVersionEntryRec> = self
@@ -660,12 +627,10 @@ impl VersionStore for SurrealVersionStore {
             return Ok(None);
         };
 
-        let record = sonic_rs::from_slice(&entry.payload_bytes).map_err(|e| {
-            Error::Internal(format!(
-                "Failed to deserialize SurrealDB version entry: {e}"
-            ))
-        })?;
-        Ok(Some(record))
+        Ok(self
+            .materialize_payloads(app_id, channel, vec![entry.payload_bytes])
+            .await?
+            .pop())
     }
 
     async fn get_versions(&self, request: VersionStoreReadRequest) -> Result<VersionStorePage> {
@@ -692,7 +657,7 @@ impl VersionStore for SurrealVersionStore {
         }
 
         let sql = format!(
-            "SELECT app_id, channel, message_serial, version_serial, delivery_serial, payload_bytes FROM {} WHERE {} ORDER BY version_serial {} LIMIT {}",
+            "SELECT version_serial, payload_bytes FROM {} WHERE {} ORDER BY version_serial {} LIMIT {}",
             self.tables.entries,
             clauses.join(" AND "),
             order,
@@ -716,22 +681,21 @@ impl VersionStore for SurrealVersionStore {
         let mut response = query.await.map_err(|e| {
             Error::Internal(format!("Failed to query SurrealDB version history: {e}"))
         })?;
-        let rows: Vec<StoredVersionEntryRec> = response.take(0usize).map_err(|e| {
+        let rows: Vec<VersionPayloadRow> = response.take(0usize).map_err(|e| {
             Error::Internal(format!("Failed to decode SurrealDB version history: {e}"))
         })?;
 
         let has_more = rows.len() > request.limit;
-        let items: Vec<StoredVersionRecord> = rows
-            .into_iter()
-            .take(request.limit)
-            .map(|row| {
-                sonic_rs::from_slice(&row.payload_bytes).map_err(|e| {
-                    Error::Internal(format!(
-                        "Failed to deserialize SurrealDB version history entry: {e}"
-                    ))
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let items = self
+            .materialize_payloads(
+                &request.app_id,
+                &request.channel,
+                rows.into_iter()
+                    .take(request.limit)
+                    .map(|row| row.payload_bytes)
+                    .collect(),
+            )
+            .await?;
 
         let next_cursor = if has_more {
             items.last().map(|item| VersionStoreCursor {
@@ -759,7 +723,7 @@ impl VersionStore for SurrealVersionStore {
         let mut response = self
             .db
             .query(format!(
-                "SELECT payload_bytes FROM {} WHERE app_id = $app_id AND channel = $channel AND delivery_serial > $after ORDER BY delivery_serial ASC LIMIT {}",
+                "SELECT delivery_serial, payload_bytes FROM {} WHERE app_id = $app_id AND channel = $channel AND delivery_serial > $after ORDER BY delivery_serial ASC LIMIT {}",
                 self.tables.entries, request.limit
             ))
             .bind(("app_id", request.app_id.clone()))
@@ -774,15 +738,12 @@ impl VersionStore for SurrealVersionStore {
             ))
         })?;
 
-        rows.into_iter()
-            .map(|row| {
-                sonic_rs::from_slice(&row.payload_bytes).map_err(|e| {
-                    Error::Internal(format!(
-                        "Failed to deserialize SurrealDB version replay entry: {e}"
-                    ))
-                })
-            })
-            .collect()
+        self.materialize_payloads(
+            &request.app_id,
+            &request.channel,
+            rows.into_iter().map(|row| row.payload_bytes).collect(),
+        )
+        .await
     }
 
     async fn latest_by_history(
@@ -793,7 +754,7 @@ impl VersionStore for SurrealVersionStore {
         let mut response = self
             .db
             .query(format!(
-                "SELECT latest_entry_key FROM {} WHERE app_id = $app_id AND channel = $channel ORDER BY history_serial ASC",
+                "SELECT latest_entry_key, history_serial FROM {} WHERE app_id = $app_id AND channel = $channel ORDER BY history_serial ASC",
                 self.tables.messages
             ))
             .bind(("app_id", app_id.to_string()))
@@ -823,16 +784,26 @@ impl VersionStore for SurrealVersionStore {
                     ))
                 })?;
             if let Some(entry) = entry {
-                let record: StoredVersionRecord =
-                    sonic_rs::from_slice(&entry.payload_bytes).map_err(|e| {
-                        Error::Internal(format!(
-                            "Failed to deserialize SurrealDB version entry in latest_by_history: {e}"
-                        ))
-                    })?;
-                result.push(record);
+                result.push(entry.payload_bytes);
             }
         }
-        Ok(result)
+        self.materialize_payloads(app_id, channel, result).await
+    }
+
+    async fn set_append_storage_enabled(&self, enabled: bool) -> Result<()> {
+        let format = self.append_format().await?;
+        if enabled && !format.enabled {
+            self.seed_latest_records(&format).await?;
+        }
+        self.db.query("BEGIN TRANSACTION; LET $changed = UPDATE ONLY type::record($table, 'format') SET enabled = $enabled, epoch += 1 WHERE epoch = $epoch RETURN AFTER; IF $changed = NONE { THROW 'append_format_changed'; }; COMMIT TRANSACTION;")
+            .bind(("table", self.tables.format.clone())).bind(("enabled", enabled)).bind(("epoch", format.epoch))
+            .await.and_then(|response| response.check())
+            .map_err(|e| Error::Internal(format!("failed to change append storage format: {e}")))?;
+        Ok(())
+    }
+
+    async fn materialize_append_storage(&self, batch_size: usize) -> Result<u64> {
+        self.materialize_compact_records(batch_size).await
     }
 
     async fn stream_state(&self, app_id: &str, channel: &str) -> Result<VersionStreamState> {
@@ -910,9 +881,12 @@ impl VersionStore for SurrealVersionStore {
         let (messages_deleted, messages_more) =
             purge_table(&self.tables.messages, "updated_at_ms").await?;
 
+        // Runs go last: a run outlives every retained entry inside it.
+        let (runs_deleted, runs_more) = self.purge_append_runs(before_ms, limit).await?;
+
         Ok((
-            entries_deleted + messages_deleted,
-            entries_more || messages_more,
+            entries_deleted + messages_deleted + runs_deleted,
+            entries_more || messages_more || runs_more,
         ))
     }
 }

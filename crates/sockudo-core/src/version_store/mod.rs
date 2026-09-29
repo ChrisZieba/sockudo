@@ -1,3 +1,4 @@
+pub mod append_storage;
 mod leased;
 mod memory;
 mod store;

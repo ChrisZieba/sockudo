@@ -21,7 +21,13 @@ mkdir -p "$TARGET_DIR/criterion"
   fi
 } > "$TARGET_DIR/criterion/ai-transport-hardware.txt"
 
-cargo bench -p sockudo-ai-benches --bench ai_hot_paths -- --noplot --quiet
+# A separately built binary keeps compilation out of quiet-host comparisons.
+# The default development/CI path remains the ordinary Cargo invocation.
+if [[ -n "${AIT_BENCH_BINARY:-}" ]]; then
+  CRITERION_HOME="$TARGET_DIR/criterion" "$AIT_BENCH_BINARY" --bench --noplot --quiet
+else
+  cargo bench -p sockudo-ai-benches --bench ai_hot_paths -- --noplot --quiet
+fi
 
 python3 - "$BUDGET_FILE" "$TARGET_DIR/criterion" <<'PY'
 import json

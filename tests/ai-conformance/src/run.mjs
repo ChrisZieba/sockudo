@@ -25,15 +25,31 @@ if (offline) {
   console.log("AI conformance offline fixture validation passed");
 } else {
   const client = new AitProtocolClient();
+  const failures = [];
   for (const scenario of scenarios) {
-    await runScenario(client, scenario);
+    try {
+      await runScenario(client, scenario);
+    } catch (error) {
+      failures.push(scenario.name);
+      console.error(`not ok ${scenario.name}`, error);
+    }
   }
-  console.log(`AI conformance passed ${scenarios.length} raw-wire scenarios`);
+  if (failures.length > 0) {
+    console.error(`AI conformance failed ${failures.length}/${scenarios.length} raw-wire scenarios: ${failures.join(", ")}`);
+    process.exitCode = 1;
+  } else {
+    console.log(`AI conformance passed ${scenarios.length} raw-wire scenarios`);
+  }
 }
 
 async function runScenario(client, scenario) {
   const result = await scenario(client);
+  client.assertTranscriptIdentities(result.transcript);
   const actual = normalizeTranscript(result.transcript);
+  if (process.env.AIT_CONFORMANCE_ACTUAL_DIR) {
+    await fs.mkdir(process.env.AIT_CONFORMANCE_ACTUAL_DIR, { recursive: true });
+    await fs.writeFile(path.join(process.env.AIT_CONFORMANCE_ACTUAL_DIR, `${scenario.name}.json`), `${JSON.stringify(actual, null, 2)}\n`);
+  }
   const golden = await readGolden(`${scenario.name}.json`);
   assert.deepEqual(actual, golden, `${scenario.name} transcript mismatch`);
   console.log(`ok ${scenario.name}`);
@@ -45,7 +61,7 @@ async function normalTurn(client) {
   try {
     session.subscribe(channel);
     await session.waitForEvent(
-      (frame) => frame.event === "sockudo:subscription_succeeded",
+      (frame) => frame.event === "sockudo_internal:subscription_succeeded",
       "subscribe",
     );
     await client.publish({
@@ -187,7 +203,7 @@ async function recoverySmoke(client) {
   try {
     session.subscribe(channel);
     await session.waitForEvent(
-      (frame) => frame.event === "sockudo:subscription_succeeded",
+      (frame) => frame.event === "sockudo_internal:subscription_succeeded",
       "subscribe",
     );
     await client.publish({
@@ -210,7 +226,7 @@ async function lifecycleOnly(client, prefix, events) {
   try {
     session.subscribe(channel);
     await session.waitForEvent(
-      (frame) => frame.event === "sockudo:subscription_succeeded",
+      (frame) => frame.event === "sockudo_internal:subscription_succeeded",
       "subscribe",
     );
     for (const [name, transport] of events) {
@@ -222,7 +238,11 @@ async function lifecycleOnly(client, prefix, events) {
       });
     }
     const lastEvent = events.at(-1)[0];
-    await session.waitForEvent((frame) => frame.event === lastEvent, lastEvent);
+    const expectedCount = events.filter(([name]) => name === lastEvent).length;
+    await session.waitForEvent(
+      (frame) => frame.event === lastEvent && session.transcript.filter((item) => item.event === lastEvent).length === expectedCount,
+      lastEvent,
+    );
     return { transcript: session.transcript };
   } finally {
     session.close();
@@ -235,7 +255,7 @@ async function mutableSequence(client, prefix, runId, steps) {
   try {
     session.subscribe(channel);
     await session.waitForEvent(
-      (frame) => frame.event === "sockudo:subscription_succeeded",
+      (frame) => frame.event === "sockudo_internal:subscription_succeeded",
       "subscribe",
     );
     const create = await client.publish({
@@ -267,7 +287,8 @@ async function mutableSequence(client, prefix, runId, steps) {
     }
     await session.waitForEvent(
       (frame) =>
-        frame.event === "sockudo:message.append" || frame.event === "sockudo:message.update",
+        frame.event === `sockudo:message.${steps.at(-1)[0]}` &&
+        session.transcript.filter((item) => item.event.startsWith("sockudo:message.")).length === steps.length,
       "mutation",
     );
     return { transcript: session.transcript };

@@ -1,0 +1,36 @@
+# Isolated C2 fixture services. Project name: sockudo-c2-append-storage.
+# Loopback-only ports 25471-25475; created for this finding only.
+services:
+  postgres:
+    image: postgres:17.6
+    environment:
+      POSTGRES_USER: c2
+      POSTGRES_PASSWORD: c2-local-only
+      POSTGRES_DB: c2
+    ports: ["127.0.0.1:25471:5432"]
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: c2-local-only
+      MYSQL_DATABASE: c2
+    ports: ["127.0.0.1:25472:3306"]
+  dynamodb:
+    image: amazon/dynamodb-local:3.1.0
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+    ports: ["127.0.0.1:25473:8000"]
+  scylla:
+    image: scylladb/scylla:2025.3
+    # The driver connects to the advertised RPC address, so advertise loopback
+    # and serve CQL on the same port inside and outside the container.
+    command: ["--smp", "2", "--memory", "2G", "--overprovisioned", "1", "--developer-mode", "1",
+              "--native-transport-port", "25474", "--rpc-address", "0.0.0.0",
+              "--broadcast-rpc-address", "127.0.0.1"]
+    ports: ["127.0.0.1:25474:25474"]
+  surrealdb:
+    image: surrealdb/surrealdb:v3.0.4
+    command: ["start", "--user", "root", "--pass", "c2-local-only", "memory"]
+    ports: ["127.0.0.1:25475:8000"]
+  # Workspace tests only; not running during any measurement.
+  redis:
+    image: redis:7.4
+    ports: ["127.0.0.1:25476:6379"]

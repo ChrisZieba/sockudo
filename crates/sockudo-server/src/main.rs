@@ -30,6 +30,18 @@ use tracing::{error, info};
 struct Args {
     #[arg(short, long)]
     config: Option<String>,
+    /// Rewrite compact append versions of the configured version store as
+    /// self-contained records, then exit. Rollback maintenance: stop every
+    /// server writing to the store first.
+    #[arg(long)]
+    materialize_append_storage: bool,
+    /// Enable chunked append writes after every writer supports format 2.
+    /// Maintenance command; stop writers before changing the store marker.
+    #[arg(long, conflicts_with_all = ["disable_append_storage", "materialize_append_storage"])]
+    enable_append_storage: bool,
+    /// Disable compact writes before materialization and rollback.
+    #[arg(long, conflicts_with = "materialize_append_storage")]
+    disable_append_storage: bool,
 }
 
 // jemalloc is the default allocator, Windows MSVC falls back to the system allocator.
@@ -139,7 +151,13 @@ async fn main() -> Result<()> {
 
     info!(debug = config.debug, "configuration loading complete");
 
-    let result = run_server(config).await;
+    let result = if args.materialize_append_storage {
+        materialize_append_storage(config).await
+    } else if args.enable_append_storage || args.disable_append_storage {
+        set_append_storage_enabled(config, args.enable_append_storage).await
+    } else {
+        run_server(config).await
+    };
 
     #[cfg(feature = "opentelemetry")]
     if let Err(error) = telemetry.shutdown().await {
@@ -147,6 +165,64 @@ async fn main() -> Result<()> {
     }
 
     result
+}
+
+/// Rows per page when materializing compact append storage.
+const MATERIALIZE_BATCH_SIZE: usize = 500;
+
+#[cfg(feature = "versioned-messages")]
+async fn materialize_append_storage(config: ServerOptions) -> Result<()> {
+    let store = history::create_version_store(
+        &config.versioned_messages,
+        &config.history,
+        &config.database,
+        &config.database_pooling,
+    )
+    .await?;
+    info!(
+        driver = ?config.versioned_messages.driver,
+        "materializing compact append storage"
+    );
+    let rewritten = store
+        .materialize_append_storage(MATERIALIZE_BATCH_SIZE)
+        .await
+        .inspect_err(|error| error!(error = %error, "append storage materialization failed"))?;
+    info!(
+        rewritten_count = rewritten,
+        "append storage materialization complete"
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "versioned-messages"))]
+async fn materialize_append_storage(_config: ServerOptions) -> Result<()> {
+    Err(Error::Configuration(
+        "append storage materialization requires the versioned-messages feature".to_string(),
+    ))
+}
+
+#[cfg(feature = "versioned-messages")]
+async fn set_append_storage_enabled(config: ServerOptions, enabled: bool) -> Result<()> {
+    let store = history::create_version_store(
+        &config.versioned_messages,
+        &config.history,
+        &config.database,
+        &config.database_pooling,
+    )
+    .await?;
+    store
+        .set_append_storage_enabled(enabled)
+        .await
+        .inspect_err(|error| error!(error = %error, "append storage marker update failed"))?;
+    info!(enabled, "append storage marker updated");
+    Ok(())
+}
+
+#[cfg(not(feature = "versioned-messages"))]
+async fn set_append_storage_enabled(_config: ServerOptions, _enabled: bool) -> Result<()> {
+    Err(Error::Configuration(
+        "append storage marker requires the versioned-messages feature".to_string(),
+    ))
 }
 
 async fn run_server(config: ServerOptions) -> Result<()> {

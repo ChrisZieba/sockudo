@@ -373,3 +373,20 @@ pub async fn create_version_store(
     feature = "versioned-messages"
 ))]
 mod c1_tests;
+
+#[cfg(all(test, feature = "versioned-messages"))]
+mod c2_bench;
+
+#[cfg(all(test, feature = "versioned-messages"))]
+mod c2_wire_meter;
+
+#[cfg(all(
+    test,
+    feature = "versioned-messages",
+    feature = "postgres",
+    feature = "mysql",
+    feature = "dynamodb",
+    feature = "scylladb",
+    feature = "surrealdb"
+))]
+mod c2_tests;

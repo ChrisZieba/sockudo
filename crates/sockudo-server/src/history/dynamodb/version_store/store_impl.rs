@@ -1,4 +1,8 @@
 use super::*;
+use sockudo_core::version_store::append_storage::{
+    AppendRunPlan, AppendRunRef, StoredVersionPayload, encode_full,
+};
+use sockudo_core::versioned_messages::VersionSerial;
 
 #[cfg(feature = "versioned-messages")]
 #[async_trait::async_trait]
@@ -69,7 +73,12 @@ impl VersionStore for DynamoDbVersionStore {
                             len: block_size,
                         });
                     }
-                    Err(e) if e.to_string().contains("ConditionalCheckFailed") => continue,
+                    Err(e)
+                        if e.as_service_error()
+                            .is_some_and(|error| error.is_conditional_check_failed_exception()) =>
+                    {
+                        continue;
+                    }
                     Err(e) => {
                         return Err(Error::Internal(format!(
                             "Failed to advance DynamoDB version delivery serial: {e}"
@@ -104,7 +113,12 @@ impl VersionStore for DynamoDbVersionStore {
                             len: block_size,
                         });
                     }
-                    Err(e) if e.to_string().contains("ConditionalCheckFailed") => continue,
+                    Err(e)
+                        if e.as_service_error()
+                            .is_some_and(|error| error.is_conditional_check_failed_exception()) =>
+                    {
+                        continue;
+                    }
                     Err(e) => {
                         return Err(Error::Internal(format!(
                             "Failed to create DynamoDB version stream row: {e}"
@@ -178,7 +192,9 @@ impl VersionStore for DynamoDbVersionStore {
             .send()
             .await;
         if let Err(e) = put_result
-            && !e.to_string().contains("ConditionalCheckFailed")
+            && !e
+                .as_service_error()
+                .is_some_and(|error| error.is_conditional_check_failed_exception())
         {
             return Err(Error::Internal(format!(
                 "Failed to write version entry to DynamoDB: {e}"
@@ -189,18 +205,31 @@ impl VersionStore for DynamoDbVersionStore {
         // Advance version_messages if this version_serial is greater.
         let (update_expr, expires_value) = if let Some(expires) = self.expires_at_value() {
             (
-                "SET latest_version_serial = :vs, latest_delivery_serial = :ds, latest_action = :action, latest_payload_bytes = :payload, is_open_stream = :is_open, append_count = if_not_exists(append_count, :zero) + :append_increment, updated_at_ms = :now, history_serial = :hs, original_client_id = :oc, created_at_ms = if_not_exists(created_at_ms, :now), expires_at = :exp",
+                "SET latest_version_serial = :vs, latest_delivery_serial = :ds, latest_action = :action, latest_payload_bytes = :payload, is_open_stream = :is_open, append_count = if_not_exists(append_count, :zero) + :append_increment, updated_at_ms = :now, history_serial = :hs, original_client_id = :oc, created_at_ms = if_not_exists(created_at_ms, :now), expires_at = :exp REMOVE latest_append_run, latest_append_len, latest_append_head, latest_append_pinned, latest_append_generation",
                 Some(expires),
             )
         } else {
             (
-                "SET latest_version_serial = :vs, latest_delivery_serial = :ds, latest_action = :action, latest_payload_bytes = :payload, is_open_stream = :is_open, append_count = if_not_exists(append_count, :zero) + :append_increment, updated_at_ms = :now, history_serial = :hs, original_client_id = :oc, created_at_ms = if_not_exists(created_at_ms, :now)",
+                "SET latest_version_serial = :vs, latest_delivery_serial = :ds, latest_action = :action, latest_payload_bytes = :payload, is_open_stream = :is_open, append_count = if_not_exists(append_count, :zero) + :append_increment, updated_at_ms = :now, history_serial = :hs, original_client_id = :oc, created_at_ms = if_not_exists(created_at_ms, :now) REMOVE latest_append_run, latest_append_len, latest_append_head, latest_append_pinned, latest_append_generation",
                 None,
             )
         };
-        let mut update_builder = self
-            .client
-            .update_item()
+        let seed = if self.append_storage_epoch().await?.is_some() {
+            self.stage_seed(&record).await?
+        } else {
+            AppendRunPlan::Full
+        };
+        let update_expr = if seed.run().is_some() {
+            update_expr
+                .split(" REMOVE ")
+                .next()
+                .unwrap_or(update_expr)
+                .to_string()
+                + ", latest_append_run = :seed_run, latest_append_len = :seed_len, latest_append_head = :vs, latest_append_generation = :seed_generation, latest_append_pinned = :seed_pinned"
+        } else {
+            update_expr.to_string()
+        };
+        let mut update_builder = Update::builder()
             .table_name(&self.tables.version_messages)
             .key("app_channel", Self::attr_s(&app_channel))
             .key(
@@ -237,17 +266,48 @@ impl VersionStore for DynamoDbVersionStore {
                     .map(Self::attr_s)
                     .unwrap_or(AttributeValue::Null(true)),
             );
+        if let Some(run) = seed.run() {
+            update_builder = update_builder
+                .expression_attribute_values(":seed_run", Self::attr_s(run.run.as_str()))
+                .expression_attribute_values(":seed_len", Self::attr_n(run.data_len))
+                .expression_attribute_values(
+                    ":seed_generation",
+                    Self::attr_s(run.generation.as_deref().unwrap_or_default()),
+                )
+                .expression_attribute_values(":seed_pinned", AttributeValue::Bool(true));
+        }
         if let Some(expires) = expires_value {
             update_builder = update_builder.expression_attribute_values(":exp", expires);
         }
-        let update_result = update_builder.send().await;
-        if let Err(e) = update_result {
-            // ConditionalCheckFailed means a newer version is already stored — idempotent.
-            if !e.to_string().contains("ConditionalCheckFailed") {
-                return Err(Error::Internal(format!(
-                    "Failed to update version_messages in DynamoDB: {e}"
-                )));
+        let update = update_builder
+            .build()
+            .map_err(|e| Error::Internal(format!("failed to build imported latest state: {e}")))?;
+        let mut transaction = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().update(update).build());
+        if let Some(activation) = self.seed_activation_write(&record, &seed)? {
+            transaction = transaction.transact_items(activation);
+        }
+        if let Err(error) = transaction.send().await {
+            if error
+                .as_service_error()
+                .is_some_and(|error| error.is_transaction_canceled_exception())
+            {
+                let latest = self
+                    .get_latest(&record.app_id, &record.channel, record.message_serial())
+                    .await?;
+                if latest
+                    .as_ref()
+                    .is_some_and(|latest| latest.version_serial() >= record.version_serial())
+                {
+                    tracing::debug!(error = %error, "imported latest state is already superseded");
+                    return Ok(());
+                }
             }
+            return Err(Error::Internal(format!(
+                "failed to publish imported latest state: {error}"
+            )));
         }
 
         Ok(())
@@ -366,7 +426,11 @@ impl VersionStore for DynamoDbVersionStore {
         };
         let entry_put = Put::builder()
             .table_name(&self.tables.version_entries)
-            .set_item(Some(self.entry_item(&record, None)?))
+            .set_item(Some(self.entry_item(
+                &record,
+                encode_full(&record)?,
+                None,
+            )?))
             .condition_expression("attribute_not_exists(message_version_key)")
             .build()
             .map_err(|e| Error::Internal(format!("Failed to build create entry: {e}")))?;
@@ -397,23 +461,35 @@ impl VersionStore for DynamoDbVersionStore {
         );
         message_item.insert("created_at_ms".to_string(), Self::attr_n(now_ms));
         message_item.insert("updated_at_ms".to_string(), Self::attr_n(now_ms));
+        let seed = if self.append_storage_epoch().await?.is_some() {
+            self.stage_seed(&record).await?
+        } else {
+            AppendRunPlan::Full
+        };
+        Self::seed_attributes(&mut message_item, &record, &seed);
         let message_put = Put::builder()
             .table_name(&self.tables.version_messages)
             .set_item(Some(message_item))
             .condition_expression("attribute_not_exists(message_serial)")
             .build()
             .map_err(|e| Error::Internal(format!("Failed to build message create: {e}")))?;
-        let result = self
+        let mut transaction = self
             .client
             .transact_write_items()
             .transact_items(stream_write)
             .transact_items(TransactWriteItem::builder().put(entry_put).build())
-            .transact_items(TransactWriteItem::builder().put(message_put).build())
-            .send()
-            .await;
+            .transact_items(TransactWriteItem::builder().put(message_put).build());
+        if let Some(activation) = self.seed_activation_write(&record, &seed)? {
+            transaction = transaction.transact_items(activation);
+        }
+        let result = transaction.send().await;
         match result {
             Ok(_) => Ok(VersionCreateResult::Applied { record, stream_id }),
-            Err(error) if error.to_string().contains("TransactionCanceled") => {
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_transaction_canceled_exception()) =>
+            {
                 let current = self
                     .get_latest(&record.app_id, &record.channel, record.message_serial())
                     .await?;
@@ -454,14 +530,12 @@ impl VersionStore for DynamoDbVersionStore {
                 if fingerprint.as_deref() != Some(operation.payload_fingerprint.as_str()) {
                     return Err(Error::IdempotencyConflict);
                 }
-                let bytes = item
-                    .get("payload_bytes")
-                    .and_then(|value| value.as_b().ok())
-                    .map(|value| value.as_ref().to_vec())
+                let record = self
+                    .materialize_items(&app_channel, std::slice::from_ref(&item))
+                    .await?
+                    .pop()
+                    .flatten()
                     .ok_or_else(|| Error::Internal("Receipt payload is missing".to_string()))?;
-                let record = sonic_rs::from_slice(&bytes).map_err(|e| {
-                    Error::Internal(format!("Failed to decode operation receipt: {e}"))
-                })?;
                 return Ok(VersionMutationResult::Duplicate {
                     record,
                     stream_id: format!("{}/{}", request.app_id, request.channel),
@@ -501,21 +575,46 @@ impl VersionStore for DynamoDbVersionStore {
         let Some(message_item) = message_item else {
             return Ok(VersionMutationResult::Conflict { current: None });
         };
-        let current = if let Some(current_bytes) = message_item
+        let current = self
+            .materialize_latest_item(&app_channel, &message_item)
+            .await?
+            .ok_or_else(|| Error::Internal("message has no readable latest state".to_string()))?;
+        let append_count = Self::item_num(&message_item, "append_count").unwrap_or(0) as usize;
+        // The run pointer is written with the latest-state record, naming the
+        // version it describes; older releases never update it, so it is used
+        // only while it still names this predecessor. The commit re-checks
+        // the run head.
+        let mut predecessor_run = None;
+        let mut run_pinned = false;
+        if let (Some(run), Some(data_len), Some(head)) = (
+            Self::item_str(&message_item, "latest_append_run"),
+            Self::item_num(&message_item, "latest_append_len")
+                .and_then(|value| u64::try_from(value).ok()),
+            Self::item_str(&message_item, "latest_append_head"),
+        ) && head == current.version_serial().as_str()
+            && current.data_bytes()? as u64 == data_len
+        {
+            run_pinned = message_item
+                .get("latest_append_pinned")
+                .and_then(|value| value.as_bool().ok())
+                .copied()
+                .unwrap_or(false);
+            predecessor_run = Some(AppendRunRef {
+                run: VersionSerial::new(run)?,
+                data_len,
+                generation: Self::item_str(&message_item, "latest_append_generation"),
+            });
+        }
+        if let Some(bytes) = message_item
             .get("latest_payload_bytes")
             .and_then(|value| value.as_b().ok())
+            && predecessor_run
+                .as_ref()
+                .is_none_or(|run| run.generation.is_none())
+            && let Some(run) = StoredVersionPayload::decode(bytes.as_ref())?.run()
         {
-            sonic_rs::from_slice(current_bytes.as_ref()).map_err(|e| {
-                Error::Internal(format!("Failed to decode mutation predecessor: {e}"))
-            })?
-        } else {
-            self.get_latest(&request.app_id, &request.channel, &request.message_serial)
-                .await?
-                .ok_or_else(|| {
-                    Error::Internal("Message has no readable version entry".to_string())
-                })?
-        };
-        let append_count = Self::item_num(&message_item, "append_count").unwrap_or(0) as usize;
+            predecessor_run = Some(run.clone());
+        }
         let delivery_serial = next_delivery.max(current.delivery_serial().saturating_add(1));
         let stream_id = format!("{}/{}", request.app_id, request.channel);
         let outcome = request.apply_to(&current, &stream_id, delivery_serial, append_count)?;
@@ -541,8 +640,27 @@ impl VersionStore for DynamoDbVersionStore {
                 sockudo_core::version_store::VersionMutation::Append(_)
             ));
         let now_ms = sockudo_core::history::now_ms();
-        let payload = sonic_rs::to_vec(&record)
-            .map_err(|e| Error::Internal(format!("Failed to serialize mutation record: {e}")))?;
+        let format_epoch = self.append_storage_epoch().await?;
+        let plan = if format_epoch.is_some() {
+            AppendRunPlan::for_record_chunked(
+                current.version_serial(),
+                predecessor_run.as_ref(),
+                &record,
+            )
+        } else {
+            AppendRunPlan::Full
+        };
+        let payload = plan.encode(&record)?;
+        let seed_staged = format_epoch.is_some() && matches!(plan, AppendRunPlan::Full);
+        let plan = if seed_staged {
+            self.stage_seed(&record).await?
+        } else {
+            plan
+        };
+        let latest_payload = payload.clone();
+        let run_pinned = run_pinned
+            || plan.run().is_some_and(|run| run.generation.is_some())
+            || (request.idempotency.is_some() && plan.run().is_some());
         let stream_update = Update::builder()
             .table_name(&self.tables.version_streams)
             .key("app_channel", Self::attr_s(&app_channel))
@@ -558,9 +676,11 @@ impl VersionStore for DynamoDbVersionStore {
             .map_err(|e| Error::Internal(format!("Failed to build stream mutation: {e}")))?;
         let entry_put = Put::builder()
             .table_name(&self.tables.version_entries)
-            .set_item(Some(
-                self.entry_item(&record, request.idempotency.as_ref())?,
-            ))
+            .set_item(Some(self.entry_item(
+                &record,
+                payload.clone(),
+                request.idempotency.as_ref(),
+            )?))
             .condition_expression("attribute_not_exists(message_version_key)")
             .build()
             .map_err(|e| Error::Internal(format!("Failed to build mutation entry: {e}")))?;
@@ -571,25 +691,73 @@ impl VersionStore for DynamoDbVersionStore {
                 "message_serial",
                 Self::attr_s(request.message_serial.as_str()),
             )
-            .update_expression("SET latest_version_serial = :next_vs, latest_delivery_serial = :next_ds, latest_action = :action, latest_payload_bytes = :payload, append_count = :append_count, is_open_stream = :is_open, updated_at_ms = :now")
+            .update_expression(if plan.run().is_some() {
+                "SET latest_version_serial = :next_vs, latest_delivery_serial = :next_ds, latest_action = :action, latest_payload_bytes = :payload, append_count = :append_count, is_open_stream = :is_open, updated_at_ms = :now, latest_append_run = :run, latest_append_len = :run_len, latest_append_head = :next_vs, latest_append_pinned = :run_pinned, latest_append_generation = :run_generation"
+            } else {
+                "SET latest_version_serial = :next_vs, latest_delivery_serial = :next_ds, latest_action = :action, latest_payload_bytes = :payload, append_count = :append_count, is_open_stream = :is_open, updated_at_ms = :now REMOVE latest_append_run, latest_append_len, latest_append_head, latest_append_pinned, latest_append_generation"
+            })
             .condition_expression("latest_version_serial = :expected_vs AND latest_delivery_serial = :expected_ds")
             .expression_attribute_values(":next_vs", Self::attr_s(record.version_serial().as_str()))
             .expression_attribute_values(":next_ds", Self::attr_n(delivery_serial))
             .expression_attribute_values(":action", Self::attr_s(record.message.action.as_str()))
-            .expression_attribute_values(":payload", Self::attr_b(payload.clone()))
+            .expression_attribute_values(":payload", Self::attr_b(latest_payload))
             .expression_attribute_values(":append_count", Self::attr_n(next_append_count))
             .expression_attribute_values(":is_open", AttributeValue::Bool(record.is_open_ai_stream()))
             .expression_attribute_values(":now", Self::attr_n(now_ms))
             .expression_attribute_values(":expected_vs", Self::attr_s(current.version_serial().as_str()))
-            .expression_attribute_values(":expected_ds", Self::attr_n(current.delivery_serial()))
-            .build()
-            .map_err(|e| Error::Internal(format!("Failed to build message mutation: {e}")))?;
+            .expression_attribute_values(":expected_ds", Self::attr_n(current.delivery_serial()));
+        let message_update = if let Some(run) = plan.run() {
+            message_update
+                .expression_attribute_values(":run", Self::attr_s(run.run.as_str()))
+                .expression_attribute_values(
+                    ":run_generation",
+                    Self::attr_s(run.generation.as_deref().unwrap_or_default()),
+                )
+                .expression_attribute_values(":run_len", Self::attr_n(run.data_len))
+                .expression_attribute_values(":run_pinned", AttributeValue::Bool(run_pinned))
+        } else {
+            message_update
+        }
+        .build()
+        .map_err(|e| Error::Internal(format!("Failed to build message mutation: {e}")))?;
         let mut transaction = self
             .client
             .transact_write_items()
             .transact_items(TransactWriteItem::builder().update(stream_update).build())
             .transact_items(TransactWriteItem::builder().put(entry_put).build())
             .transact_items(TransactWriteItem::builder().update(message_update).build());
+        if let Some(epoch) = format_epoch {
+            let check = aws_sdk_dynamodb::types::ConditionCheck::builder()
+                .table_name(&self.tables.version_streams)
+                .key("app_channel", Self::attr_s(Self::FORMAT_MARKER_KEY))
+                .condition_expression("epoch = :epoch AND enabled = :enabled")
+                .expression_attribute_values(":epoch", Self::attr_s(&epoch))
+                .expression_attribute_values(":enabled", AttributeValue::Bool(true))
+                .build()
+                .map_err(|e| {
+                    Error::Internal(format!("failed to build append marker fence: {e}"))
+                })?;
+            transaction = transaction
+                .transact_items(TransactWriteItem::builder().condition_check(check).build());
+        }
+        if seed_staged {
+            if let Some(activation) = self.seed_activation_write(&record, &plan)? {
+                transaction = transaction.transact_items(activation);
+            }
+        } else {
+            let writes = self.append_chunk_writes(&record, &plan)?;
+            if writes.len() > 94 {
+                return Err(Error::Internal(
+                    "append requires more chunks than a DynamoDB transaction permits".to_string(),
+                ));
+            }
+            for write in writes {
+                transaction = transaction.transact_items(write);
+            }
+            if let Some(run_write) = self.append_run_write(&record, &plan, run_pinned, now_ms)? {
+                transaction = transaction.transact_items(run_write);
+            }
+        }
         if let Some(operation) = request.idempotency.as_ref() {
             let mut receipt = HashMap::new();
             receipt.insert("app_channel".to_string(), Self::attr_s(&app_channel));
@@ -611,9 +779,37 @@ impl VersionStore for DynamoDbVersionStore {
             transaction =
                 transaction.transact_items(TransactWriteItem::builder().put(receipt_put).build());
         }
+        #[cfg(test)]
+        let write_measurement = self
+            .measure_write_before(
+                transaction
+                    .as_input()
+                    .get_transact_items()
+                    .as_deref()
+                    .unwrap_or_default(),
+            )
+            .await?;
         match transaction.send().await {
-            Ok(_) => Ok(VersionMutationResult::Applied { record, stream_id }),
-            Err(error) if error.to_string().contains("TransactionCanceled") => {
+            Ok(_) => {
+                #[cfg(test)]
+                self.measure_write_after(write_measurement).await?;
+
+                if let (Some(run), Some(snapshot)) = (plan.run(), plan.snapshot_after(&record)) {
+                    self.append_cache.insert(
+                        &record.app_id,
+                        &record.channel,
+                        record.message_serial(),
+                        run,
+                        snapshot.to_owned(),
+                    );
+                }
+                Ok(VersionMutationResult::Applied { record, stream_id })
+            }
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_transaction_canceled_exception()) =>
+            {
                 Ok(VersionMutationResult::Conflict {
                     current: self
                         .get_latest(&request.app_id, &request.channel, &request.message_serial)
@@ -644,12 +840,8 @@ impl VersionStore for DynamoDbVersionStore {
             .await
             .map_err(|e| Error::Internal(format!("Failed to read latest message: {e}")))?
             .item
-            && let Some(bytes) = item
-                .get("latest_payload_bytes")
-                .and_then(|value| value.as_b().ok())
+            && let Some(record) = self.materialize_latest_item(&app_channel, &item).await?
         {
-            let record = sonic_rs::from_slice(bytes.as_ref())
-                .map_err(|e| Error::Internal(format!("Failed to decode latest message: {e}")))?;
             return Ok(Some(record));
         }
         let app_channel_message =
@@ -672,15 +864,11 @@ impl VersionStore for DynamoDbVersionStore {
         if items.is_empty() {
             return Ok(None);
         }
-        let bytes = items[0]
-            .get("payload_bytes")
-            .and_then(|v| v.as_b().ok())
-            .map(|b| b.as_ref().to_vec())
-            .ok_or_else(|| Error::Internal("Missing payload_bytes in version entry".to_string()))?;
-
-        let record: StoredVersionRecord = sonic_rs::from_slice(&bytes)
-            .map_err(|e| Error::Internal(format!("Failed to deserialize version record: {e}")))?;
-        Ok(Some(record))
+        Ok(self
+            .materialize_items(&app_channel, &items[..1])
+            .await?
+            .pop()
+            .flatten())
     }
 
     async fn get_versions(&self, request: VersionStoreReadRequest) -> Result<VersionStorePage> {
@@ -728,26 +916,26 @@ impl VersionStore for DynamoDbVersionStore {
 
         let all_items = result.items();
         let has_more = all_items.len() > request.limit;
-        let items: Vec<StoredVersionRecord> = all_items
-            .iter()
-            .take(request.limit)
-            .map(|item| {
-                let bytes = item
-                    .get("payload_bytes")
-                    .and_then(|v| v.as_b().ok())
-                    .map(|b| b.as_ref().to_vec())
-                    .ok_or_else(|| {
-                        Error::Internal("Missing payload_bytes in version entry".to_string())
-                    })?;
-                sonic_rs::from_slice(&bytes)
-                    .map_err(|e| Error::Internal(format!("Failed to deserialize version: {e}")))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let page = &all_items[..all_items.len().min(request.limit)];
+        // Continue after the last scanned entry, including one omitted as
+        // expired, so pagination still advances.
+        let last_scanned = page
+            .last()
+            .and_then(|item| Self::item_str(item, "version_serial"))
+            .map(VersionSerial::new)
+            .transpose()?;
+        let app_channel = Self::app_channel_key(&request.app_id, &request.channel);
+        let items: Vec<StoredVersionRecord> = self
+            .materialize_items(&app_channel, page)
+            .await?
+            .into_iter()
+            .flatten()
+            .collect();
 
         let next_cursor = if has_more {
-            items.last().map(|item| VersionStoreCursor {
+            last_scanned.map(|version_serial| VersionStoreCursor {
                 version: 1,
-                version_serial: item.version_serial().clone(),
+                version_serial,
                 direction: request.direction,
             })
         } else {
@@ -781,21 +969,14 @@ impl VersionStore for DynamoDbVersionStore {
             .await
             .map_err(|e| Error::Internal(format!("Failed to replay version entries: {e}")))?;
 
-        result
-            .items()
-            .iter()
-            .map(|item| {
-                let bytes = item
-                    .get("payload_bytes")
-                    .and_then(|v| v.as_b().ok())
-                    .map(|b| b.as_ref().to_vec())
-                    .ok_or_else(|| {
-                        Error::Internal("Missing payload_bytes in version entry".to_string())
-                    })?;
-                sonic_rs::from_slice(&bytes)
-                    .map_err(|e| Error::Internal(format!("Failed to deserialize replay: {e}")))
-            })
-            .collect()
+        // An omitted expired entry leaves a gap the caller's continuity check
+        // rejects, as when TTL has already deleted it.
+        Ok(self
+            .materialize_items(&app_channel, result.items())
+            .await?
+            .into_iter()
+            .flatten()
+            .collect())
     }
 
     async fn latest_by_history(
@@ -845,21 +1026,43 @@ impl VersionStore for DynamoDbVersionStore {
                 .await
                 .map_err(|e| Error::Internal(format!("Failed to fetch version entry: {e}")))?;
 
-            if let Some(item) = entry_result.items().first() {
-                let bytes = item
-                    .get("payload_bytes")
-                    .and_then(|v| v.as_b().ok())
-                    .map(|b| b.as_ref().to_vec())
-                    .ok_or_else(|| {
-                        Error::Internal("Missing payload_bytes in version entry".to_string())
-                    })?;
-                let record: StoredVersionRecord = sonic_rs::from_slice(&bytes).map_err(|e| {
-                    Error::Internal(format!("Failed to deserialize version record: {e}"))
-                })?;
+            if let Some(record) = self
+                .materialize_items(
+                    &app_channel,
+                    &entry_result.items()[..entry_result.items().len().min(1)],
+                )
+                .await?
+                .pop()
+                .flatten()
+            {
                 result.push(record);
             }
         }
         Ok(result)
+    }
+
+    async fn purge_before(&self, _before_ms: i64, batch_size: usize) -> Result<(u64, bool)> {
+        self.purge_append_chunks(batch_size).await
+    }
+
+    async fn set_append_storage_enabled(&self, enabled: bool) -> Result<()> {
+        if enabled && self.append_storage_epoch().await?.is_none() {
+            self.seed_latest_states().await?;
+        }
+        self.client
+            .put_item()
+            .table_name(&self.tables.version_streams)
+            .item("app_channel", Self::attr_s(Self::FORMAT_MARKER_KEY))
+            .item("enabled", AttributeValue::Bool(enabled))
+            .item("epoch", Self::attr_s(&uuid::Uuid::new_v4().to_string()))
+            .send()
+            .await
+            .map_err(|e| Error::Internal(format!("failed to update append storage marker: {e}")))?;
+        Ok(())
+    }
+
+    async fn materialize_append_storage(&self, batch_size: usize) -> Result<u64> {
+        self.materialize_compact_items(batch_size).await
     }
 
     async fn stream_state(&self, app_id: &str, channel: &str) -> Result<VersionStreamState> {

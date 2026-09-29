@@ -1064,11 +1064,27 @@ pub struct BatchPusherApiMessage {
     pub batch: Vec<PusherApiMessage>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum ApiMessageData {
     String(String),
     Json(Value),
+}
+
+impl<'de> Deserialize<'de> for ApiMessageData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Untagged enum buffering is incompatible with sonic-rs Value.
+        // Use the same JSON bridge as MessageData for HTTP's serde_json reader.
+        match JsonValue::deserialize(deserializer)? {
+            JsonValue::String(value) => Ok(Self::String(value)),
+            value => serde_json_value_to_sonic(value)
+                .map(Self::Json)
+                .map_err(D::Error::custom),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1689,6 +1705,45 @@ mod tests {
     };
     use sonic_rs::JsonValueTrait;
     use std::collections::{BTreeMap, HashMap};
+
+    #[test]
+    fn api_message_data_accepts_json_with_both_deserializers() {
+        for input in [
+            r#""plain string""#,
+            r#""{\"still\":\"a string\"}""#,
+            r#"{"nested":{"ok":true},"items":[1,"é",null]}"#,
+            r#"[false,42,{"channel":"application data"}]"#,
+            "true",
+            "-42",
+            "18446744073709551615",
+            "1.25",
+            "null",
+        ] {
+            let expected: serde_json::Value = serde_json::from_str(input).unwrap();
+            let from_serde: super::ApiMessageData = serde_json::from_str(input).unwrap();
+            let from_sonic: super::ApiMessageData = sonic_rs::from_str(input).unwrap();
+            for actual in [from_serde, from_sonic] {
+                assert_eq!(
+                    matches!(actual, super::ApiMessageData::String(_)),
+                    expected.is_string()
+                );
+                assert_eq!(serde_json::to_value(actual).unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn api_publish_and_batch_accept_object_data() {
+        let input = r#"{"name":"ai-run-start","channel":"private-ai-test","data":{"ok":true}}"#;
+        let message: super::PusherApiMessage = serde_json::from_str(input).unwrap();
+        assert!(matches!(message.data, Some(super::ApiMessageData::Json(_))));
+        let batch: super::BatchPusherApiMessage =
+            serde_json::from_str(&format!(r#"{{"batch":[{input}]}}"#)).unwrap();
+        assert!(matches!(
+            batch.batch[0].data,
+            Some(super::ApiMessageData::Json(_))
+        ));
+    }
 
     #[test]
     fn protocol_heartbeat_detection_matches_both_prefix_families() {

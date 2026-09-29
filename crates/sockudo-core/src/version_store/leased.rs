@@ -312,4 +312,12 @@ impl VersionStore for LeasedVersionStore {
     async fn purge_before(&self, before_ms: i64, batch_size: usize) -> Result<(u64, bool)> {
         self.inner.purge_before(before_ms, batch_size).await
     }
+
+    async fn set_append_storage_enabled(&self, enabled: bool) -> Result<()> {
+        self.inner.set_append_storage_enabled(enabled).await
+    }
+
+    async fn materialize_append_storage(&self, batch_size: usize) -> Result<u64> {
+        self.inner.materialize_append_storage(batch_size).await
+    }
 }

@@ -1,28 +1,90 @@
 [
   {
-    "event": "sockudo:subscription_succeeded",
     "channel": "private-ai-suspended-golden",
-    "data": {}
+    "data": {
+      "attach_serial": "<serial>"
+    },
+    "event": "sockudo_internal:subscription_succeeded",
+    "message_id": "<message_id>",
+    "serial": "<serial>",
+    "stream_id": "<stream_id>"
   },
   {
+    "channel": "private-ai-suspended-golden",
+    "data": {
+      "scenario": "private-ai-suspended"
+    },
     "event": "ai-run-start",
+    "extras": {
+      "ai": {
+        "codec": {},
+        "transport": {
+          "invocation-id": "invoke-1",
+          "run-id": "run-suspend"
+        }
+      },
+      "headers": {
+        "sockudo_action": "message.create",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>"
+      }
+    },
+    "message_id": "<message_id>",
+    "serial": "<serial>",
+    "stream_id": "<stream_id>"
+  },
+  {
     "channel": "private-ai-suspended-golden",
     "data": {
       "scenario": "private-ai-suspended"
-    }
-  },
-  {
+    },
     "event": "ai-run-suspend",
-    "channel": "private-ai-suspended-golden",
-    "data": {
-      "scenario": "private-ai-suspended"
-    }
+    "extras": {
+      "ai": {
+        "codec": {},
+        "transport": {
+          "invocation-id": "invoke-1",
+          "run-id": "run-suspend"
+        }
+      },
+      "headers": {
+        "sockudo_action": "message.create",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>"
+      }
+    },
+    "message_id": "<message_id>",
+    "serial": "<serial>",
+    "stream_id": "<stream_id>"
   },
   {
-    "event": "ai-run-resume",
     "channel": "private-ai-suspended-golden",
     "data": {
       "scenario": "private-ai-suspended"
-    }
+    },
+    "event": "ai-run-resume",
+    "extras": {
+      "ai": {
+        "codec": {},
+        "transport": {
+          "invocation-id": "invoke-2",
+          "run-id": "run-suspend"
+        }
+      },
+      "headers": {
+        "sockudo_action": "message.create",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>"
+      }
+    },
+    "message_id": "<message_id>",
+    "serial": "<serial>",
+    "stream_id": "<stream_id>"
   }
 ]
