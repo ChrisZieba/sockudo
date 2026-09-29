@@ -27,6 +27,9 @@ pub struct DynamoDbVersionStore {
     client: Client,
     tables: HistoryTables,
     retention_seconds: u64,
+    append_cache: sockudo_core::version_store::append_storage::AppendSnapshotCache,
+    append_gc: std::sync::Mutex<append_gc::AppendGcCursor>,
+    append_gc_running: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(feature = "versioned-messages")]
@@ -81,6 +84,9 @@ impl DynamoDbVersionStore {
         }
         let client = Client::new(&aws_config_builder.load().await);
         let store = Self {
+            append_cache: Default::default(),
+            append_gc: Default::default(),
+            append_gc_running: Default::default(),
             client,
             retention_seconds,
             tables: HistoryTables {
@@ -480,10 +486,9 @@ impl DynamoDbVersionStore {
     fn entry_item(
         &self,
         record: &StoredVersionRecord,
+        payload: Vec<u8>,
         operation: Option<&sockudo_core::message_envelope::PublishIdempotencyMetadata>,
     ) -> Result<HashMap<String, AttributeValue>> {
-        let payload = sonic_rs::to_vec(record)
-            .map_err(|e| Error::Internal(format!("Failed to serialize version record: {e}")))?;
         let app_channel = Self::app_channel_key(&record.app_id, &record.channel);
         let mut item = HashMap::new();
         item.insert("app_channel".to_string(), Self::attr_s(&app_channel));
@@ -542,9 +547,17 @@ impl DynamoDbVersionStore {
         if let Some(expires_at) = self.expires_at_value() {
             item.insert(Self::EXPIRES_AT_ATTR.to_string(), expires_at);
         }
+        Self::validate_item_size(&item)?;
         Ok(item)
     }
 }
 
 #[cfg(feature = "versioned-messages")]
+mod append_runs;
+#[cfg(feature = "versioned-messages")]
 mod store_impl;
+
+mod append_gc;
+
+#[cfg(test)]
+mod benchmark_metrics;

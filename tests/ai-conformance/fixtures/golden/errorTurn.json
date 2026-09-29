@@ -1,21 +1,66 @@
 [
   {
-    "event": "sockudo:subscription_succeeded",
     "channel": "private-ai-error-golden",
-    "data": {}
+    "data": {
+      "attach_serial": "<serial>"
+    },
+    "event": "sockudo_internal:subscription_succeeded",
+    "message_id": "<message_id>",
+    "serial": "<serial>",
+    "stream_id": "<stream_id>"
   },
   {
+    "channel": "private-ai-error-golden",
+    "data": {
+      "scenario": "private-ai-error"
+    },
     "event": "ai-run-start",
-    "channel": "private-ai-error-golden",
-    "data": {
-      "scenario": "private-ai-error"
-    }
+    "extras": {
+      "ai": {
+        "codec": {},
+        "transport": {
+          "invocation-id": "invoke-error",
+          "run-id": "run-error"
+        }
+      },
+      "headers": {
+        "sockudo_action": "message.create",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>"
+      }
+    },
+    "message_id": "<message_id>",
+    "serial": "<serial>",
+    "stream_id": "<stream_id>"
   },
   {
-    "event": "ai-run-end",
     "channel": "private-ai-error-golden",
     "data": {
       "scenario": "private-ai-error"
-    }
+    },
+    "event": "ai-run-end",
+    "extras": {
+      "ai": {
+        "codec": {},
+        "transport": {
+          "error-code": "tool-timeout",
+          "error-message": "timeout",
+          "run-id": "run-error",
+          "run-reason": "error"
+        }
+      },
+      "headers": {
+        "sockudo_action": "message.create",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>"
+      }
+    },
+    "message_id": "<message_id>",
+    "serial": "<serial>",
+    "stream_id": "<stream_id>"
   }
 ]

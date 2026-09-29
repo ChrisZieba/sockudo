@@ -1,3 +1,4 @@
+mod append_runs;
 mod store_impl;
 
 use super::*;
@@ -78,16 +79,32 @@ fn version_batch_applied(result: scylla::response::query_result::QueryResult) ->
             "Failed to decode ScyllaDB version batch result: {e}"
         ))
     })?;
-    let mut columns = rows
-        .single_row::<ColumnIterator>()
-        .map_err(|e| Error::Internal(format!("Failed to deserialize version batch result: {e}")))?;
-    let applied = columns
-        .next()
-        .transpose()
-        .map_err(|e| Error::Internal(format!("Failed to read version batch result: {e}")))?
-        .and_then(|column| column.slice)
-        .is_some_and(|slice| slice.as_slice() == [1]);
-    Ok(applied)
+    // Cassandra returns one row for a conditional batch; ScyllaDB returns one
+    // row per batch statement, each leading with the same `[applied]` value.
+    let mut applied = None;
+    for row in rows
+        .rows::<ColumnIterator>()
+        .map_err(|e| Error::Internal(format!("Failed to deserialize version batch result: {e}")))?
+    {
+        let mut columns = row.map_err(|e| {
+            Error::Internal(format!("Failed to deserialize version batch result: {e}"))
+        })?;
+        let row_applied = columns
+            .next()
+            .transpose()
+            .map_err(|e| Error::Internal(format!("Failed to read version batch result: {e}")))?
+            .and_then(|column| column.slice)
+            .is_some_and(|slice| slice.as_slice() == [1]);
+        if applied
+            .replace(row_applied)
+            .is_some_and(|value| value != row_applied)
+        {
+            return Err(Error::Internal(
+                "ScyllaDB version batch result reported mixed applied states".to_string(),
+            ));
+        }
+    }
+    applied.ok_or_else(|| Error::Internal("ScyllaDB version batch result was empty".to_string()))
 }
 
 #[cfg(feature = "versioned-messages")]
@@ -113,8 +130,12 @@ fn operation_commit_key(operation_key: &str) -> String {
 #[cfg(feature = "versioned-messages")]
 pub struct ScyllaVersionStore {
     session: Arc<Session>,
+    // Reuse immutable query shapes instead of preparing every conditional
+    // batch again. The driver bounds this cache and releases guards before I/O.
+    prepared: scylla::client::caching_session::CachingSession,
     tables: HistoryTables,
     retention_seconds: u64,
+    append_cache: sockudo_core::version_store::append_storage::AppendSnapshotCache,
 }
 
 #[cfg(feature = "versioned-messages")]
@@ -155,6 +176,27 @@ impl ScyllaVersionStore {
         retention_seconds: u64,
     ) -> Result<Self> {
         let mut builder = SessionBuilder::new().known_nodes(db_config.nodes.clone());
+        #[cfg(test)]
+        if std::env::var_os("C2_WIRE_BYTES").is_some() {
+            // The isolated one-node wire benchmark must keep discovery and
+            // shard connections behind the same byte-counting proxy.
+            let [node] = db_config.nodes.as_slice() else {
+                return Err(Error::Internal(
+                    "wire measurement requires one ScyllaDB endpoint".into(),
+                ));
+            };
+            let endpoint: std::net::SocketAddr = node.parse().map_err(|_| {
+                Error::Internal("wire measurement requires a numeric ScyllaDB endpoint".into())
+            })?;
+            if !endpoint.ip().is_loopback() {
+                return Err(Error::Internal(
+                    "wire measurement requires a loopback ScyllaDB endpoint".into(),
+                ));
+            }
+            builder = builder
+                .address_translator(Arc::new(C2WireAddressTranslator { endpoint }))
+                .disallow_shard_aware_port(true);
+        }
         if let (Some(username), Some(password)) = (&db_config.username, &db_config.password) {
             builder = builder.user(username, password);
         }
@@ -180,11 +222,18 @@ impl ScyllaVersionStore {
             version_commits: format!("{}_version_commits", table_prefix),
         };
         let store = Self {
+            append_cache: Default::default(),
+            prepared: scylla::client::caching_session::CachingSessionBuilder::new_shared(
+                session.clone(),
+            )
+            .max_capacity(64)
+            .build(),
             session,
             tables,
             retention_seconds,
         };
         store.ensure_version_tables().await?;
+        store.ensure_append_run_columns().await?;
         Ok(store)
     }
 
@@ -288,3 +337,22 @@ impl ScyllaVersionStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+struct C2WireAddressTranslator {
+    endpoint: std::net::SocketAddr,
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl scylla::policies::address_translator::AddressTranslator for C2WireAddressTranslator {
+    async fn translate_address(
+        &self,
+        _peer: &scylla::policies::address_translator::UntranslatedPeer,
+    ) -> std::result::Result<std::net::SocketAddr, scylla::errors::TranslationError> {
+        Ok(self.endpoint)
+    }
+}
+
+#[cfg(test)]
+mod benchmark_metrics;

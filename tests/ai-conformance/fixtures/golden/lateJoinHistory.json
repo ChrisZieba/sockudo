@@ -1,16 +1,29 @@
 [
   {
-    "event": "history:get_latest",
     "channel": "private-ai-late-golden",
     "data": {
+      "action": "append",
+      "channel": "private-ai-late-golden",
       "data": "late-state",
-      "message_serial": "<message_serial>",
-      "history_serial": "<serial>",
       "delivery_serial": "<serial>",
+      "event": "sockudo:message.append",
+      "extras": {
+        "ai": {
+          "codec": {},
+          "transport": {
+            "status": "complete"
+          }
+        }
+      },
+      "history_serial": "<serial>",
+      "message_serial": "<message_serial>",
+      "name": "ai-output",
+      "serial": "<serial>",
       "version": {
         "serial": "<version_serial>",
         "timestamp_ms": "<timestamp>"
       }
-    }
+    },
+    "event": "history:get_latest"
   }
 ]

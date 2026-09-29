@@ -1,35 +1,116 @@
 [
   {
-    "event": "sockudo:subscription_succeeded",
     "channel": "private-ai-concurrent-golden",
-    "data": {}
+    "data": {
+      "attach_serial": "<serial>"
+    },
+    "event": "sockudo_internal:subscription_succeeded",
+    "message_id": "<message_id>",
+    "serial": "<serial>",
+    "stream_id": "<stream_id>"
   },
   {
+    "channel": "private-ai-concurrent-golden",
+    "data": {
+      "scenario": "private-ai-concurrent"
+    },
     "event": "ai-run-start",
+    "extras": {
+      "ai": {
+        "codec": {},
+        "transport": {
+          "invocation-id": "invoke-a",
+          "run-id": "run-a"
+        }
+      },
+      "headers": {
+        "sockudo_action": "message.create",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>"
+      }
+    },
+    "message_id": "<message_id>",
+    "serial": "<serial>",
+    "stream_id": "<stream_id>"
+  },
+  {
     "channel": "private-ai-concurrent-golden",
     "data": {
       "scenario": "private-ai-concurrent"
-    }
-  },
-  {
+    },
     "event": "ai-run-start",
-    "channel": "private-ai-concurrent-golden",
-    "data": {
-      "scenario": "private-ai-concurrent"
-    }
+    "extras": {
+      "ai": {
+        "codec": {},
+        "transport": {
+          "invocation-id": "invoke-b",
+          "run-id": "run-b"
+        }
+      },
+      "headers": {
+        "sockudo_action": "message.create",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>"
+      }
+    },
+    "message_id": "<message_id>",
+    "serial": "<serial>",
+    "stream_id": "<stream_id>"
   },
   {
-    "event": "ai-run-end",
     "channel": "private-ai-concurrent-golden",
     "data": {
       "scenario": "private-ai-concurrent"
-    }
+    },
+    "event": "ai-run-end",
+    "extras": {
+      "ai": {
+        "codec": {},
+        "transport": {
+          "run-id": "run-b",
+          "run-reason": "complete"
+        }
+      },
+      "headers": {
+        "sockudo_action": "message.create",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>"
+      }
+    },
+    "message_id": "<message_id>",
+    "serial": "<serial>",
+    "stream_id": "<stream_id>"
   },
   {
-    "event": "ai-run-end",
     "channel": "private-ai-concurrent-golden",
     "data": {
       "scenario": "private-ai-concurrent"
-    }
+    },
+    "event": "ai-run-end",
+    "extras": {
+      "ai": {
+        "codec": {},
+        "transport": {
+          "run-id": "run-a",
+          "run-reason": "complete"
+        }
+      },
+      "headers": {
+        "sockudo_action": "message.create",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>"
+      }
+    },
+    "message_id": "<message_id>",
+    "serial": "<serial>",
+    "stream_id": "<stream_id>"
   }
 ]

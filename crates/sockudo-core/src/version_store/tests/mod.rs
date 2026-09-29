@@ -12,6 +12,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Barrier;
 
+mod append_storage;
+
 fn version(serial: &str, timestamp_ms: i64) -> VersionMetadata {
     VersionMetadata {
         serial: VersionSerial::new(serial).unwrap(),

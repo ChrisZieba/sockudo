@@ -1,40 +1,86 @@
 [
   {
-    "event": "sockudo:subscription_succeeded",
     "channel": "private-ai-abort-golden",
-    "data": {}
+    "data": {
+      "attach_serial": "<serial>"
+    },
+    "event": "sockudo_internal:subscription_succeeded",
+    "message_id": "<message_id>",
+    "serial": "<serial>",
+    "stream_id": "<stream_id>"
   },
   {
+    "channel": "private-ai-abort-golden",
+    "data": "",
     "event": "ai-output",
-    "channel": "private-ai-abort-golden",
-    "data": ""
+    "extras": {
+      "ai": {
+        "codec": {},
+        "transport": {
+          "role": "assistant",
+          "run-id": "run-abort",
+          "status": "streaming",
+          "stream": "true"
+        }
+      },
+      "headers": {
+        "sockudo_action": "message.create",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>"
+      }
+    },
+    "message_id": "<message_id>",
+    "serial": "<serial>",
+    "stream_id": "<stream_id>"
   },
   {
+    "channel": "private-ai-abort-golden",
+    "data": "partial",
     "event": "sockudo:message.append",
-    "channel": "private-ai-abort-golden",
-    "data": "partial",
-    "action": "append",
-    "message_serial": "<message_serial>",
-    "history_serial": "<serial>",
-    "delivery_serial": "<serial>",
+    "extras": {
+      "ai": {
+        "codec": {},
+        "transport": {
+          "status": "streaming"
+        }
+      },
+      "headers": {
+        "sockudo_action": "message.append",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>"
+      }
+    },
+    "message_id": "<message_id>",
+    "name": "ai-output",
     "serial": "<serial>",
-    "version": {
-      "serial": "<version_serial>",
-      "timestamp_ms": "<timestamp>"
-    }
+    "stream_id": "<stream_id>"
   },
   {
-    "event": "sockudo:message.update",
     "channel": "private-ai-abort-golden",
     "data": "partial",
-    "action": "update",
-    "message_serial": "<message_serial>",
-    "history_serial": "<serial>",
-    "delivery_serial": "<serial>",
+    "event": "sockudo:message.update",
+    "extras": {
+      "ai": {
+        "codec": {},
+        "transport": {
+          "status": "cancelled"
+        }
+      },
+      "headers": {
+        "sockudo_action": "message.update",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>"
+      }
+    },
+    "message_id": "<message_id>",
+    "name": "ai-output",
     "serial": "<serial>",
-    "version": {
-      "serial": "<version_serial>",
-      "timestamp_ms": "<timestamp>"
-    }
+    "stream_id": "<stream_id>"
   }
 ]

@@ -1,3 +1,4 @@
+use super::append_storage::{AppendRunPlan, AppendRunRef, StoredVersionPayload, without_data};
 use super::store::VersionStore;
 use super::types::*;
 use crate::error::{Error, Result};
@@ -22,10 +23,27 @@ struct MemoryVersionChannel {
     next_delivery_serial: u64,
     messages: BTreeMap<String, VersionChain>,
     open_stream_count: usize,
-    replay: BTreeMap<u64, Arc<StoredVersionRecord>>,
+    replay: BTreeMap<u64, Arc<MemoryVersionEntry>>,
     // Parallel map: `delivery_serial -> server-side append time (ms)`.
     // Used by `purge_before` for TTL eviction without touching read paths.
     created_at: BTreeMap<u64, i64>,
+}
+
+/// One retained version. A compact entry keeps the complete original
+/// operation but not the accumulated data, which is the prefix of its
+/// chain's run snapshot of `run.data_len` bytes.
+struct MemoryVersionEntry {
+    record: StoredVersionRecord,
+    run: Option<AppendRunRef>,
+}
+
+/// Accumulated data shared by consecutive appends of one message.
+#[derive(Clone)]
+struct AppendRun {
+    snapshot: String,
+    head: VersionSerial,
+    // Retained entries stored in this run; the snapshot is freed at zero.
+    refs: usize,
 }
 
 // All indexes and replay are updated under the existing store write lock. No
@@ -33,16 +51,36 @@ struct MemoryVersionChannel {
 // indexes. Import order is independent of version-serial order.
 #[derive(Clone, Default)]
 struct VersionChain {
-    entries: Vec<Arc<StoredVersionRecord>>,
+    entries: Vec<Arc<MemoryVersionEntry>>,
     versions: HashSet<VersionSerial>,
     operations: HashMap<String, usize>,
     latest: Option<usize>,
     append_count: usize,
+    runs: HashMap<VersionSerial, AppendRun>,
 }
 
 impl VersionChain {
-    fn latest(&self) -> Option<&Arc<StoredVersionRecord>> {
+    fn latest(&self) -> Option<&Arc<MemoryVersionEntry>> {
         self.latest.map(|index| &self.entries[index])
+    }
+
+    /// The public full-state record of a retained entry.
+    fn materialize(&self, entry: &MemoryVersionEntry) -> Result<StoredVersionRecord> {
+        let Some(run) = entry.run.as_ref() else {
+            return Ok(entry.record.clone());
+        };
+        StoredVersionPayload::Compact {
+            run: run.clone(),
+            record: entry.record.clone(),
+        }
+        .into_record(self.runs.get(&run.run).map(|state| state.snapshot.as_str()))
+    }
+
+    fn materialize_latest(&self) -> Result<StoredVersionRecord> {
+        let latest = self
+            .latest()
+            .ok_or_else(|| Error::InvalidMessageFormat("version chain must not be empty".into()))?;
+        self.materialize(latest)
     }
 
     fn validate_incoming(&self, record: &StoredVersionRecord) -> Result<()> {
@@ -50,7 +88,7 @@ impl VersionChain {
         // Every retained predecessor was validated when inserted. Comparing its
         // chain identity plus indexed uniqueness is sufficient for one new row.
         if let Some(first) = self.entries.first() {
-            ensure_same_chain(&first.message, &record.message)?;
+            ensure_same_chain(&first.record.message, &record.message)?;
         }
         if self.versions.contains(record.version_serial()) {
             return Err(Error::InvalidMessageFormat(format!(
@@ -61,11 +99,81 @@ impl VersionChain {
         Ok(())
     }
 
-    fn push(&mut self, record: Arc<StoredVersionRecord>) {
+    /// Store `record` under `plan`, updating its run snapshot first. Every
+    /// check precedes the first mutation, so a failure leaves the chain as is.
+    fn commit(
+        &mut self,
+        record: &StoredVersionRecord,
+        plan: &AppendRunPlan,
+    ) -> Result<Arc<MemoryVersionEntry>> {
+        let conflict = |reason: &str| {
+            Error::Internal(format!(
+                "append run for version {} of message {} {reason}",
+                record.version_serial().as_str(),
+                record.message_serial().as_str()
+            ))
+        };
+        let write = plan.snapshot_write(record);
+        match plan {
+            AppendRunPlan::Full => {}
+            AppendRunPlan::Start { run } => {
+                let snapshot = write.ok_or_else(|| conflict("has no accumulated data"))?;
+                if self.runs.contains_key(&run.run) {
+                    return Err(conflict("already exists"));
+                }
+                self.runs.insert(
+                    run.run.clone(),
+                    AppendRun {
+                        snapshot: snapshot.to_owned(),
+                        head: record.version_serial().clone(),
+                        refs: 1,
+                    },
+                );
+            }
+            AppendRunPlan::Extend {
+                run,
+                expected_head,
+                expected_len,
+            } => {
+                let fragment = write.ok_or_else(|| conflict("has no fragment"))?;
+                let state = self
+                    .runs
+                    .get_mut(&run.run)
+                    .ok_or_else(|| conflict("is missing"))?;
+                if &state.head != expected_head || state.snapshot.len() as u64 != *expected_len {
+                    return Err(conflict("head moved"));
+                }
+                state.snapshot.push_str(fragment);
+                state.head = record.version_serial().clone();
+                state.refs += 1;
+            }
+        }
+        let entry = Arc::new(match plan.run() {
+            None => MemoryVersionEntry {
+                record: record.clone(),
+                run: None,
+            },
+            Some(run) => MemoryVersionEntry {
+                record: without_data(record),
+                run: Some(run.clone()),
+            },
+        });
+        self.index(Arc::clone(&entry));
+        Ok(entry)
+    }
+
+    fn insert_full(&mut self, record: StoredVersionRecord) -> Arc<MemoryVersionEntry> {
+        let entry = Arc::new(MemoryVersionEntry { record, run: None });
+        self.index(Arc::clone(&entry));
+        entry
+    }
+
+    fn index(&mut self, entry: Arc<MemoryVersionEntry>) {
         let index = self.entries.len();
+        let record = &entry.record;
         if self
             .latest()
-            .is_none_or(|latest| record.version_serial() > latest.version_serial())
+            .is_none_or(|latest| record.version_serial() > latest.record.version_serial())
         {
             self.latest = Some(index);
         }
@@ -82,7 +190,7 @@ impl VersionChain {
                 .or_insert(index);
         }
         self.append_count += usize::from(record.message.action == MessageAction::Append);
-        self.entries.push(record);
+        self.entries.push(entry);
     }
 
     fn remove(&mut self, version: &VersionSerial) {
@@ -92,8 +200,17 @@ impl VersionChain {
         self.latest = None;
         self.append_count = 0;
         for entry in entries {
-            if entry.version_serial() != version {
-                self.push(entry);
+            if entry.record.version_serial() != version {
+                self.index(entry);
+                continue;
+            }
+            if let Some(run) = entry.run.as_ref()
+                && let Some(state) = self.runs.get_mut(&run.run)
+            {
+                state.refs -= 1;
+                if state.refs == 0 {
+                    self.runs.remove(&run.run);
+                }
             }
         }
     }
@@ -131,6 +248,46 @@ impl MemoryVersionStore {
                 .and_then(|headers| headers.status()),
             Some("complete" | "cancelled")
         )
+    }
+}
+
+/// Retained append storage, for tests.
+#[cfg(test)]
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct AppendStorageStats {
+    pub compact_entries: usize,
+    pub full_entries: usize,
+    pub runs: usize,
+    pub snapshot_bytes: usize,
+    /// Accumulated data bytes held by retained entries themselves.
+    pub entry_data_bytes: usize,
+}
+
+#[cfg(test)]
+impl MemoryVersionStore {
+    pub(crate) async fn append_storage_stats(&self) -> AppendStorageStats {
+        let channels = self.channels.read().await;
+        let mut stats = AppendStorageStats::default();
+        for chain in channels
+            .values()
+            .flat_map(|channel| channel.messages.values())
+        {
+            for entry in &chain.entries {
+                if entry.run.is_some() {
+                    stats.compact_entries += 1;
+                } else {
+                    stats.full_entries += 1;
+                }
+                stats.entry_data_bytes += entry.record.data_bytes().unwrap_or_default();
+            }
+            stats.runs += chain.runs.len();
+            stats.snapshot_bytes += chain
+                .runs
+                .values()
+                .map(|run| run.snapshot.len())
+                .sum::<usize>();
+        }
+        stats
     }
 }
 
@@ -190,7 +347,7 @@ impl VersionStore for MemoryVersionStore {
                 record.delivery_serial(),
                 record.app_id,
                 record.channel,
-                existing.message_serial().as_str(),
+                existing.record.message_serial().as_str(),
                 record.message_serial().as_str()
             )));
         }
@@ -206,27 +363,24 @@ impl VersionStore for MemoryVersionStore {
             .messages
             .get(&message_serial)
             .and_then(VersionChain::latest)
-            .is_some_and(|entry| entry.is_open_ai_stream());
-        let record = Arc::new(record);
-        channel_state
+            .is_some_and(|entry| entry.record.is_open_ai_stream());
+        // Imports carry arbitrary predecessors and stay self-contained.
+        let delivery_serial = record.delivery_serial();
+        let entry = channel_state
             .messages
             .entry(message_serial.clone())
             .or_default()
-            .push(Arc::clone(&record));
+            .insert_full(record);
         let is_open = channel_state.messages[&message_serial]
             .latest()
-            .is_some_and(|entry| entry.is_open_ai_stream());
+            .is_some_and(|entry| entry.record.is_open_ai_stream());
         channel_state.open_stream_count =
             channel_state.open_stream_count - usize::from(was_open) + usize::from(is_open);
-        channel_state
-            .created_at
-            .insert(record.delivery_serial(), now_ms());
-        channel_state
-            .replay
-            .insert(record.delivery_serial(), Arc::clone(&record));
+        channel_state.created_at.insert(delivery_serial, now_ms());
+        channel_state.replay.insert(delivery_serial, entry);
         channel_state.next_delivery_serial = channel_state
             .next_delivery_serial
-            .max(record.delivery_serial().saturating_add(1));
+            .max(delivery_serial.saturating_add(1));
 
         Ok(())
     }
@@ -236,13 +390,13 @@ impl VersionStore for MemoryVersionStore {
         let mut channels = self.channels.write().await;
         let channel_state = channels.entry(key).or_default();
 
-        if let Some(current) = channel_state
+        if let Some(chain) = channel_state
             .messages
             .get(request.record.message_serial().as_str())
-            .and_then(VersionChain::latest)
+            .filter(|chain| chain.latest().is_some())
         {
             return Ok(VersionCreateResult::Conflict {
-                current: Some(current.as_ref().clone()),
+                current: Some(chain.materialize_latest()?),
             });
         }
         if let Some(limit) = request.limits.max_accumulated_message_bytes
@@ -273,17 +427,14 @@ impl VersionStore for MemoryVersionStore {
                 "duplicate delivery_serial {delivery_serial} in version replay log"
             )));
         }
-        let stored_record = Arc::new(record.clone());
+        let mut chain = VersionChain::default();
+        let entry = chain.commit(&record, &AppendRunPlan::Full)?;
         channel_state.open_stream_count += usize::from(record.is_open_ai_stream());
         channel_state
             .messages
-            .insert(record.message_serial().as_str().to_string(), {
-                let mut chain = VersionChain::default();
-                chain.push(Arc::clone(&stored_record));
-                chain
-            });
+            .insert(record.message_serial().as_str().to_string(), chain);
         channel_state.created_at.insert(delivery_serial, now_ms());
-        channel_state.replay.insert(delivery_serial, stored_record);
+        channel_state.replay.insert(delivery_serial, entry);
         channel_state.next_delivery_serial = delivery_serial.saturating_add(1);
 
         Ok(VersionCreateResult::Applied {
@@ -312,6 +463,7 @@ impl VersionStore for MemoryVersionStore {
                 .map(|&index| &chain.entries[index])
         {
             let existing_idempotency = existing
+                .record
                 .envelope
                 .as_ref()
                 .and_then(|envelope| envelope.idempotency.as_ref())
@@ -324,22 +476,34 @@ impl VersionStore for MemoryVersionStore {
                 return Err(Error::IdempotencyConflict);
             }
             return Ok(VersionMutationResult::Duplicate {
-                record: existing.as_ref().clone(),
+                record: chain.materialize(existing)?,
                 stream_id: channel_state.stream_id.clone(),
             });
         }
 
-        let current = chain.latest().ok_or_else(|| {
+        let latest = chain.latest().ok_or_else(|| {
             Error::InvalidMessageFormat("version chain must not be empty".to_string())
         })?;
-        if !request.expected.matches(current) {
+        if !request.expected.matches(&latest.record) {
             return Ok(VersionMutationResult::Conflict {
-                current: Some(current.as_ref().clone()),
+                current: Some(chain.materialize(latest)?),
             });
         }
+        // Extend only a run whose head is still exactly this predecessor.
+        let predecessor_run = latest
+            .run
+            .as_ref()
+            .filter(|run| {
+                chain.runs.get(&run.run).is_some_and(|state| {
+                    &state.head == latest.record.version_serial()
+                        && state.snapshot.len() as u64 == run.data_len
+                })
+            })
+            .cloned();
+        let current = chain.materialize(latest)?;
 
         if matches!(request.mutation, VersionMutation::Append(_)) {
-            if request.limits.reject_append_after_terminal && Self::is_terminal(current) {
+            if request.limits.reject_append_after_terminal && Self::is_terminal(&current) {
                 return Ok(VersionMutationResult::Rejected(
                     VersionMutationRejection::TerminalMessage,
                 ));
@@ -358,6 +522,8 @@ impl VersionStore for MemoryVersionStore {
             .next_delivery_serial
             .max(current.delivery_serial().saturating_add(1));
         let record = current.apply_mutation(&request, &channel_state.stream_id, delivery_serial)?;
+        let plan =
+            AppendRunPlan::for_record(current.version_serial(), predecessor_run.as_ref(), &record);
         if let Some(limit) = request.limits.max_accumulated_message_bytes
             && record.data_bytes()? > limit
         {
@@ -384,19 +550,18 @@ impl VersionStore for MemoryVersionStore {
             )));
         }
 
-        channel_state.open_stream_count = channel_state.open_stream_count
-            - usize::from(current.is_open_ai_stream())
-            + usize::from(record.is_open_ai_stream());
-        let stored_record = Arc::new(record.clone());
-        channel_state
+        let entry = channel_state
             .messages
             .get_mut(request.message_serial.as_str())
             .ok_or_else(|| {
                 Error::Internal("version chain disappeared during mutation".to_string())
             })?
-            .push(Arc::clone(&stored_record));
+            .commit(&record, &plan)?;
+        channel_state.open_stream_count = channel_state.open_stream_count
+            - usize::from(current.is_open_ai_stream())
+            + usize::from(record.is_open_ai_stream());
         channel_state.created_at.insert(delivery_serial, now_ms());
-        channel_state.replay.insert(delivery_serial, stored_record);
+        channel_state.replay.insert(delivery_serial, entry);
         channel_state.next_delivery_serial = delivery_serial.saturating_add(1);
 
         Ok(VersionMutationResult::Applied {
@@ -420,11 +585,7 @@ impl VersionStore for MemoryVersionStore {
             return Ok(None);
         };
 
-        let latest = chain
-            .latest()
-            .ok_or_else(|| Error::InvalidMessageFormat("version chain must not be empty".into()))?;
-
-        Ok(Some(latest.as_ref().clone()))
+        chain.materialize_latest().map(Some)
     }
 
     async fn get_latest_batch(
@@ -453,11 +614,8 @@ impl VersionStore for MemoryVersionStore {
             })
             .map(|(message_serial, chain)| {
                 chain
-                    .latest()
-                    .map(|record| (message_serial.clone(), record.as_ref().clone()))
-                    .ok_or_else(|| {
-                        Error::InvalidMessageFormat("version chain must not be empty".into())
-                    })
+                    .materialize_latest()
+                    .map(|record| (message_serial.clone(), record))
             })
             .collect()
     }
@@ -482,7 +640,11 @@ impl VersionStore for MemoryVersionStore {
         };
 
         let mut items = chain.entries.iter().collect::<Vec<_>>();
-        items.sort_by(|left, right| left.version_serial().cmp(right.version_serial()));
+        items.sort_by(|left, right| {
+            left.record
+                .version_serial()
+                .cmp(right.record.version_serial())
+        });
         if matches!(request.direction, VersionStoreDirection::NewestFirst) {
             items.reverse();
         }
@@ -495,10 +657,10 @@ impl VersionStore for MemoryVersionStore {
                     .as_ref()
                     .is_none_or(|cursor| match request.direction {
                         VersionStoreDirection::NewestFirst => {
-                            item.version_serial() < &cursor.version_serial
+                            item.record.version_serial() < &cursor.version_serial
                         }
                         VersionStoreDirection::OldestFirst => {
-                            item.version_serial() > &cursor.version_serial
+                            item.record.version_serial() > &cursor.version_serial
                         }
                     })
             })
@@ -509,8 +671,8 @@ impl VersionStore for MemoryVersionStore {
         let items = filtered
             .into_iter()
             .take(request.limit)
-            .map(|item| item.as_ref().clone())
-            .collect::<Vec<_>>();
+            .map(|item| chain.materialize(item))
+            .collect::<Result<Vec<_>>>()?;
         let next_cursor = if has_more {
             items.last().map(|item| VersionStoreCursor {
                 version: 1,
@@ -547,14 +709,26 @@ impl VersionStore for MemoryVersionStore {
             .collect::<Vec<_>>();
 
         validate_replay_continuity_iter(
-            stored_items.iter().map(|entry| &entry.message),
+            stored_items.iter().map(|entry| &entry.record.message),
             request.after_delivery_serial,
         )?;
 
-        Ok(stored_items
+        stored_items
             .into_iter()
-            .map(|item| item.as_ref().clone())
-            .collect())
+            .map(|entry| match entry.run {
+                None => Ok(entry.record.clone()),
+                Some(_) => channel_state
+                    .messages
+                    .get(entry.record.message_serial().as_str())
+                    .ok_or_else(|| {
+                        Error::Internal(format!(
+                            "version chain for message {} is missing its replay entry",
+                            entry.record.message_serial().as_str()
+                        ))
+                    })?
+                    .materialize(entry),
+            })
+            .collect()
     }
 
     async fn latest_by_history(
@@ -571,8 +745,9 @@ impl VersionStore for MemoryVersionStore {
         let mut latest = channel_state
             .messages
             .values()
-            .filter_map(|chain| chain.latest().map(|record| record.as_ref().clone()))
-            .collect::<Vec<_>>();
+            .filter(|chain| chain.latest().is_some())
+            .map(VersionChain::materialize_latest)
+            .collect::<Result<Vec<_>>>()?;
 
         latest.sort_by_key(StoredVersionRecord::history_serial);
         Ok(latest)
@@ -631,15 +806,15 @@ impl VersionStore for MemoryVersionStore {
                 let Some(record) = state.replay.remove(&delivery_serial) else {
                     continue;
                 };
-                let message_key = record.message_serial().as_str().to_string();
+                let message_key = record.record.message_serial().as_str().to_string();
                 if let Some(chain) = state.messages.get_mut(&message_key) {
                     let was_open = chain
                         .latest()
-                        .is_some_and(|entry| entry.is_open_ai_stream());
-                    chain.remove(record.version_serial());
+                        .is_some_and(|entry| entry.record.is_open_ai_stream());
+                    chain.remove(record.record.version_serial());
                     let is_open = chain
                         .latest()
-                        .is_some_and(|entry| entry.is_open_ai_stream());
+                        .is_some_and(|entry| entry.record.is_open_ai_stream());
                     state.open_stream_count =
                         state.open_stream_count - usize::from(was_open) + usize::from(is_open);
                     if chain.entries.is_empty() {
