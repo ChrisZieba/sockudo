@@ -4,7 +4,12 @@ This harness starts real one-node and Redis/Postgres-backed two-node Sockudo
 topologies, opens real WebSocket subscribers, and publishes through the real
 Ably and native HTTP APIs. Plan output is never accepted as release evidence.
 
-Developer smoke (both one-node and Redis/Postgres-backed two-node topologies):
+Developer smoke (both one-node and Redis/Postgres-backed two-node topologies).
+`make ably-compat-capacity-smoke` builds the binary first; when running the
+script directly, build with
+`cargo build -p sockudo --features "v2,ai-transport,ably-compat,redis,postgres,push,monolith"`.
+Without `monolith` the `push_enqueue` scenario fails. Nodes use memory push
+storage and queues unless `PUSH_STORAGE_DRIVER` / `PUSH_QUEUE_DRIVER` are set.
 
 ```bash
 node tests/load/ably-compat/capacity-runner.mjs \

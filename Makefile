@@ -14,6 +14,9 @@ SIM_SEED ?= 12648430
 SIM_TICKS ?= 5000
 SIM_ARGS ?=
 
+# Features the Ably capacity smoke needs; push_enqueue requires monolith.
+ABLY_CAPACITY_FEATURES ?= v2,ai-transport,ably-compat,redis,postgres,push,monolith
+
 # Manual outside-in binary chaos defaults. Override on the command line, e.g.
 # `make binary-chaos CHAOS_SEED=42 CHAOS_DURATION_MS=15000`.
 CHAOS_SEED ?= 12648430
@@ -210,6 +213,7 @@ ably-compat-bench: ## Run production-path Ably codec, projection, replay, and fa
 
 .PHONY: ably-compat-capacity-smoke
 ably-compat-capacity-smoke: ## Start real one/two-node Sockudo topologies and run the representative Ably capacity smoke
+	@cargo build -p sockudo --features "$(ABLY_CAPACITY_FEATURES)"
 	@node tests/load/ably-compat/capacity-runner.mjs \
 		--profile tests/load/ably-compat/profiles/smoke.json \
 		--binary target/debug/sockudo --execute $(ARGS)

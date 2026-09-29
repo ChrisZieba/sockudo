@@ -12,6 +12,8 @@ on:
       - ".github/workflows/mirror-swift-sdks.yml"
       - "client-sdks/**"
       - "server-sdks/**"
+      # sockudo-ai-transport-js replays the server AI conformance goldens.
+      - "tests/ai-conformance/**"
   push:
     branches: [main, master, develop, beta]
     paths:
@@ -22,6 +24,8 @@ on:
       - ".github/workflows/mirror-swift-sdks.yml"
       - "client-sdks/**"
       - "server-sdks/**"
+      # sockudo-ai-transport-js replays the server AI conformance goldens.
+      - "tests/ai-conformance/**"
 
 permissions:
   contents: read

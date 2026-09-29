@@ -1015,6 +1015,8 @@ impl ConnectionHandler {
                 Message::Close(_) => {
                     live_connection.release();
                     debug!(socket_id = %socket_id, "socket close frame received");
+                    // Cleanup drops the split halves; let the Close reply leave first.
+                    sockudo_core::websocket::finish_peer_close(&mut reader).await;
                     self.handle_disconnect(&app_config.id, socket_id).await?;
                     break;
                 }

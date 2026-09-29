@@ -204,6 +204,10 @@ async function startNode(topology, index, port, metricsPort, topologyDir) {
     SOCKUDO_DEFAULT_APP_MAX_EVENT_PAYLOAD_IN_KB: "100",
     SOCKUDO_DEFAULT_APP_ENABLE_CLIENT_MESSAGES: "true",
     PUSH_ALLOW_MEMORY_DRIVERS: "true",
+    // config/config.toml defaults push to MySQL/Redis; the harness only needs
+    // node-local push state. Callers can still point these at durable drivers.
+    PUSH_STORAGE_DRIVER: process.env.PUSH_STORAGE_DRIVER ?? "memory",
+    PUSH_QUEUE_DRIVER: process.env.PUSH_QUEUE_DRIVER ?? "memory",
     RUST_LOG: args.rustLog ?? "warn",
   };
   if (topology === "two") {
@@ -458,14 +462,18 @@ async function statsScenario(scenario, nodes) {
 async function pushScenario(scenario, nodes) {
   let failures = 0;
   const latencies = [];
+  const failureReasons = [];
   for (let index = 0; index < scenario.publishes; index += 1) {
     const started = performance.now();
     try {
       await ablyRequest(nodes[0], "POST", "/push/publish", { recipient: { transportType: "ablyChannel", channel: `capacity:${runId}:push` }, notification: { title: "capacity", body: "redacted" }, data: { sequence: index } }, { "idempotency-key": `${runId}-push-${index}` });
       latencies.push(performance.now() - started);
-    } catch { failures += 1; }
+    } catch (error) {
+      failures += 1;
+      if (failureReasons.length < 10) failureReasons.push(error.message);
+    }
   }
-  return { status: failures === 0 ? "passed" : "failed", attempted: scenario.publishes, failures, enqueueLatencyMs: summarize(latencies), correctness: zeroAudit() };
+  return { status: failures === 0 ? "passed" : "failed", attempted: scenario.publishes, failures, failureReasons: [...new Set(failureReasons)], enqueueLatencyMs: summarize(latencies), correctness: zeroAudit() };
 }
 
 class Subscriber {

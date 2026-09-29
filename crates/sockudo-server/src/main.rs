@@ -23,6 +23,8 @@ use bootstrap::SockudoServer;
 use clap::Parser;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::ServerOptions;
+#[cfg(not(feature = "versioned-messages"))]
+use tracing::warn;
 use tracing::{error, info};
 
 #[derive(Parser, Debug)]
@@ -148,6 +150,14 @@ async fn main() -> Result<()> {
         info!("custom logging configuration applied");
     }
 
+    #[cfg(not(feature = "versioned-messages"))]
+    for setting in disable_uncompiled_surfaces(&mut config) {
+        warn!(
+            setting,
+            "setting is enabled but this binary was built without the `versioned-messages` Cargo feature; disabling it (rebuild with --features versioned-messages)"
+        );
+    }
+
     #[cfg(feature = "opentelemetry")]
     {
         let (traces_enabled, metrics_enabled, logs_enabled) = telemetry.enabled_signals();
@@ -175,6 +185,23 @@ async fn main() -> Result<()> {
     }
 
     result
+}
+
+/// `versioned_messages` and `annotations` need stores that only the
+/// `versioned-messages` feature builds; left enabled, every publish fails.
+/// Run without those surfaces instead, as `mcp` does.
+#[cfg(not(feature = "versioned-messages"))]
+fn disable_uncompiled_surfaces(config: &mut ServerOptions) -> Vec<&'static str> {
+    let mut disabled = Vec::new();
+    for (setting, enabled) in [
+        ("versioned_messages", &mut config.versioned_messages.enabled),
+        ("annotations", &mut config.annotations.enabled),
+    ] {
+        if std::mem::take(enabled) {
+            disabled.push(setting);
+        }
+    }
+    disabled
 }
 
 /// Rows per page when materializing compact append storage.
@@ -306,6 +333,26 @@ async fn run_server(config: ServerOptions) -> Result<()> {
 
     info!("Sockudo server shutdown complete.");
     Ok(())
+}
+
+#[cfg(all(test, not(feature = "versioned-messages")))]
+mod uncompiled_surface_tests {
+    use super::*;
+
+    #[test]
+    fn mutable_message_surfaces_are_disabled_without_the_feature() {
+        let mut config = ServerOptions::default();
+        config.versioned_messages.enabled = true;
+        config.annotations.enabled = true;
+
+        assert_eq!(
+            disable_uncompiled_surfaces(&mut config),
+            ["versioned_messages", "annotations"]
+        );
+        assert!(!config.versioned_messages.enabled);
+        assert!(!config.annotations.enabled);
+        assert!(disable_uncompiled_surfaces(&mut config).is_empty());
+    }
 }
 
 #[cfg(test)]

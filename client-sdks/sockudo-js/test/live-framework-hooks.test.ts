@@ -80,12 +80,27 @@ const createLiveClient = () =>
     protocolVersion: 2,
   });
 
+// jsdom's WebSocket wraps undici, whose base class is Node's EventTarget, but
+// undici creates its "open" event with the global Event, which this environment
+// replaces with jsdom's Event, so Node rejects it. Vitest keeps Node's
+// AbortController, so take Node's Event constructor from an abort event.
+const nodeEventConstructor = (): typeof Event => {
+  const controller = new AbortController();
+  let event: Event | undefined;
+  controller.signal.addEventListener("abort", (value) => {
+    event = value;
+  });
+  controller.abort();
+  return event!.constructor as typeof Event;
+};
+
 beforeAll(async () => {
   Object.assign(globalThis, {
     VERSION: "test-version",
     CDN_HTTP: "",
     CDN_HTTPS: "",
     DEPENDENCY_SUFFIX: "",
+    Event: nodeEventConstructor(),
   });
 
   ({ default: Sockudo } = await import("../src/index"));

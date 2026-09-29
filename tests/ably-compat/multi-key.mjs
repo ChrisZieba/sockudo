@@ -7,7 +7,7 @@ const endpoint = process.env.ABLY_ENDPOINT ?? '127.0.0.1';
 const port = Number(process.env.ABLY_PORT ?? '6001');
 const tls = process.env.ABLY_TLS === 'true';
 const testAppFile = process.env.ABLY_TEST_APP_FILE;
-assert.ok(testAppFile, 'ABLY_TEST_APP_FILE must point at the generated six-key fixture');
+assert.ok(testAppFile, 'ABLY_TEST_APP_FILE must point at the generated six-key fixture (see README.md)');
 const testApp = JSON.parse(fs.readFileSync(testAppFile, 'utf8'));
 assert.equal(testApp.keys.length, 6);
 

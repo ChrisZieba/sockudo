@@ -357,9 +357,9 @@ client_key_path = "/etc/sockudo/tls/client.key"
 | --- | --- |
 | `[recovery]` | V2 replay buffers and resume behavior. |
 | `[history]` | Durable channel history. |
-| `[versioned_messages]` | V2 mutable-message storage, version paging, and retention. |
+| `[versioned_messages]` | V2 mutable-message storage, version paging, and retention. Requires the `versioned-messages` Cargo feature (also enabled by `ai-transport`); without it the server logs a warning and disables this section. |
 | `[presence_history]` | Historical presence transitions and snapshots. |
-| `[annotations]` | V2 annotation publish/delete/summary surfaces. |
+| `[annotations]` | V2 annotation publish/delete/summary surfaces. Requires the `versioned-messages` Cargo feature (also enabled by `ai-transport`); without it the server logs a warning and disables this section. |
 | `[delta]` | Delta algorithms, cache size, and conflation behavior. |
 | `[tag_filtering]` | V2 event/tag/JMESPath subscription predicates and tag projection controls. Predicate source, AST, tree, and projected-message memory are hard-bounded. |
 | `[webhooks]` | Webhook delivery, batching, and retry. |

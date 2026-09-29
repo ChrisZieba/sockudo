@@ -16,5 +16,25 @@ pub use sender::MessageSender;
 pub use socket_id::SocketId;
 pub use state::{ConnectionState, ConnectionStatus, ConnectionTimeouts, DisconnectCause};
 
+use sockudo_ws::axum_integration::WebSocketReader;
+use std::time::Duration;
+
+/// Outer guard for [`finish_peer_close`]. sockudo-ws bounds the Close reply
+/// with its own `close_timeout` (5 s by default); this only protects cleanup
+/// from a driver that never reports terminal state.
+const PEER_CLOSE_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Keep a split reader alive after it yielded a peer Close until sockudo-ws
+/// has written the Close reply and shut the transport down.
+///
+/// The reply is written by the connection driver, and dropping either split
+/// half cancels that driver. Cleaning up right after reading Close can reset
+/// the TCP connection before the reply leaves, so clients observe 1006
+/// instead of a completed close handshake.
+pub async fn finish_peer_close(reader: &mut WebSocketReader) {
+    let drain = async { while reader.next().await.is_some() {} };
+    let _ = tokio::time::timeout(PEER_CLOSE_DRAIN_TIMEOUT, drain).await;
+}
+
 #[cfg(test)]
 mod tests;

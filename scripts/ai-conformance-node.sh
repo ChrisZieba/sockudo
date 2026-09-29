@@ -14,6 +14,9 @@ fi
 : "${SOCKUDO_APP_ID:=app-id}"
 : "${SOCKUDO_APP_KEY:=app-key}"
 : "${SOCKUDO_APP_SECRET:=app-secret}"
+# Fresh channels per run so history and idempotency state from earlier runs
+# against the same server cannot leak into the transcripts.
+: "${AIT_CONFORMANCE_RUN_ID:=$(date +%s)-$$}"
 
-export SOCKUDO_BASE_URL SOCKUDO_WS_URL SOCKUDO_APP_ID SOCKUDO_APP_KEY SOCKUDO_APP_SECRET
+export SOCKUDO_BASE_URL SOCKUDO_WS_URL SOCKUDO_APP_ID SOCKUDO_APP_KEY SOCKUDO_APP_SECRET AIT_CONFORMANCE_RUN_ID
 node src/run.mjs
