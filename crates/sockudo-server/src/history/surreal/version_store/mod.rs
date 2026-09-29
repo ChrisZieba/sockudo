@@ -138,6 +138,22 @@ pub async fn create_surreal_version_store(
             "Failed to connect to SurrealDB for version store: {e}"
         ))
     })?;
+    // The remote API does not expose the datastore engine reliably. Older
+    // memory engines can lose writes even inside transactions with UNIQUE
+    // indexes (surrealdb/surrealdb#7473), so require a fixed stable server for
+    // every durable version-store deployment before making any schema writes.
+    // The SDK parses and validates the server's semantic version for us.
+    let version = db.version().await.map_err(|_| Error::Internal(
+        "failed to verify SurrealDB server version; durable version storage requires stable SurrealDB 3.3.0 or newer".into(),
+    ))?;
+    if !version_store_server_supported(
+        (version.major, version.minor, version.patch),
+        version.pre.as_str(),
+    ) {
+        return Err(Error::Configuration(
+            "durable version storage requires stable SurrealDB 3.3.0 or newer; older memory engines can silently lose concurrent writes even with transaction and unique-index guards".into(),
+        ));
+    }
     db.signin(Root {
         username: db_config.username.clone(),
         password: db_config.password.clone(),
@@ -203,11 +219,28 @@ pub async fn create_surreal_version_store(
         tables.runs,
         tables.runs,
     );
-    db.query(query).await.map_err(|e| {
-        Error::Internal(format!(
-            "Failed to initialize SurrealDB version store schema: {e}"
-        ))
-    })?;
+    db.query(query)
+        .await
+        .and_then(|response| response.check())
+        .map_err(|e| {
+            Error::Internal(format!(
+                "Failed to initialize SurrealDB version store schema: {e}"
+            ))
+        })?;
+
+    // Defense in depth under the supported server's transaction guarantees:
+    // one app/channel position must never identify two committed versions.
+    // This constraint cannot repair isolation bugs in unsupported engines.
+    // A new index name also upgrades existing stores with the non-unique index.
+    db.query(format!(
+        "DEFINE INDEX IF NOT EXISTS {entries}_version_conflict_delivery_unique_v2 ON TABLE {entries} FIELDS app_id, channel, delivery_serial UNIQUE;",
+        entries = tables.entries,
+    ))
+    .await
+    .and_then(|response| response.check())
+    .map_err(|_| Error::Internal(
+        "failed to enforce unique version delivery positions; inspect existing history for duplicate positions before starting writers".into(),
+    ))?;
 
     db.query(format!(
         "DEFINE TABLE IF NOT EXISTS {chunks} SCHEMALESS; DEFINE INDEX IF NOT EXISTS {chunks}_run_idx ON TABLE {chunks} FIELDS run_id; DEFINE TABLE IF NOT EXISTS {format} SCHEMALESS; UPSERT ONLY type::record('{format}', 'format') SET enabled = enabled ?? false, epoch = epoch ?? 0, fence = fence ?? 0;",
@@ -225,4 +258,30 @@ pub async fn create_surreal_version_store(
     };
     store.ensure_mutation_function().await?;
     Ok(Arc::new(store))
+}
+
+fn version_store_server_supported(release: (u64, u64, u64), prerelease: &str) -> bool {
+    release >= (3, 3, 0) && prerelease.is_empty()
+}
+
+#[cfg(test)]
+mod server_version_tests {
+    use super::version_store_server_supported;
+
+    #[test]
+    fn rejects_affected_servers_and_unverified_prereleases() {
+        for (release, prerelease) in [
+            ((2, 9, 9), ""),
+            ((3, 0, 4), ""),
+            ((3, 2, 4), ""),
+            ((3, 2, 99), ""),
+            ((3, 3, 0), "beta.1"),
+            ((3, 4, 0), "rc.1"),
+        ] {
+            assert!(!version_store_server_supported(release, prerelease));
+        }
+        for release in [(3, 3, 0), (3, 3, 1), (3, 4, 0), (4, 0, 0)] {
+            assert!(version_store_server_supported(release, ""));
+        }
+    }
 }

@@ -2,15 +2,54 @@ use super::*;
 use sockudo_core::version_store::append_storage::AppendRunPlan;
 use surrealdb::types::{Bytes, SurrealValue, Value};
 
+/// Only definite aborted writes are retried. Connection/time-out errors have
+/// ambiguous commit outcomes and must not replay an operation without a receipt.
+pub(super) fn is_write_conflict(error: &surrealdb::Error) -> bool {
+    use surrealdb::types::{ErrorDetails, QueryError};
+    let message = error.message();
+    matches!(error.details(), ErrorDetails::Query(Some(QueryError::TransactionConflict)))
+        || error.is_already_exists()
+        || message.contains("version_conflict")
+        // SurrealDB 3.0 servers do not send the newer structured error kind.
+        || (message.contains("Database index")
+            && message.contains("_delivery_unique_v2")
+            && message.contains("already contains"))
+        || (message.starts_with("Database record")
+            && (message.contains("already exists") || message.contains("already been created")))
+        || message.contains("transaction can be retried")
+}
+
+/// An explicit transaction can put `NotExecuted` placeholders before its
+/// actual failure. Inspect every statement so that rollback does not hide the
+/// conflict which caused it (notably on SurrealDB 3.2).
+pub(super) fn check_transaction(
+    mut response: surrealdb::IndexedResults,
+) -> std::result::Result<(), surrealdb::Error> {
+    let mut errors: Vec<_> = response.take_errors().into_iter().collect();
+    errors.sort_by_key(|(index, _)| *index);
+    let mut placeholder = None;
+    for (_, error) in errors {
+        if error.query_details() == Some(&surrealdb::types::QueryError::NotExecuted)
+            || error.message() == "The query was not executed due to a failed transaction"
+        {
+            placeholder = Some(error);
+        } else {
+            return Err(error);
+        }
+    }
+    placeholder.map_or(Ok(()), Err)
+}
+
 impl SurrealVersionStore {
     /// Immutable function ABI. Any change to arguments, schema assumptions or
     /// function semantics requires a new suffix; old nodes may still call v1.
+    /// Version 2 requires the unique delivery index.
     fn mutation_function(&self) -> String {
-        format!("{}_mutate_v1", self.tables.entries)
+        format!("{}_mutate_v2", self.tables.entries)
     }
 
     pub(super) async fn ensure_mutation_function(&self) -> Result<()> {
-        let sql = include_str!("mutation_v1.surql")
+        let sql = include_str!("mutation_v2.surql")
             .replace("__KEY_FN__", &format!("{}_key_v1", self.tables.entries))
             .replace("__MUTATE_FN__", &self.mutation_function())
             .replace("__FORMAT__", &self.tables.format)
@@ -38,21 +77,21 @@ impl SurrealVersionStore {
         &self,
         args: Vec<Value>,
     ) -> std::result::Result<(), surrealdb::Error> {
-        self.db
+        let response = self
+            .db
             .query(format!(
                 "BEGIN TRANSACTION; RETURN fn::{}($a); COMMIT TRANSACTION;",
                 self.mutation_function()
             ))
             .bind(("a", args))
-            .await?
-            .check()?;
-        Ok(())
+            .await?;
+        check_transaction(response)
     }
 }
 
 /// Positional arguments keep transport metadata bounded and avoid serializing
 /// the same identities into entry, latest-state, run and receipt arguments.
-/// The order is the immutable `mutation_v1.surql` ABI.
+/// The order is the immutable `mutation_v2.surql` ABI.
 pub(super) fn mutation_arguments(
     record: &StoredVersionRecord,
     payload: Vec<u8>,
@@ -136,6 +175,27 @@ mod tests {
         MessageAppend, VersionMetadata, VersionSerial, VersionedMessage,
     };
     use sockudo_protocol::messages::MessageData;
+
+    #[test]
+    fn retries_only_definite_write_conflicts() {
+        use surrealdb::types::QueryError;
+        assert!(is_write_conflict(&surrealdb::Error::query(
+            "conflict".into(),
+            Some(QueryError::TransactionConflict)
+        )));
+        assert!(is_write_conflict(&surrealdb::Error::internal(
+            "Database index `entries_delivery_unique_v2` already contains position".into()
+        )));
+        assert!(!is_write_conflict(&surrealdb::Error::internal(
+            "request timed out".into()
+        )));
+        assert!(!is_write_conflict(&surrealdb::Error::internal(
+            "connection closed".into()
+        )));
+        assert!(!is_write_conflict(&surrealdb::Error::internal(
+            "Database index `unrelated` already contains value".into()
+        )));
+    }
 
     #[tokio::test]
     #[ignore = "requires isolated C2 SurrealDB service on port 25475"]
@@ -345,7 +405,7 @@ mod tests {
                 .check()
                 .unwrap();
         }
-        for suffix in ["key_v1", "mutate_v1"] {
+        for suffix in ["key_v1", "mutate_v2"] {
             store
                 .db
                 .query(format!(

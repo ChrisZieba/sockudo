@@ -161,6 +161,16 @@ pub trait VersionStore: Send + Sync {
         ))
     }
 
+    /// Check backend-specific legacy representation limits before rollback.
+    /// Does not change the marker or rewrite records. Callers must stop writers
+    /// and keep them stopped through materialization: this is not a snapshot
+    /// or a cluster-wide admission fence. Backends without additional legacy
+    /// size constraints have no extra feasibility checks.
+    async fn validate_append_storage_rollback(&self, batch_size: usize) -> Result<()> {
+        let _ = batch_size;
+        Ok(())
+    }
+
     /// Rewrite every compact append entry and receipt as a self-contained
     /// record (see [`super::append_storage`]) so a release without compact
     /// append storage can read it. Rollback-only maintenance: stop writers

@@ -2,15 +2,44 @@
 import json
 import os
 import pathlib
+import platform
 import re
 import subprocess
+import sys
 import time
+
+
+def time_command(command):
+    """Keep macOS time -l; GNU time emits the same portable summary keys.
+
+    Both platforms record peak RSS in bytes. The memory binary additionally
+    emits its own process metric; no latency CSV field is altered here.
+    """
+    if platform.system() == 'Darwin':
+        return ['/usr/bin/time', '-l', *command]
+    if platform.system() == 'Linux':
+        return [sys.executable, str(pathlib.Path(__file__).with_name('linux_time.py')), *command]
+    raise RuntimeError('C2 timing supports only macOS and Linux')
+
+
+def process_command():
+    if platform.system() == 'Linux':
+        return ['ps', '-A', '-o', 'pid,pcpu,comm', '--sort=-pcpu']
+    return ['ps', '-A', '-o', 'pid,pcpu,comm', '-r']
+
+
+def linux_steal_ticks():
+    """Additional Linux evidence; never substitute for the existing gates."""
+    fields = pathlib.Path('/proc/stat').read_text().splitlines()[0].split()
+    if fields[0] != 'cpu' or len(fields) < 9:
+        raise ValueError('Linux CPU steal counter is unavailable')
+    return int(fields[8])
 
 
 def snapshot(path):
     load = os.getloadavg()
     uptime = subprocess.run(['uptime'], capture_output=True, text=True)
-    processes = subprocess.run(['ps', '-A', '-o', 'pid,pcpu,comm', '-r'], capture_output=True, text=True)
+    processes = subprocess.run(process_command(), capture_output=True, text=True)
     heavy = []
     if processes.returncode == 0:
         for line in processes.stdout.splitlines()[1:]:
@@ -25,6 +54,12 @@ def snapshot(path):
              'heavy_processes': heavy, 'inspection_error': processes.stderr,
              'inspection_returncode': processes.returncode,
              'eligible': load[0] < 2 and not heavy and processes.returncode == 0}
+    if platform.system() == 'Linux':
+        try:
+            state['linux_steal_ticks'] = linux_steal_ticks()
+        except (OSError, ValueError, IndexError) as error:
+            state['inspection_error'] += str(error)
+            state['eligible'] = False
     pathlib.Path(path).write_text(json.dumps(state, indent=2))
     return state
 
@@ -51,6 +86,10 @@ def _host_evidence_accepted(before, after):
     for line in after['heavy_processes']:
         if not isinstance(line, str) or not line.split() or line.split()[0] not in workload_pids:
             return False
+    if ('linux_steal_ticks' in before or 'linux_steal_ticks' in after) and (
+            not isinstance(before.get('linux_steal_ticks'), int)
+            or after.get('linux_steal_ticks') != before['linux_steal_ticks']):
+        return False
     return after.get('returncode', 0) == 0
 
 
@@ -153,6 +192,12 @@ def run(stem, command, env=None, *, resume=False, before_workload=None, after_wo
         if measurement_error is not None:
             pathlib.Path(f'{attempt_stem}.discarded').write_text('discarded: workload measurement failed\n')
             raise measurement_error
+        if ('linux_steal_ticks' in before or 'linux_steal_ticks' in after) and (
+                after.get('linux_steal_ticks') != before.get('linux_steal_ticks')):
+            pathlib.Path(f'{attempt_stem}.discarded').write_text('discarded: Linux CPU steal counter changed\n')
+            if offset + 1 < attempts:
+                time.sleep(retry_seconds)
+            continue
         if unrelated_heavy or after.get('inspection_error') or after.get('inspection_returncode', 0):
             pathlib.Path(f'{attempt_stem}.discarded').write_text('discarded: heavy process or unavailable process inspection after workload\n')
             if offset + 1 < attempts:

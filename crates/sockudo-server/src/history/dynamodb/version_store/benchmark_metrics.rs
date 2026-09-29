@@ -1,6 +1,9 @@
 //! Opt-in volume diagnostics, compiled only into tests. Strong pre/post reads
 //! make these volume-only samples unsuitable for latency comparisons. Counters
-//! cover successful compare_and_apply transactions, not maintenance/create.
+//! cover successful compare_and_apply publication transactions only. They
+//! exclude staged chunk batches, staging lease claims/releases, seed writes,
+//! maintenance and create. Therefore these are not total write-volume counters
+//! for large staged appends; the transport proxy observes all sent bytes.
 //! Item sizing follows AWS's approximate number representation and excludes
 //! per-item storage overhead, GSI writes, replication and physical I/O.
 use super::*;

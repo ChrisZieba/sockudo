@@ -1,0 +1,12 @@
+{
+  "git_tree": "574ca6a1895453ad97ec555abc1f7a424f4418b8",
+  "archive": "c2-final-574ca6a1895453ad97ec555abc1f7a424f4418b8.tar",
+  "sha256": "bbe3937086307a4e4de8473893ce7422310d93069a749f4520c6809198aa42e8",
+  "provenance": "Recovered unreachable Codex turn-start tree; loose tree object timestamp 2026-09-28 17:51:38 Europe/Bucharest, follow-up thread started 17:51:37. Snapshot is before follow-up edits; original C2 remains uncommitted on branches pointing to 3b57039d.",
+  "original_c2_binary": "target/c2/sockudo-durable-candidate-final",
+  "original_c2_binary_sha256": "4b3a07e4d84883b7652617222bc47c2f4b3511c9b000028c3a6f1432eef631a6",
+  "base_commit": "3b57039d4565a01a1bdae66fd891872e7e49debd",
+  "source_patch": "c2-final-from-baseline.patch",
+  "source_patch_sha256": "588119b5b3dd415b0a2a381c5ddda20632054f676491dc4a33727d77b6ac87bf",
+  "source_patch_bytes": 371446
+}

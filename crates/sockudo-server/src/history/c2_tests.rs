@@ -726,28 +726,6 @@ async fn c2_live_concurrent_appends_keep_each_fragment_once() {
         for task in tasks {
             task.await.unwrap();
         }
-        if backend == "surrealdb" {
-            // Pre-existing: SurrealDB 3.0.4 occasionally commits two racing
-            // transactions from the same predecessor (the baseline store
-            // silently forks the chain; see the C2 report). The run check
-            // must then fail closed instead of returning either fork.
-            if let Err(error) = first
-                .get_versions(VersionStoreReadRequest {
-                    app_id: APP.into(),
-                    channel: CHANNEL.into(),
-                    message_serial: MessageSerial::new("msg:a").unwrap(),
-                    direction: VersionStoreDirection::OldestFirst,
-                    limit: 100,
-                    cursor: None,
-                })
-                .await
-            {
-                assert!(error.to_string().contains("cannot reconstruct"), "{error}");
-                println!("{backend},concurrency,lost_update_failed_closed");
-                super::c2_bench::cleanup(&backend, &prefix).await;
-                continue;
-            }
-        }
         let history = versions(
             first.as_ref(),
             "msg:a",
@@ -777,6 +755,225 @@ async fn c2_live_concurrent_appends_keep_each_fragment_once() {
         }
         println!("{backend},concurrency,ok");
         super::c2_bench::cleanup(&backend, &prefix).await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires isolated C2 SurrealDB service on port 25475"]
+async fn c2_surreal_delivery_uniqueness_rejects_forks_and_corrupt_upgrade() {
+    let prefix = prefix();
+    let _store = open("surrealdb", &prefix).await;
+    let db = surreal_client().await;
+    let entries = format!("{prefix}_version_entries");
+    let insert = |id: &str| {
+        format!("CREATE {entries}:{id} SET app_id = 'test', channel = 'room', delivery_serial = 1;")
+    };
+    db.query(insert("first")).await.unwrap().check().unwrap();
+    let error = db
+        .query(insert("second"))
+        .await
+        .unwrap()
+        .check()
+        .unwrap_err();
+    assert!(error.message().contains("_delivery_unique_v2"));
+    assert!(error.message().contains("already contains"));
+    // Legacy nodes classify the stable token as a CAS conflict too.
+    assert!(error.message().contains("version_conflict"));
+    // Simulate a legacy store with an already committed fork. Startup must not
+    // swallow the index build failure and allow more writes.
+    db.query(format!(
+        "REMOVE INDEX {entries}_version_conflict_delivery_unique_v2 ON TABLE {entries};"
+    ))
+    .await
+    .unwrap()
+    .check()
+    .unwrap();
+    db.query(insert("second")).await.unwrap().check().unwrap();
+    let (versioned, history, database) = configs("surrealdb", &prefix);
+    // Repeating startup also verifies a failed index build did not leave a
+    // partial index definition that IF NOT EXISTS would silently accept.
+    for _ in 0..2 {
+        let result =
+            create_version_store(&versioned, &history, &database, &DatabasePooling::default())
+                .await;
+        match result {
+            Err(error) => assert!(
+                error
+                    .to_string()
+                    .contains("unique version delivery positions")
+            ),
+            Ok(_) => panic!("corrupt history was accepted"),
+        }
+    }
+    super::c2_bench::cleanup("surrealdb", &prefix).await;
+}
+
+/// Strict regression: independently connected writers must never acknowledge
+/// two versions at one channel position, even when they mutate different messages.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires isolated C2 SurrealDB service on port 25475"]
+async fn c2_surreal_concurrent_receipts_and_channel_positions() {
+    for compact in [false, true] {
+        for same_message in [false, true] {
+            let prefix = prefix();
+            let first = open("surrealdb", &prefix).await;
+            let second = open("surrealdb", &prefix).await;
+            first.set_append_storage_enabled(compact).await.unwrap();
+            for message in if same_message {
+                vec!["msg:a"]
+            } else {
+                vec!["msg:a", "msg:b"]
+            } {
+                assert!(matches!(
+                    first
+                        .commit_create(VersionCreateRequest {
+                            record: create(message),
+                            limits: VersionCreateLimits::default(),
+                        })
+                        .await
+                        .unwrap(),
+                    VersionCreateResult::Applied { .. }
+                ));
+            }
+            let barrier = Arc::new(tokio::sync::Barrier::new(2));
+            let counter = Arc::new(std::sync::atomic::AtomicU64::new(1));
+            let mut tasks = Vec::new();
+            for (worker, store) in [first.clone(), second].into_iter().enumerate() {
+                let barrier = barrier.clone();
+                let counter = counter.clone();
+                tasks.push(tokio::spawn(async move {
+                    let message = if same_message || worker == 0 {
+                        "msg:a"
+                    } else {
+                        "msg:b"
+                    };
+                    let mut applied_requests = Vec::new();
+                    for index in 0..40 {
+                        let fragment = format!("[{worker}.{index}]");
+                        // Synchronize independent connections before each round.
+                        tokio::time::timeout(std::time::Duration::from_secs(10), barrier.wait())
+                            .await
+                            .expect("concurrent writer failed before barrier");
+                        let mut committed = false;
+                        for _ in 0..100 {
+                            let current = store
+                                .get_latest(APP, CHANNEL, &MessageSerial::new(message).unwrap())
+                                .await
+                                .unwrap()
+                                .unwrap();
+                            let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            let mut request = mutation_request(
+                                message,
+                                &current,
+                                n,
+                                VersionMutation::Append(MessageAppend {
+                                    data_fragment: fragment.clone(),
+                                    extras: None,
+                                }),
+                            );
+                            request.idempotency = Some(PublishIdempotencyMetadata {
+                                cache_key: format!("race-{worker}-{index}"),
+                                payload_fingerprint: format!("race-fingerprint-{worker}-{index}"),
+                            });
+                            match store.compare_and_apply(request.clone()).await.unwrap() {
+                                VersionMutationResult::Applied { record, .. } => {
+                                    applied_requests.push((request, record));
+                                    committed = true;
+                                    break;
+                                }
+                                VersionMutationResult::Conflict { .. } => {
+                                    tokio::task::yield_now().await
+                                }
+                                other => panic!("unexpected outcome {other:?}"),
+                            }
+                        }
+                        assert!(committed, "bounded caller retries exhausted");
+                    }
+                    applied_requests
+                }));
+            }
+            let mut acknowledged = Vec::new();
+            for task in tasks {
+                acknowledged.extend(
+                    tokio::time::timeout(std::time::Duration::from_secs(30), task)
+                        .await
+                        .expect("concurrent mutation task timed out")
+                        .unwrap(),
+                );
+            }
+            // A new connection also removes local-cache explanations for success.
+            let restarted = open("surrealdb", &prefix).await;
+            let mut records = Vec::new();
+            for message in if same_message {
+                vec!["msg:a"]
+            } else {
+                vec!["msg:a", "msg:b"]
+            } {
+                let history = versions(
+                    restarted.as_ref(),
+                    message,
+                    VersionStoreDirection::OldestFirst,
+                    11,
+                )
+                .await;
+                assert_eq!(history.len(), if same_message { 81 } else { 41 });
+                let mut aggregate = String::from("seed");
+                let history_serial = history[0].message.identity.history_serial;
+                for record in &history[1..] {
+                    aggregate.push_str(record.message.append_fragment.as_deref().unwrap());
+                    assert_eq!(
+                        record
+                            .message
+                            .data
+                            .clone()
+                            .and_then(MessageData::into_string)
+                            .as_deref(),
+                        Some(aggregate.as_str())
+                    );
+                    assert_eq!(record.message.identity.history_serial, history_serial);
+                    assert_eq!(record.message_serial().as_str(), message);
+                }
+                assert_eq!(
+                    json(
+                        &restarted
+                            .get_latest(APP, CHANNEL, &MessageSerial::new(message).unwrap())
+                            .await
+                            .unwrap()
+                            .unwrap()
+                    ),
+                    json(history.last().unwrap())
+                );
+                records.extend(history);
+            }
+            records.sort_by_key(StoredVersionRecord::delivery_serial);
+            for (index, record) in records.iter().enumerate() {
+                assert_eq!(record.delivery_serial(), index as u64 + 1);
+            }
+            for (request, expected) in acknowledged {
+                assert_eq!(
+                    records
+                        .iter()
+                        .filter(
+                            |record| record.message_serial() == expected.message_serial()
+                                && record.version_serial() == expected.version_serial()
+                        )
+                        .count(),
+                    1
+                );
+                let VersionMutationResult::Duplicate { record, .. } =
+                    restarted.compare_and_apply(request).await.unwrap()
+                else {
+                    panic!("receipt was not retained");
+                };
+                assert_eq!(json(&record), json(&expected));
+            }
+            let replayed = replay(restarted.as_ref()).await;
+            assert_eq!(
+                replayed.iter().map(json).collect::<Vec<_>>(),
+                records.iter().map(json).collect::<Vec<_>>()
+            );
+            super::c2_bench::cleanup("surrealdb", &prefix).await;
+        }
     }
 }
 

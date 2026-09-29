@@ -1,0 +1,14 @@
+# Multi-architecture manifest digests from the original C2 image audit, except
+# SurrealDB 3.3.0 also fixes the 3.2.x memory-engine concurrency defect.
+# Every digest was verified to include linux/amd64. Keep original compose settings.
+services:
+  postgres:
+    image: postgres:17.6@sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929
+  mysql:
+    image: mysql:8.4@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb
+  dynamodb:
+    image: amazon/dynamodb-local:3.1.0@sha256:7ef4a2c45b58c2901e70a4f28e0953a422c2c631baaaf5e2c15e0805740c7752
+  scylla:
+    image: scylladb/scylla:2025.3@sha256:39478e0b8e07803bc09656a7ff5f66b4966c39055d90a23ec068f871850ffba2
+  surrealdb:
+    image: surrealdb/surrealdb:v3.3.0@sha256:681c6c22c287421b5c7d99e0fde79b6e0d32c36c1ddeaab2762a1661cb04cd20

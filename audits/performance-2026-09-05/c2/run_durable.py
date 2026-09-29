@@ -8,7 +8,7 @@ usage: run_durable.py <test-binary> <phase> [repetitions] [backend,...] [first-r
 """
 import argparse
 import os
-from quiet_host import resume_existing, run
+from quiet_host import resume_existing, run, time_command
 from durable_validation import validate_durable_output
 import pathlib
 import subprocess
@@ -87,10 +87,11 @@ for rep in range(first_rep, reps + 1):
                 for flag in ("C2_CHUNKED", "C2_WIRE_BYTES", "C2_WRITE_METRICS", "C2_WIRE_BUDGETS", "C2_WIRE_PHASES"):
                     if os.environ.get(flag):
                         env[flag] = "1"
-                env["SSL_CERT_FILE"] = "/etc/ssl/cert.pem"
+                env["SSL_CERT_FILE"] = ("/etc/ssl/certs/ca-certificates.crt"
+                                        if sys.platform.startswith("linux") else "/etc/ssl/cert.pem")
                 env["AWS_EC2_METADATA_DISABLED"] = "true"
-                command = ["/usr/bin/time", "-l", binary, "c2_durable_append_storage",
-                           "--ignored", "--nocapture", "--test-threads", "1"]
+                command = time_command([binary, "c2_durable_append_storage",
+                                        "--ignored", "--nocapture", "--test-threads", "1"])
                 if os.environ.get("C2_QUIET_HOST"):
                     code = run(
                         stem, command, env=env,

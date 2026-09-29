@@ -5,7 +5,7 @@ usage: run_memory.py <binary> <phase> [repetitions]
 """
 import argparse
 import os
-from quiet_host import resume_existing, run
+from quiet_host import resume_existing, run, time_command
 import pathlib
 import subprocess
 import sys
@@ -29,7 +29,7 @@ for rep in range(int(os.environ.get("C2_FIRST_REP", "1")), reps + 1):
             if resume_existing(stem, args.resume):
                 print(phase, rep, appends, fragment, "resume accepted", flush=True)
                 continue
-            command = ["/usr/bin/time", "-l", binary, str(appends), str(fragment)]
+            command = time_command([binary, str(appends), str(fragment)])
             if os.environ.get("C2_QUIET_HOST"):
                 code = run(stem, command)
             else:

@@ -352,13 +352,9 @@ impl VersionStore for SurrealVersionStore {
             .bind(("entry_id", entry_id))
             .bind(("entry_content", entry))
             .await;
-        match response.and_then(|response| response.check()) {
+        match response.and_then(mutation::check_transaction) {
             Ok(_) => Ok(VersionCreateResult::Applied { record, stream_id }),
-            Err(error)
-                if error.to_string().contains("version_conflict")
-                    || error.to_string().contains("already exists")
-                    || error.to_string().contains("already been created") =>
-            {
+            Err(error) if mutation::is_write_conflict(&error) => {
                 Ok(VersionCreateResult::Conflict {
                     current: self
                         .get_latest(&record.app_id, &record.channel, record.message_serial())
@@ -375,218 +371,231 @@ impl VersionStore for SurrealVersionStore {
         &self,
         request: VersionMutationRequest,
     ) -> Result<VersionMutationResult> {
-        #[cfg(test)]
-        let wire_before = crate::history::c2_wire_meter::phase_snapshot();
-        let stream_record_id =
-            deterministic_key([request.app_id.as_str(), request.channel.as_str()].into_iter());
-        let Some(stream): Option<StoredVersionStreamRec> = self
-            .db
-            .select((self.tables.streams.clone(), stream_record_id.clone()))
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to read version stream: {e}")))?
-        else {
-            return Ok(VersionMutationResult::Conflict { current: None });
-        };
-        #[cfg(test)]
-        crate::history::c2_wire_meter::report_phase("surrealdb.stream", wire_before);
-        if let Some(operation) = request.idempotency.as_ref() {
-            let receipt_id = deterministic_key(
+        for attempt in 0..8 {
+            #[cfg(test)]
+            let wire_before = crate::history::c2_wire_meter::phase_snapshot();
+            let stream_record_id =
+                deterministic_key([request.app_id.as_str(), request.channel.as_str()].into_iter());
+            let Some(stream): Option<StoredVersionStreamRec> = self
+                .db
+                .select((self.tables.streams.clone(), stream_record_id.clone()))
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to read version stream: {e}")))?
+            else {
+                return Ok(VersionMutationResult::Conflict { current: None });
+            };
+            #[cfg(test)]
+            crate::history::c2_wire_meter::report_phase("surrealdb.stream", wire_before);
+            if let Some(operation) = request.idempotency.as_ref() {
+                let receipt_id = deterministic_key(
+                    [
+                        request.app_id.as_str(),
+                        request.channel.as_str(),
+                        operation.cache_key.as_str(),
+                    ]
+                    .into_iter(),
+                );
+                if let Some(receipt) = self
+                    .db
+                    .select::<Option<StoredVersionReceiptRec>>((
+                        self.tables.receipts.clone(),
+                        receipt_id,
+                    ))
+                    .await
+                    .map_err(|e| Error::Internal(format!("Failed to read mutation receipt: {e}")))?
+                {
+                    if receipt.operation_fingerprint != operation.payload_fingerprint {
+                        return Err(Error::IdempotencyConflict);
+                    }
+                    let record = self
+                        .materialize_payloads(
+                            &request.app_id,
+                            &request.channel,
+                            vec![receipt.payload_bytes],
+                        )
+                        .await?
+                        .pop()
+                        .ok_or_else(|| Error::Internal("mutation receipt is empty".to_string()))?;
+                    return Ok(VersionMutationResult::Duplicate {
+                        record,
+                        stream_id: stream.stream_id,
+                    });
+                }
+            }
+            #[cfg(test)]
+            let wire_before = crate::history::c2_wire_meter::phase_snapshot();
+            let message_id = deterministic_key(
                 [
                     request.app_id.as_str(),
                     request.channel.as_str(),
-                    operation.cache_key.as_str(),
+                    request.message_serial.as_str(),
                 ]
                 .into_iter(),
             );
-            if let Some(receipt) = self
+            let Some(mut message): Option<StoredVersionMessageRec> = self
                 .db
-                .select::<Option<StoredVersionReceiptRec>>((
-                    self.tables.receipts.clone(),
-                    receipt_id,
-                ))
+                .select((self.tables.messages.clone(), message_id.clone()))
                 .await
-                .map_err(|e| Error::Internal(format!("Failed to read mutation receipt: {e}")))?
-            {
-                if receipt.operation_fingerprint != operation.payload_fingerprint {
-                    return Err(Error::IdempotencyConflict);
-                }
-                let record = self
-                    .materialize_payloads(
-                        &request.app_id,
-                        &request.channel,
-                        vec![receipt.payload_bytes],
-                    )
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to read mutation predecessor: {e}"))
+                })?
+            else {
+                return Ok(VersionMutationResult::Conflict { current: None });
+            };
+            #[cfg(test)]
+            crate::history::c2_wire_meter::report_phase("surrealdb.message", wire_before);
+            #[cfg(test)]
+            let wire_before = crate::history::c2_wire_meter::phase_snapshot();
+            let format = self.append_format().await?;
+            #[cfg(test)]
+            crate::history::c2_wire_meter::report_phase("surrealdb.marker", wire_before);
+
+            #[cfg(test)]
+            let wire_before = crate::history::c2_wire_meter::phase_snapshot();
+            let current = if message.latest_payload_bytes.is_empty() {
+                self.get_latest(&request.app_id, &request.channel, &request.message_serial)
                     .await?
-                    .pop()
-                    .ok_or_else(|| Error::Internal("mutation receipt is empty".to_string()))?;
-                return Ok(VersionMutationResult::Duplicate {
-                    record,
-                    stream_id: stream.stream_id,
+                    .ok_or_else(|| Error::Internal("Latest version entry is missing".to_string()))?
+            } else {
+                self.materialize_payloads(
+                    &request.app_id,
+                    &request.channel,
+                    vec![std::mem::take(&mut message.latest_payload_bytes)],
+                )
+                .await?
+                .pop()
+                .ok_or_else(|| Error::Internal("mutation predecessor is empty".to_string()))?
+            };
+            #[cfg(test)]
+            crate::history::c2_wire_meter::report_phase("surrealdb.materialize", wire_before);
+            // The run pointer is written with the latest-state record, naming the
+            // version it describes; older releases never update it, so it is used
+            // only while it still names this predecessor. The transaction
+            // re-checks the run head.
+            let mut predecessor_run = None;
+            let mut run_pinned = false;
+            if let (Some(run), Some(data_len), Some(head)) = (
+                message.latest_append_run.as_deref(),
+                message
+                    .latest_append_len
+                    .and_then(|value| u64::try_from(value).ok()),
+                message.latest_append_head.as_deref(),
+            ) && head == current.version_serial().as_str()
+                && current.data_bytes()? as u64 == data_len
+            {
+                run_pinned = message.latest_append_pinned.unwrap_or(false);
+                predecessor_run = Some(AppendRunRef {
+                    run: VersionSerial::new(run)?,
+                    data_len,
+                    generation: message.latest_append_generation.clone(),
                 });
             }
-        }
-        #[cfg(test)]
-        let wire_before = crate::history::c2_wire_meter::phase_snapshot();
-        let message_id = deterministic_key(
-            [
-                request.app_id.as_str(),
-                request.channel.as_str(),
-                request.message_serial.as_str(),
-            ]
-            .into_iter(),
-        );
-        let Some(mut message): Option<StoredVersionMessageRec> = self
-            .db
-            .select((self.tables.messages.clone(), message_id.clone()))
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to read mutation predecessor: {e}")))?
-        else {
-            return Ok(VersionMutationResult::Conflict { current: None });
-        };
-        #[cfg(test)]
-        crate::history::c2_wire_meter::report_phase("surrealdb.message", wire_before);
-        #[cfg(test)]
-        let wire_before = crate::history::c2_wire_meter::phase_snapshot();
-        let format = self.append_format().await?;
-        #[cfg(test)]
-        crate::history::c2_wire_meter::report_phase("surrealdb.marker", wire_before);
-
-        #[cfg(test)]
-        let wire_before = crate::history::c2_wire_meter::phase_snapshot();
-        let current = if message.latest_payload_bytes.is_empty() {
-            self.get_latest(&request.app_id, &request.channel, &request.message_serial)
-                .await?
-                .ok_or_else(|| Error::Internal("Latest version entry is missing".to_string()))?
-        } else {
-            self.materialize_payloads(
-                &request.app_id,
-                &request.channel,
-                vec![std::mem::take(&mut message.latest_payload_bytes)],
-            )
-            .await?
-            .pop()
-            .ok_or_else(|| Error::Internal("mutation predecessor is empty".to_string()))?
-        };
-        #[cfg(test)]
-        crate::history::c2_wire_meter::report_phase("surrealdb.materialize", wire_before);
-        // The run pointer is written with the latest-state record, naming the
-        // version it describes; older releases never update it, so it is used
-        // only while it still names this predecessor. The transaction
-        // re-checks the run head.
-        let mut predecessor_run = None;
-        let mut run_pinned = false;
-        if let (Some(run), Some(data_len), Some(head)) = (
-            message.latest_append_run.as_deref(),
-            message
-                .latest_append_len
-                .and_then(|value| u64::try_from(value).ok()),
-            message.latest_append_head.as_deref(),
-        ) && head == current.version_serial().as_str()
-            && current.data_bytes()? as u64 == data_len
-        {
-            run_pinned = message.latest_append_pinned.unwrap_or(false);
-            predecessor_run = Some(AppendRunRef {
-                run: VersionSerial::new(run)?,
-                data_len,
-                generation: message.latest_append_generation.clone(),
-            });
-        }
-        let delivery_serial =
-            (stream.next_delivery_serial as u64).max(current.delivery_serial().saturating_add(1));
-        let outcome = request.apply_to(
-            &current,
-            &stream.stream_id,
-            delivery_serial,
-            message.append_count as usize,
-        )?;
-        let VersionMutationResult::Applied { record, .. } = outcome else {
-            return Ok(outcome);
-        };
-        let opens = !current.is_open_ai_stream() && record.is_open_ai_stream();
-        let closes = current.is_open_ai_stream() && !record.is_open_ai_stream();
-        if opens
-            && let Some(limit) = request.limits.max_open_streaming_messages_per_channel
-            && stream.open_stream_count as usize >= limit
-        {
-            return Ok(VersionMutationResult::Rejected(
-                VersionMutationRejection::OpenStreamingMessages { limit },
-            ));
-        }
-        let payload_plan = if format.enabled {
-            AppendRunPlan::for_record_chunked(
-                current.version_serial(),
-                predecessor_run.as_ref(),
-                &record,
-            )
-        } else {
-            AppendRunPlan::Full
-        };
-        // The explicit store marker is the rollout gate. Compact latest state
-        // is never written while older nodes can still participate.
-        let payload_bytes = payload_plan.encode(&record)?;
-        let receipt_references_run = request.idempotency.is_some() && payload_plan.run().is_some();
-        let plan = if format.enabled && matches!(payload_plan, AppendRunPlan::Full) {
-            AppendRunPlan::for_seed_record(&record)
-        } else {
-            payload_plan
-        };
-        let run_pinned =
-            (matches!(plan, AppendRunPlan::Extend { .. }) && run_pinned) || receipt_references_run;
-        let args = mutation_arguments(
-            &record,
-            payload_bytes,
-            &current,
-            &stream,
-            &format,
-            &plan,
-            MutationState {
-                now_ms: sockudo_core::history::now_ms(),
-                next_open: stream.open_stream_count + i64::from(opens) - i64::from(closes),
-                next_append: message.append_count
-                    + i64::from(matches!(
-                        request.mutation,
-                        sockudo_core::version_store::VersionMutation::Append(_)
-                    )),
-                run_pinned,
-                receipt: request.idempotency.as_ref(),
-            },
-        )?;
-        #[cfg(test)]
-        let wire_before = crate::history::c2_wire_meter::phase_snapshot();
-        let committed = self.commit_mutation_function(args).await;
-        #[cfg(test)]
-        crate::history::c2_wire_meter::report_phase("surrealdb.commit", wire_before);
-        match committed {
-            Ok(_) => {
-                if let (Some(run), Some(snapshot)) = (plan.run(), plan.snapshot_after(&record)) {
-                    self.append_cache.insert(
-                        &record.app_id,
-                        &record.channel,
-                        record.message_serial(),
-                        run,
-                        snapshot.to_string(),
-                    );
-                }
-                Ok(VersionMutationResult::Applied {
-                    record,
-                    stream_id: stream.stream_id,
-                })
-            }
-            Err(error)
-                if error.to_string().contains("version_conflict")
-                    || error.to_string().contains("already exists")
-                    || error.to_string().contains("already been created") =>
+            let delivery_serial = (stream.next_delivery_serial as u64)
+                .max(current.delivery_serial().saturating_add(1));
+            let outcome = request.apply_to(
+                &current,
+                &stream.stream_id,
+                delivery_serial,
+                message.append_count as usize,
+            )?;
+            let VersionMutationResult::Applied { record, .. } = outcome else {
+                return Ok(outcome);
+            };
+            let opens = !current.is_open_ai_stream() && record.is_open_ai_stream();
+            let closes = current.is_open_ai_stream() && !record.is_open_ai_stream();
+            if opens
+                && let Some(limit) = request.limits.max_open_streaming_messages_per_channel
+                && stream.open_stream_count as usize >= limit
             {
-                Ok(VersionMutationResult::Conflict {
-                    current: self
-                        .get_latest(&request.app_id, &request.channel, &request.message_serial)
-                        .await?,
-                })
+                return Ok(VersionMutationResult::Rejected(
+                    VersionMutationRejection::OpenStreamingMessages { limit },
+                ));
             }
-            Err(error) => Err(Error::Internal(format!(
-                "Failed to transact SurrealDB version mutation: {error}"
-            ))),
+            let payload_plan = if format.enabled {
+                AppendRunPlan::for_record_chunked(
+                    current.version_serial(),
+                    predecessor_run.as_ref(),
+                    &record,
+                )
+            } else {
+                AppendRunPlan::Full
+            };
+            // The explicit store marker is the rollout gate. Compact latest state
+            // is never written while older nodes can still participate.
+            let payload_bytes = payload_plan.encode(&record)?;
+            let receipt_references_run =
+                request.idempotency.is_some() && payload_plan.run().is_some();
+            let plan = if format.enabled && matches!(payload_plan, AppendRunPlan::Full) {
+                AppendRunPlan::for_seed_record(&record)
+            } else {
+                payload_plan
+            };
+            let run_pinned = (matches!(plan, AppendRunPlan::Extend { .. }) && run_pinned)
+                || receipt_references_run;
+            let args = mutation_arguments(
+                &record,
+                payload_bytes,
+                &current,
+                &stream,
+                &format,
+                &plan,
+                MutationState {
+                    now_ms: sockudo_core::history::now_ms(),
+                    next_open: stream.open_stream_count + i64::from(opens) - i64::from(closes),
+                    next_append: message.append_count
+                        + i64::from(matches!(
+                            request.mutation,
+                            sockudo_core::version_store::VersionMutation::Append(_)
+                        )),
+                    run_pinned,
+                    receipt: request.idempotency.as_ref(),
+                },
+            )?;
+            #[cfg(test)]
+            let wire_before = crate::history::c2_wire_meter::phase_snapshot();
+            let committed = self.commit_mutation_function(args).await;
+            #[cfg(test)]
+            crate::history::c2_wire_meter::report_phase("surrealdb.commit", wire_before);
+            match committed {
+                Ok(_) => {
+                    if let (Some(run), Some(snapshot)) = (plan.run(), plan.snapshot_after(&record))
+                    {
+                        self.append_cache.insert(
+                            &record.app_id,
+                            &record.channel,
+                            record.message_serial(),
+                            run,
+                            snapshot.to_string(),
+                        );
+                    }
+                    return Ok(VersionMutationResult::Applied {
+                        record,
+                        stream_id: stream.stream_id,
+                    });
+                }
+                Err(error) if mutation::is_write_conflict(&error) => {
+                    // Retry the complete read/plan/transaction. Keep the caller's
+                    // precondition and operation identity: stale requests must
+                    // conflict, while channel contention can safely retry.
+                    // Index errors can contain record values; omit their text.
+                    tracing::debug!(
+                        attempt_count = attempt + 1,
+                        "surreal version transaction conflicted"
+                    );
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => {
+                    return Err(Error::Internal(format!(
+                        "Failed to transact SurrealDB version mutation: {error}"
+                    )));
+                }
+            }
         }
+        Ok(VersionMutationResult::Conflict {
+            current: self
+                .get_latest(&request.app_id, &request.channel, &request.message_serial)
+                .await?,
+        })
     }
 
     async fn get_latest(

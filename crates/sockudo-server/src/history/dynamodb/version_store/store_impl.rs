@@ -461,12 +461,14 @@ impl VersionStore for DynamoDbVersionStore {
         );
         message_item.insert("created_at_ms".to_string(), Self::attr_n(now_ms));
         message_item.insert("updated_at_ms".to_string(), Self::attr_n(now_ms));
-        let seed = if self.append_storage_epoch().await?.is_some() {
-            self.stage_seed(&record).await?
+        let create_epoch = self.append_storage_epoch().await?;
+        let seed = if create_epoch.is_some() {
+            AppendRunPlan::for_seed_record(&record)
         } else {
             AppendRunPlan::Full
         };
         Self::seed_attributes(&mut message_item, &record, &seed);
+        Self::validate_item_size(&message_item)?;
         let message_put = Put::builder()
             .table_name(&self.tables.version_messages)
             .set_item(Some(message_item))
@@ -481,6 +483,10 @@ impl VersionStore for DynamoDbVersionStore {
             .transact_items(TransactWriteItem::builder().put(message_put).build());
         if let Some(activation) = self.seed_activation_write(&record, &seed)? {
             transaction = transaction.transact_items(activation);
+        }
+        if let Some(epoch) = create_epoch.as_deref() {
+            transaction = transaction.transact_items(self.append_marker_guard(epoch)?);
+            self.stage_seed_plan(&record, seed).await?;
         }
         let result = transaction.send().await;
         match result {
@@ -651,9 +657,15 @@ impl VersionStore for DynamoDbVersionStore {
             AppendRunPlan::Full
         };
         let payload = plan.encode(&record)?;
-        let seed_staged = format_epoch.is_some() && matches!(plan, AppendRunPlan::Full);
-        let plan = if seed_staged {
-            self.stage_seed(&record).await?
+        let full_seed = format_epoch.is_some() && matches!(plan, AppendRunPlan::Full);
+        let large_start = matches!(plan, AppendRunPlan::Start { .. })
+            && self.append_chunk_writes(&record, &plan)?.len()
+                + 5
+                + usize::from(request.idempotency.is_some())
+                > 100;
+        let seed_staged = full_seed || large_start;
+        let plan = if full_seed {
+            AppendRunPlan::for_seed_record(&record)
         } else {
             plan
         };
@@ -720,41 +732,73 @@ impl VersionStore for DynamoDbVersionStore {
         }
         .build()
         .map_err(|e| Error::Internal(format!("Failed to build message mutation: {e}")))?;
+        // Validate the exact post-update latest item before publishing any
+        // state. Attribute names count toward the service item limit too.
+        let mut next_message_item = message_item.clone();
+        for (field, binding) in [
+            ("latest_version_serial", ":next_vs"),
+            ("latest_delivery_serial", ":next_ds"),
+            ("latest_action", ":action"),
+            ("latest_payload_bytes", ":payload"),
+            ("append_count", ":append_count"),
+            ("is_open_stream", ":is_open"),
+            ("updated_at_ms", ":now"),
+            ("latest_append_run", ":run"),
+            ("latest_append_len", ":run_len"),
+            ("latest_append_head", ":next_vs"),
+            ("latest_append_pinned", ":run_pinned"),
+            ("latest_append_generation", ":run_generation"),
+        ] {
+            if field.starts_with("latest_append_") && plan.run().is_none() {
+                next_message_item.remove(field);
+            } else if let Some(value) = message_update
+                .expression_attribute_values()
+                .and_then(|values| values.get(binding))
+            {
+                next_message_item.insert(field.to_string(), value.clone());
+            }
+        }
+        Self::validate_item_size(&next_message_item)?;
         let mut transaction = self
             .client
             .transact_write_items()
             .transact_items(TransactWriteItem::builder().update(stream_update).build())
             .transact_items(TransactWriteItem::builder().put(entry_put).build())
             .transact_items(TransactWriteItem::builder().update(message_update).build());
-        if let Some(epoch) = format_epoch {
-            let check = aws_sdk_dynamodb::types::ConditionCheck::builder()
-                .table_name(&self.tables.version_streams)
-                .key("app_channel", Self::attr_s(Self::FORMAT_MARKER_KEY))
-                .condition_expression("epoch = :epoch AND enabled = :enabled")
-                .expression_attribute_values(":epoch", Self::attr_s(&epoch))
-                .expression_attribute_values(":enabled", AttributeValue::Bool(true))
-                .build()
-                .map_err(|e| {
-                    Error::Internal(format!("failed to build append marker fence: {e}"))
-                })?;
-            transaction = transaction
-                .transact_items(TransactWriteItem::builder().condition_check(check).build());
+        if let Some(epoch) = format_epoch.as_deref() {
+            transaction = transaction.transact_items(self.append_marker_guard(epoch)?);
         }
+        let mut staged_token = None;
+        let mut staged_chunks = None;
         if seed_staged {
             if let Some(activation) = self.seed_activation_write(&record, &plan)? {
                 transaction = transaction.transact_items(activation);
             }
         } else {
             let writes = self.append_chunk_writes(&record, &plan)?;
-            if writes.len() > 94 {
-                return Err(Error::Internal(
-                    "append requires more chunks than a DynamoDB transaction permits".to_string(),
-                ));
+            let staged = transaction
+                .as_input()
+                .get_transact_items()
+                .as_ref()
+                .map_or(0, Vec::len)
+                + writes.len()
+                + usize::from(plan.run().is_some())
+                + usize::from(request.idempotency.is_some())
+                > 100;
+            if staged {
+                staged_token = Some(uuid::Uuid::new_v4().to_string());
+                staged_chunks = Some(writes);
+            } else {
+                for write in writes {
+                    transaction = transaction.transact_items(write);
+                }
             }
-            for write in writes {
-                transaction = transaction.transact_items(write);
-            }
-            if let Some(run_write) = self.append_run_write(&record, &plan, run_pinned, now_ms)? {
+            if let Some(mut run_write) =
+                self.append_run_write(&record, &plan, run_pinned, now_ms)?
+            {
+                if let Some(token) = staged_token.as_deref() {
+                    Self::fence_staged_publication(&mut run_write, token)?;
+                }
                 transaction = transaction.transact_items(run_write);
             }
         }
@@ -770,6 +814,7 @@ impl VersionStore for DynamoDbVersionStore {
                 Self::attr_s(&operation.payload_fingerprint),
             );
             receipt.insert("payload_bytes".to_string(), Self::attr_b(payload));
+            Self::validate_item_size(&receipt)?;
             let receipt_put = Put::builder()
                 .table_name(&self.tables.version_entries)
                 .set_item(Some(receipt))
@@ -778,6 +823,18 @@ impl VersionStore for DynamoDbVersionStore {
                 .map_err(|e| Error::Internal(format!("Failed to build operation receipt: {e}")))?;
             transaction =
                 transaction.transact_items(TransactWriteItem::builder().put(receipt_put).build());
+        }
+        // The available chunk budget depends on whether this operation has
+        // a receipt and a format fence; do not reserve unused transaction slots.
+        if transaction
+            .as_input()
+            .get_transact_items()
+            .as_ref()
+            .is_some_and(|items| items.len() > 100)
+        {
+            return Err(Error::Configuration(
+                "append exceeds DynamoDB's 100-item atomic transaction limit; reduce the append fragment size".to_string(),
+            ));
         }
         #[cfg(test)]
         let write_measurement = self
@@ -789,7 +846,35 @@ impl VersionStore for DynamoDbVersionStore {
                     .unwrap_or_default(),
             )
             .await?;
-        match transaction.send().await {
+        // All publication items and their size checks are complete before
+        // staging creates any durable state or claims a lease.
+        if seed_staged {
+            self.stage_seed_plan(&record, plan.clone()).await?;
+        }
+        if let (Some(writes), Some(token)) = (staged_chunks.as_deref(), staged_token.as_deref()) {
+            let epoch = format_epoch.as_deref().ok_or_else(|| {
+                Error::Internal("append staging requires enabled chunked storage".to_string())
+            })?;
+            if self
+                .stage_append_chunks_with_token(&record, &plan, epoch, writes, token)
+                .await?
+                .is_none()
+            {
+                return Ok(VersionMutationResult::Conflict {
+                    current: self
+                        .get_latest(&request.app_id, &request.channel, &request.message_serial)
+                        .await?,
+                });
+            }
+        }
+        let result = transaction.send().await;
+        if let Err(_error) = &result
+            && let Some(token) = staged_token.as_deref()
+        {
+            tracing::debug!("staged append publication failed");
+            self.release_append_stage(&record, &plan, token).await;
+        }
+        match result {
             Ok(_) => {
                 #[cfg(test)]
                 self.measure_write_after(write_measurement).await?;
@@ -879,7 +964,15 @@ impl VersionStore for DynamoDbVersionStore {
             request.message_serial.as_str(),
         );
         let scan_forward = matches!(request.direction, VersionStoreDirection::OldestFirst);
-        let fetch_limit = (request.limit + 1) as i32;
+        let fetch_limit = request
+            .limit
+            .checked_add(1)
+            .and_then(|limit| i32::try_from(limit).ok())
+            .ok_or_else(|| {
+                Error::InvalidMessageFormat(
+                    "version history limit exceeds DynamoDB query capacity".to_string(),
+                )
+            })?;
 
         let mut query = self
             .client
@@ -909,24 +1002,57 @@ impl VersionStore for DynamoDbVersionStore {
             );
         }
 
-        let result = query
-            .send()
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to query version history: {e}")))?;
-
-        let all_items = result.items();
-        let has_more = all_items.len() > request.limit;
-        let page = &all_items[..all_items.len().min(request.limit)];
-        // Continue after the last scanned entry, including one omitted as
-        // expired, so pagination still advances.
-        let last_scanned = page
+        // DynamoDB stops each Query at 1 MiB even when its item limit has
+        // not been reached. Bound work by scanned rows, preserving the public
+        // cursor's progress through expired records as well as live records.
+        let app_channel = Self::app_channel_key(&request.app_id, &request.channel);
+        let now_secs = sockudo_core::history::now_ms() / 1000;
+        let mut scanned = Vec::new();
+        let mut start = None;
+        // A service page normally contributes at least one row (no filter).
+        // This additional cap also bounds concurrent-delete empty pages.
+        for _ in 0..=request.limit {
+            let result = query
+                .clone()
+                .limit((request.limit + 1 - scanned.len()) as i32)
+                .set_exclusive_start_key(start)
+                .send()
+                .await
+                .map_err(|e| Error::Internal(format!("failed to query version history: {e}")))?;
+            scanned.extend_from_slice(result.items());
+            start = result
+                .last_evaluated_key()
+                .cloned()
+                .filter(|key| !key.is_empty());
+            if scanned.len() > request.limit || start.is_none() {
+                break;
+            }
+        }
+        let has_more = scanned.len() > request.limit || start.is_some();
+        scanned.truncate(request.limit);
+        let last_scanned = scanned
             .last()
             .and_then(|item| Self::item_str(item, "version_serial"))
+            .or_else(|| {
+                start
+                    .as_ref()
+                    .and_then(|key| Self::item_str(key, "version_serial"))
+            })
             .map(VersionSerial::new)
             .transpose()?;
-        let app_channel = Self::app_channel_key(&request.app_id, &request.channel);
-        let items: Vec<StoredVersionRecord> = self
-            .materialize_items(&app_channel, page)
+        if has_more && last_scanned.is_none() {
+            return Err(Error::Internal(
+                "version history page has no continuation serial".to_string(),
+            ));
+        }
+        let live_items = scanned
+            .into_iter()
+            .filter(|item| {
+                Self::item_num(item, Self::EXPIRES_AT_ATTR).is_none_or(|expires| expires > now_secs)
+            })
+            .collect::<Vec<_>>();
+        let items = self
+            .materialize_items(&app_channel, &live_items)
             .await?
             .into_iter()
             .flatten()
@@ -955,7 +1081,12 @@ impl VersionStore for DynamoDbVersionStore {
     ) -> Result<Vec<StoredVersionRecord>> {
         request.validate()?;
         let app_channel = Self::app_channel_key(&request.app_id, &request.channel);
-        let result = self
+        let fetch_limit = i32::try_from(request.limit).map_err(|_| {
+            Error::InvalidMessageFormat(
+                "version replay limit exceeds DynamoDB query capacity".to_string(),
+            )
+        })?;
+        let query = self
             .client
             .query()
             .table_name(&self.tables.version_entries)
@@ -964,15 +1095,42 @@ impl VersionStore for DynamoDbVersionStore {
             .expression_attribute_values(":ac", Self::attr_s(&app_channel))
             .expression_attribute_values(":after", Self::attr_n(request.after_delivery_serial))
             .scan_index_forward(true)
-            .limit(request.limit as i32)
-            .send()
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to replay version entries: {e}")))?;
-
-        // An omitted expired entry leaves a gap the caller's continuity check
-        // rejects, as when TTL has already deleted it.
+            .limit(fetch_limit);
+        let mut scanned = Vec::new();
+        let mut start = None;
+        let now_secs = sockudo_core::history::now_ms() / 1000;
+        for _ in 0..request.limit {
+            let page = query
+                .clone()
+                .limit((request.limit - scanned.len()) as i32)
+                .set_exclusive_start_key(start)
+                .send()
+                .await
+                .map_err(|e| Error::Internal(format!("failed to replay version entries: {e}")))?;
+            scanned.extend_from_slice(page.items());
+            start = page
+                .last_evaluated_key()
+                .cloned()
+                .filter(|key| !key.is_empty());
+            if scanned.len() == request.limit || start.is_none() {
+                break;
+            }
+        }
+        if scanned.len() < request.limit && start.is_some() {
+            return Err(Error::Internal(
+                "version replay could not complete within its page budget".to_string(),
+            ));
+        }
+        let live = scanned
+            .into_iter()
+            .filter(|item| {
+                Self::item_num(item, Self::EXPIRES_AT_ATTR).is_none_or(|expires| expires > now_secs)
+            })
+            .collect::<Vec<_>>();
+        // Expired entries leave delivery gaps; caller continuity checks reject
+        // them exactly as if asynchronous TTL deletion had already completed.
         Ok(self
-            .materialize_items(&app_channel, result.items())
+            .materialize_items(&app_channel, &live)
             .await?
             .into_iter()
             .flatten()
@@ -985,27 +1143,46 @@ impl VersionStore for DynamoDbVersionStore {
         channel: &str,
     ) -> Result<Vec<StoredVersionRecord>> {
         let app_channel = Self::app_channel_key(app_id, channel);
-        // Scan version_messages table for this channel.
-        let msg_result = self
+        // This API returns all messages. Page through the base table while
+        // retaining only identities, rather than complete latest payloads.
+        let query = self
             .client
             .query()
             .table_name(&self.tables.version_messages)
             .key_condition_expression("app_channel = :ac")
             .expression_attribute_values(":ac", Self::attr_s(&app_channel))
-            .send()
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to query version messages: {e}")))?;
-
-        let mut msgs: Vec<(String, String, i64)> = msg_result
-            .items()
-            .iter()
-            .filter_map(|item| {
-                let message_serial = Self::item_str(item, "message_serial")?;
-                let latest_version_serial = Self::item_str(item, "latest_version_serial")?;
-                let history_serial = Self::item_num(item, "history_serial")?;
-                Some((message_serial, latest_version_serial, history_serial))
-            })
-            .collect();
+            .projection_expression("message_serial, latest_version_serial, history_serial")
+            .limit(100);
+        let mut msgs = Vec::new();
+        let mut start = None;
+        loop {
+            let page = query
+                .clone()
+                .set_exclusive_start_key(start.clone())
+                .send()
+                .await
+                .map_err(|e| Error::Internal(format!("failed to query version messages: {e}")))?;
+            msgs.extend(page.items().iter().filter_map(|item| {
+                Some((
+                    Self::item_str(item, "message_serial")?,
+                    Self::item_str(item, "latest_version_serial")?,
+                    Self::item_num(item, "history_serial")?,
+                ))
+            }));
+            let next = page
+                .last_evaluated_key()
+                .cloned()
+                .filter(|key| !key.is_empty());
+            if next.is_none() {
+                break;
+            }
+            if next == start {
+                return Err(Error::Internal(
+                    "version messages query did not advance".to_string(),
+                ));
+            }
+            start = next;
+        }
 
         msgs.sort_by_key(|(_, _, hs)| *hs);
 
@@ -1059,6 +1236,10 @@ impl VersionStore for DynamoDbVersionStore {
             .await
             .map_err(|e| Error::Internal(format!("failed to update append storage marker: {e}")))?;
         Ok(())
+    }
+
+    async fn validate_append_storage_rollback(&self, batch_size: usize) -> Result<()> {
+        self.preflight_append_materialization(batch_size).await
     }
 
     async fn materialize_append_storage(&self, batch_size: usize) -> Result<u64> {

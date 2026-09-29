@@ -82,7 +82,15 @@ impl DynamoDbVersionStore {
     }
 
     pub(super) async fn stage_seed(&self, record: &StoredVersionRecord) -> Result<AppendRunPlan> {
-        let plan = AppendRunPlan::for_seed_record(record);
+        self.stage_seed_plan(record, AppendRunPlan::for_seed_record(record))
+            .await
+    }
+
+    pub(super) async fn stage_seed_plan(
+        &self,
+        record: &StoredVersionRecord,
+        plan: AppendRunPlan,
+    ) -> Result<AppendRunPlan> {
         let Some(manifest) = self.seed_manifest_write(record, &plan)? else {
             return Ok(plan);
         };
@@ -121,6 +129,188 @@ impl DynamoDbVersionStore {
             .expression_attribute_values(":no", AttributeValue::Bool(false))
             .send().await.map_err(|e| Error::Internal(format!("failed to finish append seed: {e}")))?;
         Ok(plan)
+    }
+
+    /// Stage only changed chunks behind a fenced manifest lease. Every batch
+    /// checks the committed head as well as the token: an older writer need not
+    /// understand leases, because its atomic head update invalidates our stage.
+    /// Staged tails preserve the committed prefix; unpublished future chunks
+    /// are invisible and are overwritten before a later writer publishes them.
+    #[cfg(test)]
+    pub(super) async fn stage_append_chunks(
+        &self,
+        record: &StoredVersionRecord,
+        plan: &AppendRunPlan,
+        epoch: &str,
+        writes: &[TransactWriteItem],
+    ) -> Result<Option<String>> {
+        let token = uuid::Uuid::new_v4().to_string();
+        self.stage_append_chunks_with_token(record, plan, epoch, writes, &token)
+            .await
+    }
+
+    pub(super) async fn stage_append_chunks_with_token(
+        &self,
+        record: &StoredVersionRecord,
+        plan: &AppendRunPlan,
+        epoch: &str,
+        writes: &[TransactWriteItem],
+        token: &str,
+    ) -> Result<Option<String>> {
+        let AppendRunPlan::Extend {
+            run,
+            expected_head,
+            expected_len,
+        } = plan
+        else {
+            return Err(Error::Internal(
+                "append staging requires an existing run".to_string(),
+            ));
+        };
+        let partition = Self::app_channel_key(&record.app_id, &record.channel);
+        let key = Self::append_manifest_key(record, run);
+        let now = sockudo_core::history::now_ms();
+        let claim = self.client.update_item().table_name(&self.tables.version_entries)
+            .key("app_channel", Self::attr_s(&partition)).key("message_version_key", Self::attr_s(&key))
+            .update_expression("SET staging_token = :token, staging_head = :head, staging_deadline_ms = :deadline")
+            .condition_expression("head_version_serial = :head AND data_len = :len AND append_generation = :generation AND attribute_not_exists(garbage_collecting) AND (attribute_not_exists(staging_token) OR staging_head <> :head OR staging_deadline_ms <= :now)")
+            .expression_attribute_values(":token", Self::attr_s(token))
+            .expression_attribute_values(":head", Self::attr_s(expected_head.as_str()))
+            .expression_attribute_values(":len", Self::attr_n(*expected_len))
+            .expression_attribute_values(":generation", Self::attr_s(run.generation.as_deref().unwrap_or_default()))
+            .expression_attribute_values(":now", Self::attr_n(now))
+            .expression_attribute_values(":deadline", Self::attr_n(now.saturating_add(5 * 60 * 1000)))
+            .send().await;
+        // AWS errors can contain response items; never log their Display.
+        match claim {
+            Ok(_) => {}
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|e| e.is_conditional_check_failed_exception()) =>
+            {
+                tracing::debug!("append staging claim conflicted");
+                return Ok(None);
+            }
+            Err(_error) => {
+                tracing::warn!("append staging claim failed");
+                // A transport error may follow an accepted claim.
+                self.release_append_stage(record, plan, token).await;
+                return Err(Error::Internal(
+                    "failed to claim append staging".to_string(),
+                ));
+            }
+        }
+        for batch in writes.chunks(98) {
+            let guard = aws_sdk_dynamodb::types::ConditionCheck::builder()
+                .table_name(&self.tables.version_entries)
+                .key("app_channel", Self::attr_s(&partition)).key("message_version_key", Self::attr_s(&key))
+                .condition_expression("staging_token = :token AND head_version_serial = :head AND data_len = :len AND append_generation = :generation AND attribute_not_exists(garbage_collecting)")
+                .expression_attribute_values(":token", Self::attr_s(token))
+                .expression_attribute_values(":head", Self::attr_s(expected_head.as_str()))
+                .expression_attribute_values(":len", Self::attr_n(*expected_len))
+                .expression_attribute_values(":generation", Self::attr_s(run.generation.as_deref().unwrap_or_default()))
+                .build().map_err(|e| Error::Internal(format!("failed to build append staging guard: {e}")))?;
+            let result = self
+                .client
+                .transact_write_items()
+                .set_transact_items(Some(batch.to_vec()))
+                .transact_items(TransactWriteItem::builder().condition_check(guard).build())
+                .transact_items(self.append_marker_guard(epoch)?)
+                .send()
+                .await;
+            match result {
+                Ok(_) => {}
+                Err(error)
+                    if error
+                        .as_service_error()
+                        .is_some_and(|e| e.is_transaction_canceled_exception()) =>
+                {
+                    tracing::debug!("append staging batch conflicted");
+                    self.release_append_stage(record, plan, token).await;
+                    return Ok(None);
+                }
+                Err(_error) => {
+                    tracing::warn!("append staging batch failed");
+                    self.release_append_stage(record, plan, token).await;
+                    return Err(Error::Internal("failed to stage append batch".to_string()));
+                }
+            }
+        }
+        Ok(Some(token.to_string()))
+    }
+
+    pub(super) async fn release_append_stage(
+        &self,
+        record: &StoredVersionRecord,
+        plan: &AppendRunPlan,
+        token: &str,
+    ) {
+        let Some(run) = plan.run() else {
+            return;
+        };
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.tables.version_entries)
+            .key(
+                "app_channel",
+                Self::attr_s(&Self::app_channel_key(&record.app_id, &record.channel)),
+            )
+            .key(
+                "message_version_key",
+                Self::attr_s(&Self::append_manifest_key(record, run)),
+            )
+            .update_expression("REMOVE staging_token, staging_head, staging_deadline_ms")
+            .condition_expression("staging_token = :token")
+            .expression_attribute_values(":token", Self::attr_s(token))
+            .send()
+            .await;
+        // AWS error text may include response items; keep this diagnostic content-free.
+        if let Err(error) = result {
+            if error
+                .as_service_error()
+                .is_some_and(|e| e.is_conditional_check_failed_exception())
+            {
+                tracing::debug!("append staging lease already changed");
+            } else {
+                tracing::warn!("append staging lease release failed");
+            }
+        }
+    }
+
+    pub(super) fn append_marker_guard(&self, epoch: &str) -> Result<TransactWriteItem> {
+        let check = aws_sdk_dynamodb::types::ConditionCheck::builder()
+            .table_name(&self.tables.version_streams)
+            .key("app_channel", Self::attr_s(Self::FORMAT_MARKER_KEY))
+            .condition_expression("epoch = :epoch AND enabled = :enabled")
+            .expression_attribute_values(":epoch", Self::attr_s(epoch))
+            .expression_attribute_values(":enabled", AttributeValue::Bool(true))
+            .build()
+            .map_err(|e| Error::Internal(format!("failed to build append marker fence: {e}")))?;
+        Ok(TransactWriteItem::builder().condition_check(check).build())
+    }
+
+    pub(super) fn fence_staged_publication(
+        write: &mut TransactWriteItem,
+        token: &str,
+    ) -> Result<()> {
+        let update = write.update.as_mut().ok_or_else(|| {
+            Error::Internal("staged append publication is not an update".to_string())
+        })?;
+        let condition = update.condition_expression.as_mut().ok_or_else(|| {
+            Error::Internal("staged append publication has no condition".to_string())
+        })?;
+        condition.push_str(" AND staging_token = :staging_token");
+        update
+            .expression_attribute_values
+            .get_or_insert_default()
+            .insert(":staging_token".to_string(), Self::attr_s(token));
+        // Chunked runs are pinned, so their update already removes expires_at.
+        update
+            .update_expression
+            .push_str(", staging_token, staging_head, staging_deadline_ms");
+        Ok(())
     }
 
     pub(super) fn seed_attributes(
@@ -656,6 +846,129 @@ impl DynamoDbVersionStore {
         Ok(Some(write))
     }
 
+    /// Read every prospective legacy item before changing any stored state.
+    /// DynamoDB's 400 KiB item limit includes attribute names and binary bytes,
+    /// rather than the base64-expanded transport representation.
+    pub(crate) async fn preflight_append_materialization(&self, batch_size: usize) -> Result<()> {
+        for (table, field, latest) in [
+            (&self.tables.version_entries, "payload_bytes", false),
+            (&self.tables.version_messages, "latest_payload_bytes", true),
+        ] {
+            let mut start = None;
+            loop {
+                let page = self
+                    .client
+                    .scan()
+                    .table_name(table)
+                    .consistent_read(true)
+                    .limit(batch_size.clamp(1, 100) as i32)
+                    .set_exclusive_start_key(start)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        Error::Internal(format!("failed to preflight append rollback: {e}"))
+                    })?;
+                for item in page.items() {
+                    if !latest
+                        && Self::item_num(item, Self::EXPIRES_AT_ATTR).is_some_and(|expires| {
+                            expires <= sockudo_core::history::now_ms() / 1000
+                        })
+                    {
+                        continue;
+                    }
+                    let key = Self::item_str(item, "message_version_key").unwrap_or_default();
+                    if !latest
+                        && (key.starts_with("__append_run__ ")
+                            || key.starts_with("__append_chunk__ "))
+                    {
+                        continue;
+                    }
+                    let Some(payload) =
+                        Self::item_bytes(item, field).filter(|bytes| is_compact(bytes))
+                    else {
+                        continue;
+                    };
+                    let app_channel = Self::item_str(item, "app_channel").ok_or_else(|| {
+                        Error::Internal("append rollback partition missing".to_string())
+                    })?;
+                    let record = if latest {
+                        self.materialize_latest_item(&app_channel, item).await?
+                    } else {
+                        self.materialize_items(&app_channel, std::slice::from_ref(item))
+                            .await?
+                            .pop()
+                            .flatten()
+                    };
+                    let Some(record) = record else {
+                        continue;
+                    };
+                    let mut legacy = item.clone();
+                    legacy.insert(field.to_string(), Self::attr_b(encode_full(&record)?));
+                    if latest {
+                        for key in [
+                            "latest_append_run",
+                            "latest_append_len",
+                            "latest_append_head",
+                            "latest_append_pinned",
+                            "latest_append_generation",
+                        ] {
+                            legacy.remove(key);
+                        }
+                    }
+                    // Drop the source buffer before checking the reconstructed item.
+                    drop(payload);
+                    Self::validate_item_size(&legacy)?;
+                }
+                start = page
+                    .last_evaluated_key()
+                    .cloned()
+                    .filter(|key| !key.is_empty());
+                if start.is_none() {
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_item_size(item: &HashMap<String, AttributeValue>) -> Result<()> {
+        fn value_size(value: &AttributeValue) -> Result<usize> {
+            Ok(match value {
+                AttributeValue::S(value) => value.len(),
+                AttributeValue::B(value) => value.as_ref().len(),
+                // 38 significant digits plus sign/exponent allowance: a
+                // conservative upper bound avoids underestimating numbers.
+                AttributeValue::N(_) => 22,
+                AttributeValue::Bool(_) | AttributeValue::Null(_) => 1,
+                AttributeValue::L(values) => {
+                    values.iter().try_fold(3, |size, value| -> Result<usize> {
+                        Ok(size + 1 + value_size(value)?)
+                    })?
+                }
+                AttributeValue::M(values) => 3 + values.len() + item_size(values)?,
+                AttributeValue::Ss(values) => values.iter().map(String::len).sum(),
+                AttributeValue::Bs(values) => values.iter().map(|v| v.as_ref().len()).sum(),
+                AttributeValue::Ns(values) => 22 * values.len(),
+                _ => {
+                    return Err(Error::Internal(
+                        "unsupported append rollback attribute".to_string(),
+                    ));
+                }
+            })
+        }
+        fn item_size(item: &HashMap<String, AttributeValue>) -> Result<usize> {
+            item.iter().try_fold(0, |size, (key, value)| {
+                Ok(size + key.len() + value_size(value)?)
+            })
+        }
+        if item_size(item)? > 400 * 1024 {
+            return Err(Error::Configuration(
+                "encoded item exceeds DynamoDB's 400 KiB item limit".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Rewrite compact entries and receipts as self-contained records.
     pub(super) async fn materialize_compact_items(&self, batch_size: usize) -> Result<u64> {
         if self.append_storage_epoch().await?.is_some() {
@@ -663,6 +976,7 @@ impl DynamoDbVersionStore {
                 "disable append storage and drain writers before materialization".to_string(),
             ));
         }
+        self.preflight_append_materialization(batch_size).await?;
         let limit = i32::try_from(batch_size.max(1)).unwrap_or(i32::MAX);
         let mut start = None;
         let mut rewritten = 0;
@@ -686,6 +1000,48 @@ impl DynamoDbVersionStore {
                     continue;
                 };
                 if !is_compact(&payload) {
+                    continue;
+                }
+                if let Some(expires) = Self::item_num(item, Self::EXPIRES_AT_ATTR)
+                    .filter(|expires| *expires <= sockudo_core::history::now_ms() / 1000)
+                {
+                    // TTL deletion is asynchronous. Expired normal entries need
+                    // no legacy representation and may have lost their run.
+                    // Receipts/latest states have no TTL and never enter here.
+                    let result = self
+                        .client
+                        .delete_item()
+                        .table_name(&self.tables.version_entries)
+                        .key(
+                            "app_channel",
+                            item.get("app_channel").cloned().ok_or_else(|| {
+                                Error::Internal(
+                                    "expired append entry partition missing".to_string(),
+                                )
+                            })?,
+                        )
+                        .key("message_version_key", Self::attr_s(&key))
+                        .condition_expression("expires_at = :expires AND payload_bytes = :payload")
+                        .expression_attribute_values(":expires", Self::attr_n(expires))
+                        .expression_attribute_values(":payload", Self::attr_b(payload))
+                        .send()
+                        .await;
+                    match result {
+                        Ok(_) => {}
+                        Err(error)
+                            if error
+                                .as_service_error()
+                                .is_some_and(|e| e.is_conditional_check_failed_exception()) =>
+                        {
+                            tracing::debug!("expired append entry changed during rollback");
+                        }
+                        Err(_error) => {
+                            tracing::warn!("expired append entry cleanup failed");
+                            return Err(Error::Internal(
+                                "failed to clean expired append rollback entry".to_string(),
+                            ));
+                        }
+                    }
                     continue;
                 }
                 let app_channel = Self::item_str(item, "app_channel").unwrap_or_default();
@@ -886,5 +1242,770 @@ impl DynamoDbVersionStore {
             }
         }
         Ok(rewritten)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sockudo_core::versioned_messages::{VersionMetadata, VersionedMessage};
+    use sockudo_protocol::messages::MessageData;
+
+    #[test]
+    fn rollback_item_limit_counts_attribute_names_and_raw_binary() {
+        let item = HashMap::from([(
+            "payload".to_string(),
+            AttributeValue::B(Blob::new(vec![0; 400 * 1024 - 7])),
+        )]);
+        assert!(DynamoDbVersionStore::validate_item_size(&item).is_ok());
+        let mut too_large = item;
+        too_large.insert("flag".to_string(), AttributeValue::Bool(false));
+        assert!(DynamoDbVersionStore::validate_item_size(&too_large).is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires isolated DynamoDB Local on port 25473"]
+    async fn version_history_crosses_service_pages_and_skips_expired_rows() {
+        let settings = DynamoDbSettings {
+            endpoint_url: Some("http://127.0.0.1:25473".to_string()),
+            aws_access_key_id: Some("c2".to_string()),
+            aws_secret_access_key: Some("c2-local-only".to_string()),
+            ..Default::default()
+        };
+        let prefix = format!("c2pages{}", uuid::Uuid::new_v4().simple());
+        let store = DynamoDbVersionStore::new(&settings, &prefix, 0)
+            .await
+            .unwrap();
+        let message_serial = MessageSerial::new("msg:pages").unwrap();
+        for n in 0..10 {
+            let record = StoredVersionRecord {
+                app_id: "pages".to_string(),
+                channel: "room".to_string(),
+                original_client_id: None,
+                envelope: None,
+                message: VersionedMessage::new_create(
+                    message_serial.clone(),
+                    VersionMetadata {
+                        serial: VersionSerial::new(format!("ver:{n:020}")).unwrap(),
+                        client_id: None,
+                        timestamp_ms: n,
+                        description: None,
+                        metadata: None,
+                    },
+                    1,
+                    n as u64 + 1,
+                    None,
+                    Some(MessageData::String("x".repeat(190_000))),
+                    None,
+                ),
+            };
+            let mut item = store
+                .entry_item(&record, encode_full(&record).unwrap(), None)
+                .unwrap();
+            if n == 0 || n == 9 {
+                item.insert(
+                    DynamoDbVersionStore::EXPIRES_AT_ATTR.to_string(),
+                    DynamoDbVersionStore::attr_n(1),
+                );
+            }
+            store
+                .client
+                .put_item()
+                .table_name(&store.tables.version_entries)
+                .set_item(Some(item))
+                .send()
+                .await
+                .unwrap();
+        }
+        for direction in [
+            VersionStoreDirection::OldestFirst,
+            VersionStoreDirection::NewestFirst,
+        ] {
+            let request = VersionStoreReadRequest {
+                app_id: "pages".to_string(),
+                channel: "room".to_string(),
+                message_serial: message_serial.clone(),
+                direction,
+                cursor: None,
+                limit: 7,
+            };
+            let page = store.get_versions(request.clone()).await.unwrap();
+            assert_eq!(page.items.len(), 6);
+            assert!(page.has_more);
+            let cursor = page.next_cursor.unwrap();
+            let last = store
+                .get_versions(VersionStoreReadRequest {
+                    cursor: Some(cursor),
+                    ..request
+                })
+                .await
+                .unwrap();
+            assert_eq!(last.items.len(), 2);
+            assert!(!last.has_more);
+            let serials = page
+                .items
+                .iter()
+                .chain(&last.items)
+                .map(|record| record.version_serial().as_str().to_string())
+                .collect::<Vec<_>>();
+            let mut expected = (1..9).map(|n| format!("ver:{n:020}")).collect::<Vec<_>>();
+            if matches!(direction, VersionStoreDirection::NewestFirst) {
+                expected.reverse();
+            }
+            assert_eq!(serials, expected);
+        }
+        let replay = store
+            .replay_after(VersionReplayRequest {
+                app_id: "pages".to_string(),
+                channel: "room".to_string(),
+                after_delivery_serial: 0,
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            replay
+                .iter()
+                .map(StoredVersionRecord::delivery_serial)
+                .collect::<Vec<_>>(),
+            (2..=9).collect::<Vec<_>>()
+        );
+        let mut requested = Vec::new();
+        for n in 0..7 {
+            let serial = MessageSerial::new(format!("msg:batch{n}")).unwrap();
+            let record = StoredVersionRecord {
+                app_id: "pages".to_string(),
+                channel: "batch".to_string(),
+                original_client_id: None,
+                envelope: None,
+                message: VersionedMessage::new_create(
+                    serial.clone(),
+                    VersionMetadata {
+                        serial: VersionSerial::new("ver:0").unwrap(),
+                        client_id: None,
+                        timestamp_ms: 0,
+                        description: None,
+                        metadata: None,
+                    },
+                    n + 1,
+                    n + 1,
+                    None,
+                    Some(MessageData::String("x".repeat(190_000))),
+                    None,
+                ),
+            };
+            assert!(matches!(
+                store
+                    .commit_create(VersionCreateRequest {
+                        record,
+                        limits: Default::default()
+                    })
+                    .await
+                    .unwrap(),
+                VersionCreateResult::Applied { .. }
+            ));
+            requested.push(serial);
+        }
+        let batch = store
+            .get_latest_batch("pages", "batch", &requested)
+            .await
+            .unwrap();
+        assert_eq!(batch.len(), requested.len());
+        assert!(requested.iter().all(|serial| batch.contains_key(serial)));
+        for n in 1..9 {
+            store
+                .client
+                .update_item()
+                .table_name(&store.tables.version_entries)
+                .key(
+                    "app_channel",
+                    DynamoDbVersionStore::attr_s(&DynamoDbVersionStore::app_channel_key(
+                        "pages", "room",
+                    )),
+                )
+                .key(
+                    "message_version_key",
+                    DynamoDbVersionStore::attr_s(&DynamoDbVersionStore::message_version_key(
+                        message_serial.as_str(),
+                        &format!("ver:{n:020}"),
+                    )),
+                )
+                .update_expression("SET expires_at = :expired")
+                .expression_attribute_values(":expired", DynamoDbVersionStore::attr_n(1))
+                .send()
+                .await
+                .unwrap();
+        }
+        let request = VersionStoreReadRequest {
+            app_id: "pages".to_string(),
+            channel: "room".to_string(),
+            message_serial,
+            direction: VersionStoreDirection::OldestFirst,
+            cursor: None,
+            limit: 7,
+        };
+        let expired = store.get_versions(request.clone()).await.unwrap();
+        assert!(expired.items.is_empty());
+        assert!(expired.has_more);
+        let end = store
+            .get_versions(VersionStoreReadRequest {
+                cursor: expired.next_cursor,
+                ..request
+            })
+            .await
+            .unwrap();
+        assert!(end.items.is_empty());
+        assert!(!end.has_more);
+        for table in [
+            &store.tables.version_entries,
+            &store.tables.version_messages,
+            &store.tables.version_streams,
+        ] {
+            store
+                .client
+                .delete_table()
+                .table_name(table)
+                .send()
+                .await
+                .unwrap();
+        }
+    }
+    #[tokio::test]
+    #[ignore = "requires isolated DynamoDB Local on port 25473"]
+    async fn rollback_preflight_rejects_oversized_legacy_items_before_rewrites() {
+        use sockudo_core::version_store::{
+            VersionCreateLimits, VersionMutation, VersionMutationLimits, VersionPrecondition,
+        };
+        use sockudo_core::versioned_messages::MessageAppend;
+        let settings = DynamoDbSettings {
+            endpoint_url: Some("http://127.0.0.1:25473".to_string()),
+            aws_access_key_id: Some("c2".to_string()),
+            aws_secret_access_key: Some("c2-local-only".to_string()),
+            ..Default::default()
+        };
+        let prefix = format!("c2preflight{}", uuid::Uuid::new_v4().simple());
+        let store = DynamoDbVersionStore::new(&settings, &prefix, 0)
+            .await
+            .unwrap();
+        store.set_append_storage_enabled(true).await.unwrap();
+        let metadata = |n| VersionMetadata {
+            serial: VersionSerial::new(format!("ver:{n:020}")).unwrap(),
+            client_id: None,
+            timestamp_ms: n,
+            description: None,
+            metadata: None,
+        };
+        let record = StoredVersionRecord {
+            app_id: "preflight".to_string(),
+            channel: "room".to_string(),
+            original_client_id: None,
+            envelope: None,
+            message: VersionedMessage::new_create(
+                MessageSerial::new("msg:large").unwrap(),
+                metadata(0),
+                1,
+                1,
+                None,
+                Some(MessageData::String("x".repeat(200_000))),
+                None,
+            ),
+        };
+        let mut oversized_create = record.clone();
+        oversized_create.message.data = Some(MessageData::String("x".repeat(400 * 1024)));
+        assert!(matches!(
+            store
+                .commit_create(VersionCreateRequest {
+                    record: oversized_create,
+                    limits: VersionCreateLimits::default()
+                })
+                .await,
+            Err(Error::Configuration(_))
+        ));
+        assert!(
+            store
+                .client
+                .scan()
+                .table_name(&store.tables.version_entries)
+                .consistent_read(true)
+                .send()
+                .await
+                .unwrap()
+                .items()
+                .is_empty(),
+            "oversized create must not stage chunks before validation"
+        );
+        let VersionCreateResult::Applied { mut record, .. } = store
+            .commit_create(VersionCreateRequest {
+                record,
+                limits: VersionCreateLimits::default(),
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("create failed");
+        };
+        for n in 1..=2 {
+            let result = store
+                .compare_and_apply(VersionMutationRequest {
+                    app_id: record.app_id.clone(),
+                    channel: record.channel.clone(),
+                    message_serial: record.message_serial().clone(),
+                    expected: VersionPrecondition::from_record(&record),
+                    version: metadata(n),
+                    mutation: VersionMutation::Append(MessageAppend {
+                        // 95 changed chunks fit when there is no receipt; the old
+                        // fixed94 cap incorrectly rejected this valid transaction.
+                        data_fragment: "y".repeat(if n == 1 {
+                            94 * CHUNK_BYTES + 1
+                        } else {
+                            93 * CHUNK_BYTES + 1
+                        }),
+                        extras: None,
+                    }),
+                    idempotency: (n == 2).then(|| {
+                        sockudo_core::message_envelope::PublishIdempotencyMetadata {
+                            cache_key: "boundary-receipt".to_string(),
+                            payload_fingerprint: "boundary".to_string(),
+                        }
+                    }),
+                    limits: VersionMutationLimits::default(),
+                })
+                .await
+                .unwrap();
+            let VersionMutationResult::Applied { record: next, .. } = result else {
+                panic!("append failed");
+            };
+            record = next;
+        }
+        let oversized_transaction = store
+            .compare_and_apply(VersionMutationRequest {
+                app_id: record.app_id.clone(),
+                channel: record.channel.clone(),
+                message_serial: record.message_serial().clone(),
+                expected: VersionPrecondition::from_record(&record),
+                version: metadata(3),
+                mutation: VersionMutation::Append(MessageAppend {
+                    // 99 changed chunks require two stage transactions (98 + 1).
+                    data_fragment: "z".repeat(98 * CHUNK_BYTES + 1),
+                    extras: None,
+                }),
+                idempotency: Some(sockudo_core::message_envelope::PublishIdempotencyMetadata {
+                    cache_key: "too-many".to_string(),
+                    payload_fingerprint: "too-many".to_string(),
+                }),
+                limits: VersionMutationLimits::default(),
+            })
+            .await;
+        let VersionMutationResult::Applied { record: next, .. } = oversized_transaction.unwrap()
+        else {
+            panic!("staged append failed");
+        };
+        record = next;
+        let reader = DynamoDbVersionStore::new(&settings, &prefix, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            reader
+                .get_latest(&record.app_id, &record.channel, record.message_serial())
+                .await
+                .unwrap()
+                .unwrap()
+                .message
+                .data,
+            record.message.data
+        );
+        let duplicate = reader
+            .compare_and_apply(VersionMutationRequest {
+                app_id: record.app_id.clone(),
+                channel: record.channel.clone(),
+                message_serial: record.message_serial().clone(),
+                expected: VersionPrecondition::from_record(&record),
+                version: metadata(4),
+                mutation: VersionMutation::Append(MessageAppend {
+                    data_fragment: "ignored duplicate".to_string(),
+                    extras: None,
+                }),
+                idempotency: Some(sockudo_core::message_envelope::PublishIdempotencyMetadata {
+                    cache_key: "too-many".to_string(),
+                    payload_fingerprint: "too-many".to_string(),
+                }),
+                limits: VersionMutationLimits::default(),
+            })
+            .await
+            .unwrap();
+        let VersionMutationResult::Duplicate {
+            record: duplicate, ..
+        } = duplicate
+        else {
+            panic!("staged receipt was not preserved");
+        };
+        assert_eq!(duplicate.message.data, record.message.data);
+        assert!(store.preflight_append_materialization(1).await.is_err());
+        assert!(store.append_storage_epoch().await.unwrap().is_some());
+        store.set_append_storage_enabled(false).await.unwrap();
+        assert!(store.materialize_append_storage(1).await.is_err());
+        let partition = DynamoDbVersionStore::app_channel_key(&record.app_id, &record.channel);
+        for key in [
+            DynamoDbVersionStore::message_version_key(
+                record.message_serial().as_str(),
+                &format!("ver:{:020}", 1),
+            ),
+            DynamoDbVersionStore::message_version_key(
+                record.message_serial().as_str(),
+                &format!("ver:{:020}", 2),
+            ),
+            DynamoDbVersionStore::operation_receipt_key("boundary-receipt"),
+        ] {
+            let item = store
+                .client
+                .get_item()
+                .table_name(&store.tables.version_entries)
+                .key("app_channel", DynamoDbVersionStore::attr_s(&partition))
+                .key("message_version_key", DynamoDbVersionStore::attr_s(&key))
+                .consistent_read(true)
+                .send()
+                .await
+                .unwrap()
+                .item
+                .unwrap();
+            assert!(
+                is_compact(&DynamoDbVersionStore::item_bytes(&item, "payload_bytes").unwrap()),
+                "failed preflight must not rewrite any compact entry or receipt"
+            );
+        }
+        assert_eq!(
+            store
+                .get_latest(&record.app_id, &record.channel, record.message_serial())
+                .await
+                .unwrap()
+                .unwrap()
+                .message
+                .data,
+            record.message.data
+        );
+        for table in [
+            &store.tables.version_entries,
+            &store.tables.version_messages,
+            &store.tables.version_streams,
+        ] {
+            store
+                .client
+                .delete_table()
+                .table_name(table)
+                .send()
+                .await
+                .unwrap();
+        }
+    }
+    #[tokio::test]
+    #[ignore = "requires isolated DynamoDB Local on port 25473"]
+    async fn staged_append_takeover_old_writer_and_marker_fences_preserve_committed_prefix() {
+        use sockudo_core::version_store::{
+            VersionCreateLimits, VersionMutation, VersionMutationLimits, VersionPrecondition,
+        };
+        use sockudo_core::versioned_messages::MessageAppend;
+        let settings = DynamoDbSettings {
+            endpoint_url: Some("http://127.0.0.1:25473".to_string()),
+            aws_access_key_id: Some("c2".to_string()),
+            aws_secret_access_key: Some("c2-local-only".to_string()),
+            ..Default::default()
+        };
+        let prefix = format!("c2stage{}", uuid::Uuid::new_v4().simple());
+        let store = DynamoDbVersionStore::new(&settings, &prefix, 0)
+            .await
+            .unwrap();
+        store.set_append_storage_enabled(true).await.unwrap();
+        let metadata = |n| VersionMetadata {
+            serial: VersionSerial::new(format!("ver:{n:020}")).unwrap(),
+            client_id: None,
+            timestamp_ms: n,
+            description: None,
+            metadata: None,
+        };
+        let seed = "original🙂".repeat(1000);
+        let record = StoredVersionRecord {
+            app_id: "staging".to_string(),
+            channel: "room".to_string(),
+            original_client_id: None,
+            envelope: None,
+            message: VersionedMessage::new_create(
+                MessageSerial::new("msg:staged").unwrap(),
+                metadata(0),
+                1,
+                1,
+                None,
+                Some(MessageData::String(seed.clone())),
+                None,
+            ),
+        };
+        let VersionCreateResult::Applied { record, .. } = store
+            .commit_create(VersionCreateRequest {
+                record,
+                limits: VersionCreateLimits::default(),
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("create failed");
+        };
+        let request = |current: &StoredVersionRecord, fragment: &str, n| VersionMutationRequest {
+            app_id: current.app_id.clone(),
+            channel: current.channel.clone(),
+            message_serial: current.message_serial().clone(),
+            expected: VersionPrecondition::from_record(current),
+            version: metadata(n),
+            mutation: VersionMutation::Append(MessageAppend {
+                data_fragment: fragment.to_string(),
+                extras: None,
+            }),
+            idempotency: None,
+            limits: VersionMutationLimits::default(),
+        };
+        let partition = DynamoDbVersionStore::app_channel_key(&record.app_id, &record.channel);
+        let latest = store
+            .client
+            .get_item()
+            .table_name(&store.tables.version_messages)
+            .key("app_channel", DynamoDbVersionStore::attr_s(&partition))
+            .key(
+                "message_serial",
+                DynamoDbVersionStore::attr_s(record.message_serial().as_str()),
+            )
+            .consistent_read(true)
+            .send()
+            .await
+            .unwrap()
+            .item
+            .unwrap();
+        let predecessor = AppendRunRef {
+            run: record.version_serial().clone(),
+            data_len: seed.len() as u64,
+            generation: DynamoDbVersionStore::item_str(&latest, "latest_append_generation"),
+        };
+        let candidate = |fragment: &str| {
+            let VersionMutationResult::Applied { record: next, .. } = request(&record, fragment, 1)
+                .apply_to(&record, "staging/room", 2, 0)
+                .unwrap()
+            else {
+                panic!("candidate failed");
+            };
+            let plan = AppendRunPlan::for_record_chunked(
+                record.version_serial(),
+                Some(&predecessor),
+                &next,
+            );
+            (next, plan)
+        };
+        let first_fragment = "a".repeat(10_000);
+        let second_fragment = "b".repeat(10_000);
+        let (first, first_plan) = candidate(&first_fragment);
+        let (second, second_plan) = candidate(&second_fragment);
+        let epoch = store.append_storage_epoch().await.unwrap().unwrap();
+        let first_token = store
+            .stage_append_chunks(
+                &first,
+                &first_plan,
+                &epoch,
+                &store.append_chunk_writes(&first, &first_plan).unwrap(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        // A fresh reader must not see the unpublished suffix or torn UTF-8 tail.
+        let reader = DynamoDbVersionStore::new(&settings, &prefix, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            reader
+                .get_latest(&record.app_id, &record.channel, record.message_serial())
+                .await
+                .unwrap()
+                .unwrap()
+                .message
+                .data,
+            record.message.data
+        );
+        assert!(
+            store
+                .stage_append_chunks(
+                    &second,
+                    &second_plan,
+                    &epoch,
+                    &store.append_chunk_writes(&second, &second_plan).unwrap()
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+        store
+            .client
+            .update_item()
+            .table_name(&store.tables.version_entries)
+            .key("app_channel", DynamoDbVersionStore::attr_s(&partition))
+            .key(
+                "message_version_key",
+                DynamoDbVersionStore::attr_s(&DynamoDbVersionStore::append_manifest_key(
+                    &first,
+                    first_plan.run().unwrap(),
+                )),
+            )
+            .update_expression("SET staging_deadline_ms = :expired")
+            .expression_attribute_values(":expired", DynamoDbVersionStore::attr_n(0))
+            .send()
+            .await
+            .unwrap();
+        let second_token = store
+            .stage_append_chunks(
+                &second,
+                &second_plan,
+                &epoch,
+                &store.append_chunk_writes(&second, &second_plan).unwrap(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(first_token, second_token);
+        let mut stale = store
+            .append_run_write(&first, &first_plan, true, 1)
+            .unwrap()
+            .unwrap();
+        DynamoDbVersionStore::fence_staged_publication(&mut stale, &first_token).unwrap();
+        let error = store
+            .client
+            .transact_write_items()
+            .transact_items(stale)
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .as_service_error()
+                .unwrap()
+                .is_transaction_canceled_exception()
+        );
+        // The ordinary atomic path intentionally ignores leases, just like an
+        // older format2 binary. Its head CAS fences every staged batch/commit.
+        let VersionMutationResult::Applied {
+            record: committed, ..
+        } = store
+            .compare_and_apply(request(&record, "committed", 1))
+            .await
+            .unwrap()
+        else {
+            panic!("ordinary writer failed");
+        };
+        let mut stale = store
+            .append_run_write(&second, &second_plan, true, 1)
+            .unwrap()
+            .unwrap();
+        DynamoDbVersionStore::fence_staged_publication(&mut stale, &second_token).unwrap();
+        let error = store
+            .client
+            .transact_write_items()
+            .transact_items(stale)
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .as_service_error()
+                .unwrap()
+                .is_transaction_canceled_exception()
+        );
+        assert!(
+            store
+                .stage_append_chunks(
+                    &second,
+                    &second_plan,
+                    &epoch,
+                    &store.append_chunk_writes(&second, &second_plan).unwrap()
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let reader = DynamoDbVersionStore::new(&settings, &prefix, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            reader
+                .get_latest(&record.app_id, &record.channel, record.message_serial())
+                .await
+                .unwrap()
+                .unwrap()
+                .message
+                .data,
+            Some(MessageData::String(seed + "committed"))
+        );
+        let mut previous = second_plan.run().unwrap().clone();
+        previous.data_len = committed.data_bytes().unwrap() as u64;
+        let VersionMutationResult::Applied {
+            record: candidate, ..
+        } = request(&committed, "never-visible", 2)
+            .apply_to(&committed, "staging/room", 3, 1)
+            .unwrap()
+        else {
+            panic!("candidate failed");
+        };
+        let plan = AppendRunPlan::for_record_chunked(
+            committed.version_serial(),
+            Some(&previous),
+            &candidate,
+        );
+        store.set_append_storage_enabled(false).await.unwrap();
+        assert!(
+            store
+                .stage_append_chunks(
+                    &candidate,
+                    &plan,
+                    &epoch,
+                    &store.append_chunk_writes(&candidate, &plan).unwrap()
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // Simulate a TTL-delayed expired compact entry whose chunks are gone.
+        let missing_run = AppendRunPlan::for_seed_record(&candidate);
+        let mut expired = store
+            .entry_item(&candidate, missing_run.encode(&candidate).unwrap(), None)
+            .unwrap();
+        expired.insert(
+            DynamoDbVersionStore::EXPIRES_AT_ATTR.to_string(),
+            DynamoDbVersionStore::attr_n(1),
+        );
+        store
+            .client
+            .put_item()
+            .table_name(&store.tables.version_entries)
+            .set_item(Some(expired))
+            .send()
+            .await
+            .unwrap();
+        store.preflight_append_materialization(1).await.unwrap();
+        assert!(store.materialize_append_storage(1).await.unwrap() > 0);
+        assert_eq!(
+            reader
+                .get_latest(&record.app_id, &record.channel, record.message_serial())
+                .await
+                .unwrap()
+                .unwrap()
+                .message
+                .data,
+            committed.message.data
+        );
+        for table in [
+            &store.tables.version_entries,
+            &store.tables.version_messages,
+            &store.tables.version_streams,
+        ] {
+            store
+                .client
+                .delete_table()
+                .table_name(table)
+                .send()
+                .await
+                .unwrap();
+        }
     }
 }

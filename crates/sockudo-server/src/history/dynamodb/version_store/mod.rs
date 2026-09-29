@@ -547,6 +547,7 @@ impl DynamoDbVersionStore {
         if let Some(expires_at) = self.expires_at_value() {
             item.insert(Self::EXPIRES_AT_ATTR.to_string(), expires_at);
         }
+        Self::validate_item_size(&item)?;
         Ok(item)
     }
 }

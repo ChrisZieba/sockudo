@@ -42,6 +42,14 @@ struct Args {
     /// Disable compact writes before materialization and rollback.
     #[arg(long, conflicts_with = "materialize_append_storage")]
     disable_append_storage: bool,
+    /// Check backend legacy-row size constraints without changing the marker
+    /// or rewriting records. Stop writers for a stable result.
+    #[arg(long, conflicts_with_all = ["enable_append_storage", "disable_append_storage", "materialize_append_storage", "rollback_append_storage"])]
+    check_append_storage_rollback: bool,
+    /// Preflight legacy-row limits, disable compact writes and materialize.
+    /// Stop all writers first and keep them stopped until completion.
+    #[arg(long, conflicts_with_all = ["enable_append_storage", "disable_append_storage", "materialize_append_storage"])]
+    rollback_append_storage: bool,
 }
 
 // jemalloc is the default allocator, Windows MSVC falls back to the system allocator.
@@ -151,7 +159,9 @@ async fn main() -> Result<()> {
 
     info!(debug = config.debug, "configuration loading complete");
 
-    let result = if args.materialize_append_storage {
+    let result = if args.check_append_storage_rollback || args.rollback_append_storage {
+        run_append_storage_rollback(config, args.rollback_append_storage).await
+    } else if args.materialize_append_storage {
         materialize_append_storage(config).await
     } else if args.enable_append_storage || args.disable_append_storage {
         set_append_storage_enabled(config, args.enable_append_storage).await
@@ -225,6 +235,45 @@ async fn set_append_storage_enabled(_config: ServerOptions, _enabled: bool) -> R
     ))
 }
 
+#[cfg(feature = "versioned-messages")]
+async fn run_append_storage_rollback(config: ServerOptions, execute: bool) -> Result<()> {
+    let store = history::create_version_store(
+        &config.versioned_messages,
+        &config.history,
+        &config.database,
+        &config.database_pooling,
+    )
+    .await?;
+    store
+        .validate_append_storage_rollback(MATERIALIZE_BATCH_SIZE)
+        .await
+        .inspect_err(|error| error!(error = %error, "append storage rollback preflight failed"))?;
+    info!("append storage rollback preflight complete");
+    if execute {
+        store.set_append_storage_enabled(false).await.inspect_err(
+            |error| error!(error = %error, "append storage rollback disable failed"),
+        )?;
+        let rewritten = store
+            .materialize_append_storage(MATERIALIZE_BATCH_SIZE)
+            .await
+            .inspect_err(
+                |error| error!(error = %error, "append storage rollback materialization failed"),
+            )?;
+        info!(
+            rewritten_count = rewritten,
+            "append storage rollback complete"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "versioned-messages"))]
+async fn run_append_storage_rollback(_config: ServerOptions, _execute: bool) -> Result<()> {
+    Err(Error::Configuration(
+        "append storage rollback requires the versioned-messages feature".to_string(),
+    ))
+}
+
 async fn run_server(config: ServerOptions) -> Result<()> {
     info!("Starting Sockudo server initialization process with resolved configuration...");
 
@@ -257,4 +306,27 @@ async fn run_server(config: ServerOptions) -> Result<()> {
 
     info!("Sockudo server shutdown complete.");
     Ok(())
+}
+
+#[cfg(test)]
+mod args_tests {
+    use super::Args;
+    use clap::Parser;
+
+    #[test]
+    fn append_maintenance_actions_are_mutually_exclusive() {
+        let actions = [
+            "--enable-append-storage",
+            "--disable-append-storage",
+            "--materialize-append-storage",
+            "--check-append-storage-rollback",
+            "--rollback-append-storage",
+        ];
+        for (index, action) in actions.iter().enumerate() {
+            assert!(Args::try_parse_from(["sockudo", action]).is_ok());
+            for other in &actions[index + 1..] {
+                assert!(Args::try_parse_from(["sockudo", action, other]).is_err());
+            }
+        }
+    }
 }

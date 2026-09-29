@@ -1,4 +1,18 @@
-#![cfg(all(feature = "redis", feature = "surrealdb", feature = "dynamodb"))]
+#![cfg(all(
+    feature = "redis",
+    feature = "surrealdb",
+    feature = "dynamodb",
+    feature = "recovery"
+))]
+
+// Backend modules are also compiled directly into this integration-test crate.
+// Keep their test-only diagnostic path available without including the server.
+#[allow(dead_code)]
+#[path = "../src/history/c2_wire_meter.rs"]
+pub(crate) mod c2_wire_meter;
+mod history {
+    pub(crate) use crate::c2_wire_meter;
+}
 
 #[allow(dead_code)]
 #[path = "../src/history/dynamodb/mod.rs"]

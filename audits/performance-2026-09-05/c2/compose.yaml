@@ -27,7 +27,9 @@ services:
               "--broadcast-rpc-address", "127.0.0.1"]
     ports: ["127.0.0.1:25474:25474"]
   surrealdb:
-    image: surrealdb/surrealdb:v3.0.4
+    # 5063eb34 used 3.0.4; its decoder-limit failure remains historical evidence.
+    # 3.3.0 also fixes the 3.2.x memory-engine lost-update defect.
+    image: surrealdb/surrealdb:v3.3.0@sha256:681c6c22c287421b5c7d99e0fde79b6e0d32c36c1ddeaab2762a1661cb04cd20
     command: ["start", "--user", "root", "--pass", "c2-local-only", "memory"]
     ports: ["127.0.0.1:25475:8000"]
   # Workspace tests only; not running during any measurement.

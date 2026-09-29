@@ -632,7 +632,7 @@ pub(super) async fn cleanup(backend: &str, prefix: &str) {
             .await
             .unwrap();
             db.use_ns("c2").use_db("c2").await.unwrap();
-            for suffix in ["key_v1", "mutate_v1"] {
+            for suffix in ["key_v1", "mutate_v1", "mutate_v2"] {
                 db.query(format!(
                     "REMOVE FUNCTION IF EXISTS fn::{prefix}_version_entries_{suffix}"
                 ))

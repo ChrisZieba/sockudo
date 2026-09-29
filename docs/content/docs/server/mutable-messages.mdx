@@ -98,12 +98,33 @@ ScyllaDB and SurrealDB uses that generation plus tenant/channel/message identity
 a cached prefix never supplies a longer version written by another node.
 PostgreSQL/MySQL fetch page rows and their required chunks in one statement.
 
+DynamoDB follows service pagination for version history, replay and latest-state
+enumeration, including pages containing only expired records. Large append
+fragments that exceed one transaction's chunk capacity use fenced staging:
+bounded batches write an unpublished suffix, then a final transaction publishes
+the operation, receipt and new head together. Concurrent writers, marker changes
+and abandoned staging cannot expose a partial append. The original operation
+and receipt must still fit DynamoDB's individual item size limit.
+
 ScyllaDB reuses prepared statements through a bounded 64-entry cache. SurrealDB
 initialization defines immutable, versioned mutation functions alongside its
 tables; database credentials must permit defining those functions. Mutations
 still run inside one explicit transaction, including the format fence, serial
 checks, original entry, chunks and receipt. Older releases ignore the functions,
 and rollback materialization still restores the legacy full-row representation.
+SurrealDB also enforces a unique delivery position per app/channel. Initialization
+rejects existing duplicate positions instead of silently accepting a forked
+history. Inspect and repair such data before restarting writers. Concurrent
+mutation conflicts retry the complete operation with fresh state, while retaining
+the original precondition and operation receipt identity.
+The SurrealDB version store requires a stable server release **3.3.0 or later**.
+Earlier in-memory engines can lose concurrent updates even inside guarded
+transactions, and older servers also have a FlatBuffers limit affecting large
+legacy byte-array records. Startup rejects older versions because the remote
+connection cannot reliably identify which storage engine the server uses.
+Upgrade the database before starting writers with this release. See the
+[upstream concurrency defect](https://github.com/surrealdb/surrealdb/issues/7473)
+and [3.3 release notes](https://surrealdb.com/releases/3.3).
 
 #### Rolling upgrade and activation
 
@@ -132,21 +153,42 @@ there. Older C2 writers ignore the marker, so remove them before activation.
 
 #### Rollback and retention
 
-Stop writers, disable new compact writes, then materialize before starting an
-older reader:
+Stop every writer, then check the backend's legacy representation constraints:
 
 ```sh
-sockudo --config <file> --disable-append-storage
-sockudo --config <file> --materialize-append-storage
+sockudo --config <file> --check-append-storage-rollback
 ```
+
+This check does not change the format marker or rewrite version records. On
+DynamoDB it scans compact entries, receipts and latest states and checks their
+materialized item sizes, including attribute names. A successful check is valid
+only while writers remain stopped; it is not a cluster-wide admission fence.
+Numeric attributes use a conservative size bound, so an item extremely close
+to the service limit may be rejected even if DynamoDB could encode it smaller.
+
+To check, disable compact writes and materialize in one command, run:
+
+```sh
+sockudo --config <file> --rollback-append-storage
+```
+
+The command performs the size preflight before changing the marker. If a later
+database operation fails, keep writers stopped and rerun the command; earlier
+rewrites are safe to repeat. Start the older release only after completion.
+The separate `--disable-append-storage` and `--materialize-append-storage`
+commands remain available. DynamoDB materialization also performs a preflight
+before its first rewrite.
 
 Materialization supports both compact formats, including latest states and
 receipts, and is idempotent. It restores full per-version storage and its write
 cost. Disabling the marker alone does not make existing compact rows readable by
 older releases; those releases reject unknown formats rather than return
-partial data. DynamoDB materialization remains subject to its full-item size
-limit, so an aggregate that outgrows a legacy full row cannot be rolled back to
-that representation without resolving that size limit.
+partial data. DynamoDB's 400 KiB item limit cannot be raised by this command.
+If any required legacy row exceeds it, the preflight rejects rollback before
+changing the marker or rewriting entries. Continue using a release that supports
+chunked storage; do not truncate messages or delete receipts to force rollback.
+The limit applies to the encoded full item, which may contain multiple copies
+of message data, not just to the aggregate string length.
 
 Chunks are removed only when no retained entry or receipt needs them.
 PostgreSQL/MySQL remove chunks with unreferenced runs; SurrealDB also protects
