@@ -366,6 +366,16 @@ export interface PushDeadLetterQuery extends PushPageQuery {
 
 import type { DashboardUser, UserRole } from "@/types/user";
 
+export interface LoginChallenge {
+  mfa_required: true;
+  challenge: string;
+}
+
+export interface TotpSetup {
+  secret: string;
+  otpauth_uri: string;
+}
+
 class ApiError extends Error {
   constructor(
     message: string,
@@ -404,9 +414,34 @@ function withQuery(
 
 export const api = {
   login: (email: string, password: string) =>
-    request<DashboardUser>("/api/v1/auth/login", {
+    request<DashboardUser | LoginChallenge>("/api/v1/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
+    }),
+  verifyTotp: (challenge: string, code: string) =>
+    request<DashboardUser>("/api/v1/auth/totp/verify", {
+      method: "POST",
+      body: JSON.stringify({ challenge, code }),
+    }),
+  setupTotp: (password: string) =>
+    request<TotpSetup>("/api/v1/auth/totp/setup", {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    }),
+  enableTotp: (password: string, code: string) =>
+    request<{ user: DashboardUser; recovery_codes: string[] }>("/api/v1/auth/totp/enable", {
+      method: "POST",
+      body: JSON.stringify({ password, code }),
+    }),
+  disableTotp: (password: string, code: string) =>
+    request<DashboardUser>("/api/v1/auth/totp/disable", {
+      method: "POST",
+      body: JSON.stringify({ password, code }),
+    }),
+  regenerateRecoveryCodes: (password: string, code: string) =>
+    request<{ recovery_codes: string[] }>("/api/v1/auth/totp/recovery-codes", {
+      method: "POST",
+      body: JSON.stringify({ password, code }),
     }),
   logout: () =>
     request<{ ok: boolean }>("/api/v1/auth/logout", { method: "POST" }),

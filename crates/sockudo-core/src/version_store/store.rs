@@ -140,8 +140,9 @@ pub trait VersionStore: Send + Sync {
     async fn stream_state(&self, app_id: &str, channel: &str) -> Result<VersionStreamState>;
 
     /// Purge version entries whose server-side `created_at_ms` is strictly
-    /// older than `before_ms`. Backends with native TTL (ScyllaDB, DynamoDB)
-    /// return `(0, false)` — the storage engine handles expiry asynchronously.
+    /// older than `before_ms`. Native TTL expires ScyllaDB/DynamoDB history
+    /// asynchronously. DynamoDB also advances bounded reference-checked chunk
+    /// cleanup; ScyllaDB returns `(0, false)` for its non-expiring commit rows.
     ///
     /// `batch_size` caps the rows deleted per call so transaction/lock sizes
     /// stay bounded. Returns `(rows_deleted, has_more)`; callers loop while
@@ -149,6 +150,36 @@ pub trait VersionStore: Send + Sync {
     async fn purge_before(&self, before_ms: i64, batch_size: usize) -> Result<(u64, bool)> {
         let _ = (before_ms, batch_size);
         Ok((0, false))
+    }
+
+    /// Persist the store-wide format marker. Maintenance callers must first
+    /// remove older writers; disabling does not materialize existing rows.
+    async fn set_append_storage_enabled(&self, enabled: bool) -> Result<()> {
+        let _ = enabled;
+        Err(Error::Configuration(
+            "append storage marker requires a durable store".to_string(),
+        ))
+    }
+
+    /// Check backend-specific legacy representation limits before rollback.
+    /// Does not change the marker or rewrite records. Callers must stop writers
+    /// and keep them stopped through materialization: this is not a snapshot
+    /// or a cluster-wide admission fence. Backends without additional legacy
+    /// size constraints have no extra feasibility checks.
+    async fn validate_append_storage_rollback(&self, batch_size: usize) -> Result<()> {
+        let _ = batch_size;
+        Ok(())
+    }
+
+    /// Rewrite every compact append entry and receipt as a self-contained
+    /// record (see [`super::append_storage`]) so a release without compact
+    /// append storage can read it. Rollback-only maintenance: stop writers
+    /// first. Runs to completion in batches of `batch_size` rows and returns
+    /// the number of payloads rewritten. Stores that keep no state across a
+    /// restart have nothing to rewrite.
+    async fn materialize_append_storage(&self, batch_size: usize) -> Result<u64> {
+        let _ = batch_size;
+        Ok(0)
     }
 }
 

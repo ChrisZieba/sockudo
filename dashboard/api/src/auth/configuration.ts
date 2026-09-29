@@ -6,6 +6,20 @@ const DOCUMENTED_PLACEHOLDERS = new Set([
   "change-me-use-openssl-rand-base64-32",
 ]);
 
+export function resolveTotpEncryptionKey(
+  env: Record<string, string | undefined>,
+): Buffer | null {
+  const value = env.DASHBOARD_TOTP_ENCRYPTION_KEY;
+  if (!value) return null;
+  const key = Buffer.from(value, "base64");
+  if (key.length !== 32 || key.toString("base64") !== value) {
+    throw new Error(
+      "DASHBOARD_TOTP_ENCRYPTION_KEY must be 32 random bytes encoded as base64",
+    );
+  }
+  return key;
+}
+
 export function resolveSessionSecret(
   env: Record<string, string | undefined>,
 ): string {
@@ -19,10 +33,14 @@ export function resolveSessionSecret(
     throw new Error("DASHBOARD_SESSION_SECRET must be at least 32 bytes");
   }
   if (DOCUMENTED_PLACEHOLDERS.has(value)) {
-    throw new Error("DASHBOARD_SESSION_SECRET must not use a public placeholder");
+    throw new Error(
+      "DASHBOARD_SESSION_SECRET must not use a public placeholder",
+    );
   }
   if (value === TEST_ONLY_SECRET && env.NODE_ENV !== "test") {
-    throw new Error("The dashboard test session secret is only valid in NODE_ENV=test");
+    throw new Error(
+      "The dashboard test session secret is only valid in NODE_ENV=test",
+    );
   }
   return value;
 }

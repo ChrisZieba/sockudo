@@ -107,6 +107,8 @@ url = "${REDIS_URL:-redis://localhost:6379}"
 | `HOSTNAME` | Fallback node identity for Iggy when `INSTANCE_PROCESS_ID` is not set. |
 | `HEALTH_CHECK_TIMEOUT_MS` | Per-dependency timeout for `/up` health checks in milliseconds. Defaults to `2000`. |
 | `HTTP_API_USAGE_ENABLED` | Enables `/usage` and `/stats` operational endpoints. |
+| `HTTP_API_READINESS_HIGH_WATERMARK` | Fraction of `SOCKUDO_MAX_CONNECTIONS` that makes `/ready` return `503 CAPACITY`. Defaults to `0.95`. |
+| `HTTP_API_READINESS_LOW_WATERMARK` | Fraction at or below which `/ready` recovers after capacity shedding. Defaults to `0.85`; must be nonnegative and less than the high watermark. |
 | `HTTP_API_ACCEPT_TRAFFIC_ENABLED` | Enables memory-pressure admission control for new WebSocket connections. Defaults to `false`. |
 | `HTTP_API_ACCEPT_TRAFFIC_MEMORY_THRESHOLD` | Fraction of the effective memory limit that closes new-connection admission. Defaults to `0.9`; valid range is greater than `0` through `1`. |
 | `HTTP_API_ACCEPT_TRAFFIC_MEMORY_LIMIT_BYTES` | Optional explicit memory limit in bytes. When unset, Linux cgroup v2/v1 limits are discovered. |

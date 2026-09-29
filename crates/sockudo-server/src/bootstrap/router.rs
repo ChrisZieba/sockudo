@@ -5,7 +5,7 @@ use crate::http_handler::{
     channel_message_versions, channel_presence_history, channel_presence_history_reset,
     channel_presence_history_snapshot, channel_presence_history_state, channel_users, channels,
     delete_annotation, delete_message, events, fallback_404, force_reconnect_user, live, metrics,
-    publish_annotation, revoke_capability_tokens, stats, terminate_user_connections, up,
+    publish_annotation, ready, revoke_capability_tokens, stats, terminate_user_connections, up,
     update_message, usage,
 };
 use crate::middleware::pusher_api_auth_middleware;
@@ -628,6 +628,7 @@ impl SockudoServer {
             .merge(api_router)
             .route("/accept-traffic", get(accept_traffic))
             .route("/up", get(up))
+            .route("/ready", get(ready))
             .route("/up/{appId}", get(up))
             .route("/live", get(live));
 

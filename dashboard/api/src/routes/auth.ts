@@ -1,5 +1,5 @@
 import { Hono, type Context } from "hono";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { isIP } from "node:net";
 import {
   clearSessionCookie,
@@ -16,6 +16,8 @@ import type { UsersRepository } from "../db/users-repository.ts";
 import { toPublicUser } from "../types/user.ts";
 import type { AppVariables } from "../types/hono.ts";
 import { config } from "../config.ts";
+import { totpState, hashCode, userCredentialVersion } from "../auth/totp.ts";
+import { createTotpRoutes } from "./totp.ts";
 
 interface AuthBindings {
   remoteAddress?: string;
@@ -24,6 +26,9 @@ interface AuthBindings {
 interface AuthRouteOptions {
   limiter?: LoginRateLimiter;
   resolveSourceIp?: (c: Context) => string;
+  totpLimiter?: LoginRateLimiter;
+  totpKey?: Buffer | null;
+  now?: () => number;
 }
 
 export function createAuthRoutes(
@@ -37,11 +42,27 @@ export function createAuthRoutes(
   const limiter = options.limiter ?? createDefaultLoginRateLimiter();
   const resolveSourceIp = options.resolveSourceIp ?? defaultSourceIp;
   const requireAuth = createRequireAuth(usersRepo);
+  const now = options.now ?? Date.now;
+  const totpKey =
+    options.totpKey === undefined ? config.totpEncryptionKey : options.totpKey;
+  authRoutes.use("*", async (c, next) => {
+    c.header("Cache-Control", "no-store");
+    await next();
+  });
 
   authRoutes.post("/login", async (c) => {
-    const body = await c.req.json<{ email?: string; password?: string }>();
-    const email = body.email?.trim().toLowerCase() ?? "";
-    const password = body.password ?? "";
+    const body = await c.req.json().catch(() => null);
+    if (
+      !body ||
+      typeof body.email !== "string" ||
+      typeof body.password !== "string" ||
+      body.email.length > 255 ||
+      body.password.length > 1024
+    ) {
+      return c.json({ error: "email and password are required" }, 400);
+    }
+    const email = body.email.trim().toLowerCase();
+    const password = body.password;
     const accountKey = accountFingerprint(email);
 
     const rate = limiter.consume(resolveSourceIp(c), accountKey);
@@ -60,12 +81,33 @@ export function createAuthRoutes(
       return c.json({ error: "Invalid credentials" }, 401);
     }
 
+    const state = totpState(user);
+    if (state.secret) {
+      if (!totpKey)
+        return c.json(
+          { error: "Two-factor authentication is unavailable" },
+          503,
+        );
+      const challenge = `${user.id}.${randomBytes(32).toString("base64url")}`;
+      state.challenge = {
+        hash: hashCode(challenge),
+        expiresAt: now() + 5 * 60_000,
+        attempts: 0,
+        version: userCredentialVersion(user),
+      };
+      if (!(await usersRepo.compareAndSetTotp(user, JSON.stringify(state)))) {
+        return c.json({ error: "Authentication changed; sign in again" }, 409);
+      }
+      return c.json({ mfa_required: true, challenge });
+    }
+
     const token = await createSession({
       id: user.id,
       email: user.email,
       name: user.name,
       role: user.role,
       passwordHash: user.password_hash,
+      authVersion: user.auth_version,
     });
     limiter.resetAccount(accountKey);
     c.header("Set-Cookie", sessionCookie(token));
@@ -79,6 +121,17 @@ export function createAuthRoutes(
 
   authRoutes.get("/me", requireAuth, (c) =>
     c.json(toPublicUser(c.get("currentUser"))),
+  );
+
+  authRoutes.route(
+    "/totp",
+    createTotpRoutes(usersRepo, {
+      key: totpKey,
+      now,
+      limiter: options.totpLimiter ?? createDefaultLoginRateLimiter(),
+      loginLimiter: limiter,
+      resolveSourceIp,
+    }),
   );
 
   authRoutes.use("/protected-check", requireAuth);

@@ -173,6 +173,10 @@ impl ServerOptions {
     pub fn validate(&self) -> Result<(), String> {
         self.ably_compat.validate()?;
         self.http_api
+            .readiness
+            .validate()
+            .map_err(|error| format!("http_api.readiness: {error}"))?;
+        self.http_api
             .accept_traffic
             .validate()
             .map_err(|error| format!("http_api.accept_traffic: {error}"))?;

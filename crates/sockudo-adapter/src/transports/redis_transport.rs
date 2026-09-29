@@ -83,6 +83,9 @@ impl HorizontalTransport for RedisTransport {
         )
         .await?;
 
+        // Verify and retain an independent probe path before accepting traffic.
+        let _ = client.health_connection().await?;
+
         let broadcast_channel = format!("{}:#broadcast", config.prefix);
         let request_channel = format!("{}:#requests", config.prefix);
         let response_channel = format!("{}:#responses", config.prefix);
@@ -497,13 +500,17 @@ impl HorizontalTransport for RedisTransport {
     }
 
     async fn check_health(&self) -> Result<()> {
-        // Use a dedicated connection for health check to avoid impacting main operations
-        let mut conn = self.client.multiplexed().await?;
+        // Reuse a dedicated reconnecting connection: periodic maintenance must
+        // not force every probe through a new TCP/TLS handshake.
+        let mut conn = self.client.health_connection().await?;
 
         let response = redis::cmd("PING")
             .query_async::<String>(&mut conn)
             .await
-            .map_err(|e| Error::Redis(format!("Health check PING failed: {e}")))?;
+            .map_err(|e| {
+                self.client.invalidate();
+                Error::Redis(format!("Health check PING failed: {e}"))
+            })?;
 
         if response == "PONG" {
             Ok(())
@@ -543,5 +550,81 @@ impl Clone for RedisTransport {
             is_running: self.is_running.clone(),
             owner_count: self.owner_count.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpListener;
+    use tokio::task::JoinSet;
+
+    #[tokio::test]
+    async fn health_reuses_independent_connection_and_propagates_ping_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let reject_ping = Arc::new(AtomicBool::new(false));
+        let server_count = accepted.clone();
+        let server_reject = reject_ping.clone();
+        let server = tokio::spawn(async move {
+            let mut connections = JoinSet::new();
+            loop {
+                let (socket, _) = listener.accept().await.unwrap();
+                server_count.fetch_add(1, Ordering::SeqCst);
+                let reject = server_reject.clone();
+                connections.spawn(async move {
+                    let mut socket = BufReader::new(socket);
+                    loop {
+                        let mut line = String::new();
+                        if socket.read_line(&mut line).await.unwrap() == 0 {
+                            break;
+                        }
+                        let count: usize = line.trim().strip_prefix('*').unwrap().parse().unwrap();
+                        let mut args = Vec::with_capacity(count);
+                        for _ in 0..count {
+                            line.clear();
+                            socket.read_line(&mut line).await.unwrap();
+                            let len: usize =
+                                line.trim().strip_prefix('$').unwrap().parse().unwrap();
+                            let mut arg = vec![0; len + 2];
+                            socket.read_exact(&mut arg).await.unwrap();
+                            arg.truncate(len);
+                            args.push(arg);
+                        }
+                        let response: &[u8] = if args[0] == b"PING" {
+                            if reject.load(Ordering::SeqCst) {
+                                b"-ERR probe failed\r\n"
+                            } else {
+                                b"+PONG\r\n"
+                            }
+                        } else {
+                            b"+OK\r\n"
+                        };
+                        socket.get_mut().write_all(response).await.unwrap();
+                    }
+                });
+            }
+        });
+        let transport = RedisTransport::new(RedisAdapterConfig {
+            url: format!("redis://{address}"),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        // Command, event, and health each have an independent connection.
+        assert_eq!(accepted.load(Ordering::SeqCst), 3);
+        for _ in 0..10 {
+            transport.clone().check_health().await.unwrap();
+        }
+        assert_eq!(accepted.load(Ordering::SeqCst), 3);
+        reject_ping.store(true, Ordering::SeqCst);
+        assert!(transport.check_health().await.is_err());
+        reject_ping.store(false, Ordering::SeqCst);
+        transport.check_health().await.unwrap();
+        assert_eq!(accepted.load(Ordering::SeqCst), 3);
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
     }
 }

@@ -1,36 +1,36 @@
 [
   {
-    "event": "sockudo_internal:subscription_succeeded",
     "channel": "private-ai-recovery-golden",
     "data": {
       "attach_serial": "<serial>"
     },
+    "event": "sockudo_internal:subscription_succeeded",
     "message_id": "<message_id>",
-    "stream_id": "<stream_id>",
-    "serial": "<serial>"
+    "serial": "<serial>",
+    "stream_id": "<stream_id>"
   },
   {
-    "event": "ai-output",
     "channel": "private-ai-recovery-golden",
     "data": "recoverable",
-    "message_id": "<message_id>",
-    "stream_id": "<stream_id>",
-    "serial": "<serial>",
+    "event": "ai-output",
     "extras": {
-      "headers": {
-        "sockudo_version_serial": "<sockudo_version_serial>",
-        "sockudo_action": "message.create",
-        "sockudo_message_serial": "<sockudo_message_serial>",
-        "sockudo_version_timestamp_ms": "<timestamp>",
-        "sockudo_history_serial": "<serial>"
-      },
       "ai": {
+        "codec": {},
         "transport": {
-          "status": "complete",
-          "discrete": "true"
-        },
-        "codec": {}
+          "discrete": "true",
+          "status": "complete"
+        }
+      },
+      "headers": {
+        "sockudo_action": "message.create",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>"
       }
-    }
+    },
+    "message_id": "<message_id>",
+    "serial": "<serial>",
+    "stream_id": "<stream_id>"
   }
 ]

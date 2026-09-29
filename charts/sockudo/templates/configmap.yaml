@@ -34,6 +34,10 @@ data:
       },
       "http_api": {
         "usage_enabled": {{ .Values.config.httpApi.usageEnabled }},
+        "readiness": {
+          "high_watermark": {{ .Values.config.httpApi.readiness.highWatermark }},
+          "low_watermark": {{ .Values.config.httpApi.readiness.lowWatermark }}
+        },
         "accept_traffic": {
           "enabled": {{ .Values.config.httpApi.acceptTraffic.enabled }},
           "memory_threshold": {{ .Values.config.httpApi.acceptTraffic.memoryThreshold }},
@@ -95,7 +99,13 @@ data:
         "origin": {{ .Values.config.cors.origin | toJson }},
         "methods": {{ .Values.config.cors.methods | toJson }},
         "allowed_headers": {{ .Values.config.cors.allowedHeaders | toJson }}
-      }
+      }{{- if .Values.redis.sentinels }},
+      "database": {
+        "redis": {
+          "name": {{ .Values.redis.sentinelMasterName | quote }},
+          "sentinels": {{ .Values.redis.sentinels | toJson }}
+        }
+      }{{- end }}
     }
   {{- end }}
 {{- end }}

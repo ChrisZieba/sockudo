@@ -14,6 +14,7 @@ pub mod message_handlers;
 pub mod origin_validation;
 pub mod presence_update;
 pub mod rate_limiting;
+mod readiness;
 #[cfg(feature = "recovery")]
 pub mod recovery;
 pub mod signin_management;
@@ -175,6 +176,7 @@ pub struct ConnectionHandler {
     publish_order_gates: Arc<FastDashMap<String, Arc<ChannelPublishGate>>>,
     watchlist_manager: Arc<WatchlistManager>,
     server_options: Arc<ServerOptions>,
+    capacity: Arc<readiness::Capacity>,
     cleanup_queue: Option<crate::cleanup::CleanupSender>,
     cleanup_consecutive_failures: Arc<AtomicUsize>,
     cleanup_circuit_breaker_opened_at: Arc<AtomicU64>,
@@ -415,6 +417,7 @@ impl ConnectionHandlerBuilder {
             publish_order_gates: Arc::new(fast_dashmap()),
             watchlist_manager: Arc::new(WatchlistManager::new()),
             server_options: Arc::new(self.server_options),
+            capacity: Arc::new(readiness::Capacity::default()),
             cleanup_queue: self.cleanup_queue,
             cleanup_consecutive_failures: Arc::new(AtomicUsize::new(0)),
             cleanup_circuit_breaker_opened_at: Arc::new(AtomicU64::new(0)),
@@ -565,6 +568,14 @@ impl ConnectionHandler {
     /// shutdown has flipped the shared running flag, signalling drain.
     pub fn is_accepting(&self) -> bool {
         self.running.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Whether live socket occupancy permits routing new traffic to this node.
+    pub fn is_capacity_ready(&self) -> bool {
+        self.capacity.is_ready(
+            self.server_options.max_connections,
+            &self.server_options.http_api.readiness,
+        )
     }
 
     /// Whether memory pressure is currently closing only new-connection admission.
@@ -770,6 +781,7 @@ impl ConnectionHandler {
         )
         .await?;
 
+        let mut live_connection = self.capacity.track();
         // Wrapped in an async block so any early return still reaches cleanup_socket below.
         let result = async {
             // Setup rate limiting if needed
@@ -822,11 +834,18 @@ impl ConnectionHandler {
             self.setup_initial_timeouts(&socket_id, &app_config).await?;
 
             // Main message loop
-            self.run_message_loop(socket_rx, &socket_id, &app_config, shutdown_token)
-                .await
+            self.run_message_loop(
+                socket_rx,
+                &socket_id,
+                &app_config,
+                shutdown_token,
+                &mut live_connection,
+            )
+            .await
         }
         .await;
 
+        live_connection.release();
         self.cleanup_socket(&socket_id, &app_config).await;
 
         result
@@ -943,6 +962,7 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         app_config: &App,
         shutdown_token: Option<tokio_util::sync::CancellationToken>,
+        live_connection: &mut readiness::LiveConnection,
     ) -> Result<()> {
         loop {
             let next = if let Some(ref token) = shutdown_token {
@@ -971,6 +991,7 @@ impl ConnectionHandler {
                         sockudo_ws::Error::HeartbeatTimeout | sockudo_ws::Error::IdleTimeout
                     ) =>
                 {
+                    live_connection.release();
                     if let Some(connection) = self
                         .connection_manager
                         .get_connection(socket_id, &app_config.id)
@@ -992,6 +1013,7 @@ impl ConnectionHandler {
             };
             match message {
                 Message::Close(_) => {
+                    live_connection.release();
                     debug!(socket_id = %socket_id, "socket close frame received");
                     // Cleanup drops the split halves; let the Close reply leave first.
                     sockudo_core::websocket::finish_peer_close(&mut reader).await;
@@ -1004,6 +1026,7 @@ impl ConnectionHandler {
                         .await
                     {
                         if e.is_fatal() {
+                            live_connection.release();
                             error!(socket_id = %socket_id, error = %e, "socket message handling failed");
                             self.handle_fatal_error(socket_id, app_config, &e).await?;
                             break;

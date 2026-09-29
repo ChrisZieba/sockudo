@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import assert from "node:assert/strict";
 
 export class AitProtocolClient {
   constructor(options = {}) {
@@ -11,6 +12,9 @@ export class AitProtocolClient {
     this.key = options.key ?? process.env.SOCKUDO_APP_KEY ?? "app-key";
     this.secret = options.secret ?? process.env.SOCKUDO_APP_SECRET ?? "app-secret";
     this.timeoutMs = Number(process.env.AIT_CONFORMANCE_TIMEOUT_MS ?? 5000);
+    this.acknowledgements = new Map();
+    this.latestByMessage = new Map();
+    this.deliveryByChannel = new Map();
   }
 
   async connect() {
@@ -23,20 +27,16 @@ export class AitProtocolClient {
       transcript.push(parseFrame(event.data));
     });
     await waitForEvent(socket, "open", this.timeoutMs);
-    const established = await waitUntil(
-      () => transcript.find((frame) => frame.event === "sockudo:connection_established"),
+    await waitUntil(
+      () => transcript.some((frame) => frame.event === "sockudo:connection_established"),
       this.timeoutMs,
       "connection_established",
     );
-    return new AitWsSession(socket, transcript, this.timeoutMs, {
-      key: this.key,
-      secret: this.secret,
-      socketId: established.data.socket_id,
-    });
+    return new AitWsSession(socket, transcript, this.timeoutMs, this.key, this.secret);
   }
 
   async publish({ name, channel, data, extras, messageId, idempotencyKey }) {
-    return this.signedJson("POST", "/events", {
+    const result = await this.signedJson("POST", "/events", {
       name,
       channel,
       data,
@@ -44,10 +44,12 @@ export class AitProtocolClient {
       ...(messageId ? { message_id: messageId } : {}),
       ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
     });
+    this.recordAcknowledgement(channel, "create", result.channels?.[channel]);
+    return result;
   }
 
   async append({ channel, messageSerial, data, extras, opId }) {
-    return this.signedJson(
+    const result = await this.signedJson(
       "POST",
       `/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(messageSerial)}/append`,
       {
@@ -56,10 +58,16 @@ export class AitProtocolClient {
         ...(opId ? { op_id: opId } : {}),
       },
     );
+    assert.equal(result.message_serial, messageSerial);
+    assert.equal(result.action, "append");
+    assert.equal(result.accepted, true);
+    assert.equal(result.status, "applied");
+    this.recordAcknowledgement(channel, "append", result);
+    return result;
   }
 
   async update({ channel, messageSerial, data, extras, opId }) {
-    return this.signedJson(
+    const result = await this.signedJson(
       "POST",
       `/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(messageSerial)}/update`,
       {
@@ -68,6 +76,12 @@ export class AitProtocolClient {
         ...(opId ? { op_id: opId } : {}),
       },
     );
+    assert.equal(result.message_serial, messageSerial);
+    assert.equal(result.action, "update");
+    assert.equal(result.accepted, true);
+    assert.equal(result.status, "applied");
+    this.recordAcknowledgement(channel, "update", result);
+    return result;
   }
 
   async getMessage({ channel, messageSerial }) {
@@ -75,6 +89,66 @@ export class AitProtocolClient {
       "GET",
       `/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(messageSerial)}`,
     );
+  }
+
+  recordAcknowledgement(channel, action, acknowledgement) {
+    assert(acknowledgement, "publish must acknowledge its version identity");
+    const { message_serial, version_serial, history_serial, delivery_serial } = acknowledgement;
+    assert.equal(typeof message_serial, "string");
+    assert(message_serial.length > 0);
+    assert.equal(typeof version_serial, "string");
+    assert(version_serial.length > 0);
+    assert(Number.isSafeInteger(history_serial) && history_serial > 0);
+    assert(Number.isSafeInteger(delivery_serial) && delivery_serial > 0);
+    assert(delivery_serial > (this.deliveryByChannel.get(channel) ?? 0), "delivery serial must increase");
+    const previous = this.latestByMessage.get(message_serial);
+    if (action === "create") {
+      assert.equal(previous, undefined);
+      assert.equal(version_serial, message_serial);
+    } else {
+      assert(previous, "mutation must preserve an existing message identity");
+      assert.equal(history_serial, previous.history_serial);
+      assert(version_serial > previous.version_serial, "version serial must increase");
+    }
+    assert(!this.acknowledgements.has(version_serial), "version identities must be unique");
+    const identity = { channel, action, message_serial, version_serial, history_serial, delivery_serial };
+    this.acknowledgements.set(version_serial, identity);
+    this.latestByMessage.set(message_serial, identity);
+    this.deliveryByChannel.set(channel, delivery_serial);
+  }
+
+  assertTranscriptIdentities(frames) {
+    const lastDelivery = new Map();
+    for (const frame of frames) {
+      if (frame.event === "history:get_latest") {
+        const item = frame.data;
+        const expected = this.acknowledgements.get(item.version?.serial);
+        assert(expected, "history version must match a mutation acknowledgement");
+        for (const field of ["channel", "action", "message_serial", "history_serial", "delivery_serial"]) {
+          assert.equal(item[field], expected[field], `history ${field}`);
+        }
+        assert.equal(item.serial, expected.delivery_serial);
+        assert.equal(item.event, `sockudo:message.${expected.action}`);
+        assert(Number.isSafeInteger(item.version.timestamp_ms) && item.version.timestamp_ms > 0);
+        continue;
+      }
+      if (!frame.event.startsWith("ai-") && !frame.event.startsWith("sockudo:message.")) continue;
+      const headers = frame.extras?.headers;
+      const expected = this.acknowledgements.get(headers?.sockudo_version_serial);
+      assert(expected, "live version must match its HTTP acknowledgement");
+      assert.equal(frame.channel, expected.channel);
+      assert.equal(headers.sockudo_action, `message.${expected.action}`);
+      assert.equal(headers.sockudo_message_serial, expected.message_serial);
+      assert.equal(headers.sockudo_history_serial, expected.history_serial);
+      assert.equal(frame.serial, expected.delivery_serial);
+      assert.equal(frame.stream_id, `${this.appId}/${frame.channel}`);
+      assert.equal(typeof frame.message_id, "string");
+      assert(frame.message_id.length > 0);
+      assert(Number.isSafeInteger(headers.sockudo_version_timestamp_ms) && headers.sockudo_version_timestamp_ms > 0);
+      assert(frame.serial > (lastDelivery.get(frame.channel) ?? 0), "live delivery serial must increase");
+      lastDelivery.set(frame.channel, frame.serial);
+      if (expected.action !== "create") assert.equal(frame.event, `sockudo:message.${expected.action}`);
+    }
   }
 
   async signedJson(method, path, body) {
@@ -118,11 +192,12 @@ export class AitProtocolClient {
 }
 
 export class AitWsSession {
-  constructor(socket, transcript, timeoutMs, credentials) {
+  constructor(socket, transcript, timeoutMs, key, secret) {
     this.socket = socket;
     this.transcript = transcript;
     this.timeoutMs = timeoutMs;
-    this.credentials = credentials;
+    this.key = key;
+    this.secret = secret;
   }
 
   send(event, data, channel) {
@@ -130,21 +205,17 @@ export class AitWsSession {
   }
 
   subscribe(channel, extra = {}) {
-    const auth = channel.startsWith("private-") ? { auth: this.channelAuth(channel) } : {};
+    let auth = {};
+    if (channel.startsWith("private-") || channel.startsWith("presence-")) {
+      const established = this.transcript.find((frame) => frame.event === "sockudo:connection_established");
+      const socketId = established?.data?.socket_id;
+      if (!socketId) throw new Error("connection has no socket ID for channel authentication");
+      const channelData = extra.channel_data;
+      const input = `${socketId}:${channel}${channelData === undefined ? "" : `:${channelData}`}`;
+      const signature = crypto.createHmac("sha256", this.secret).update(input).digest("hex");
+      auth = { auth: `${this.key}:${signature}` };
+    }
     this.send("pusher:subscribe", { channel, ...auth, ...extra });
-  }
-
-  async subscribed(channel) {
-    return this.waitForEvent(
-      (frame) => frame.event === "sockudo_internal:subscription_succeeded" && frame.channel === channel,
-      `subscription to ${channel}`,
-    );
-  }
-
-  channelAuth(channel) {
-    const { key, secret, socketId } = this.credentials;
-    const signature = crypto.createHmac("sha256", secret).update(`${socketId}:${channel}`).digest("hex");
-    return `${key}:${signature}`;
   }
 
   async waitForEvent(predicate, label) {
@@ -182,19 +253,16 @@ function normalizeValue(value) {
     for (const [key, raw] of Object.entries(value)) {
       if (key === "socket_id") {
         normalized[key] = "<socket>";
-      } else if (key === "stream_id" && typeof raw === "string") {
-        normalized[key] = "<stream_id>";
       } else if (key === "channel" && typeof raw === "string") {
         normalized[key] = normalizeChannel(raw);
-      } else if (key.endsWith("_serial") || key === "serial") {
-        // Numeric serials are positions; string serials embed time and node identity.
-        if (typeof raw === "number") normalized[key] = "<serial>";
-        else if (typeof raw === "string" && raw.length > 0) normalized[key] = `<${key}>`;
-        else normalized[key] = normalizeValue(raw);
-      } else if (key.endsWith("timestamp_ms") || key === "timestamp") {
-        normalized[key] = "<timestamp>";
-      } else if (key === "message_id") {
+      } else if (["message_id", "message_serial", "version_serial", "sockudo_message_serial", "sockudo_version_serial"].includes(key)) {
         normalized[key] = typeof raw === "string" && raw.length > 0 ? `<${key}>` : raw;
+      } else if (key === "stream_id") {
+        normalized[key] = "<stream_id>";
+      } else if (key.endsWith("_serial") || key === "serial") {
+        normalized[key] = typeof raw === "number" ? "<serial>" : normalizeValue(raw);
+      } else if (key === "timestamp_ms" || key === "timestamp" || key === "sockudo_version_timestamp_ms") {
+        normalized[key] = "<timestamp>";
       } else if (key === "version" && raw && typeof raw === "object") {
         normalized[key] = { ...normalizeValue(raw), serial: "<version_serial>", timestamp_ms: "<timestamp>" };
       } else {

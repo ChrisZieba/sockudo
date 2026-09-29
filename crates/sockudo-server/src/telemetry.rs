@@ -247,7 +247,7 @@ impl Telemetry {
 pub(crate) async fn trace_http_request(request: Request<Body>, next: Next) -> Response {
     if matches!(
         request.uri().path(),
-        "/live" | "/up" | "/accept-traffic" | "/metrics"
+        "/live" | "/up" | "/ready" | "/accept-traffic" | "/metrics"
     ) {
         return next.run(request).await;
     }

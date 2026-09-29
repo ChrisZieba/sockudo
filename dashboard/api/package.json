@@ -17,6 +17,7 @@
     "hono": "^4.7.4",
     "jose": "^6.0.8",
     "mysql2": "^3.14.0",
+    "otpauth": "^9.5.2",
     "postgres": "^3.4.5"
   },
   "devDependencies": {

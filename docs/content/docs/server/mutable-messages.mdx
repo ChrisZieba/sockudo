@@ -74,6 +74,132 @@ or truncates entries, stop writers, validate the repaired version chains, remove
 the completion marker row, and restart to rebuild counts before serving mutations.
 Do not independently edit the counter table during normal operation.
 
+### Append storage
+
+Each original append remains its own version entry, including its fragment,
+metadata, extras, envelope facts, all four serial identities and any `op_id`
+receipt. Public reads return the same complete accumulated message: latest,
+version pages in either direction, replay, recovery, rewind, history projection
+and duplicate receipts. The storage representation does not change the wire API.
+
+Durable stores read self-contained legacy rows, format-1 run snapshots and
+format-2 chunked runs. Format 2 stores the aggregate in bounded byte chunks:
+1 KiB on PostgreSQL/MySQL and 4 KiB on DynamoDB/ScyllaDB/SurrealDB. Each append
+rewrites only its tail chunk and adds chunks for the new fragment, together
+with the original operation and fixed run metadata. Latest-state payloads on
+DynamoDB, ScyllaDB and SurrealDB are compact too. Memory retains its in-place
+append-run string.
+
+Chunks can split a multibyte character. Readers join the required prefix and
+check its length, UTF-8 boundary and terminating operation fragment before
+returning a record. Missing or malformed storage fails closed. Every chunked
+run has a unique generation. The bounded 8 MiB per-store cache on DynamoDB,
+ScyllaDB and SurrealDB uses that generation plus tenant/channel/message identity;
+a cached prefix never supplies a longer version written by another node.
+PostgreSQL/MySQL fetch page rows and their required chunks in one statement.
+
+DynamoDB follows service pagination for version history, replay and latest-state
+enumeration, including pages containing only expired records. Large append
+fragments that exceed one transaction's chunk capacity use fenced staging:
+bounded batches write an unpublished suffix, then a final transaction publishes
+the operation, receipt and new head together. Concurrent writers, marker changes
+and abandoned staging cannot expose a partial append. The original operation
+and receipt must still fit DynamoDB's individual item size limit.
+
+ScyllaDB reuses prepared statements through a bounded 64-entry cache. SurrealDB
+initialization defines immutable, versioned mutation functions alongside its
+tables; database credentials must permit defining those functions. Mutations
+still run inside one explicit transaction, including the format fence, serial
+checks, original entry, chunks and receipt. Older releases ignore the functions,
+and rollback materialization still restores the legacy full-row representation.
+SurrealDB also enforces a unique delivery position per app/channel. Initialization
+rejects existing duplicate positions instead of silently accepting a forked
+history. Inspect and repair such data before restarting writers. Concurrent
+mutation conflicts retry the complete operation with fresh state, while retaining
+the original precondition and operation receipt identity.
+The SurrealDB version store requires a stable server release **3.3.0 or later**.
+Earlier in-memory engines can lose concurrent updates even inside guarded
+transactions, and older servers also have a FlatBuffers limit affecting large
+legacy byte-array records. Startup rejects older versions because the remote
+connection cannot reliably identify which storage engine the server uses.
+Upgrade the database before starting writers with this release. See the
+[upstream concurrency defect](https://github.com/surrealdb/surrealdb/issues/7473)
+and [3.3 release notes](https://surrealdb.com/releases/3.3).
+
+#### Rolling upgrade and activation
+
+The persisted store marker starts **off**. New nodes continue writing full rows
+while old nodes remain in service. There is no format setting in the server
+configuration. If a store already contains C2 format-1 rows, releases older than
+C2 cannot read those rows; materialize them before introducing such readers.
+
+After every writer and reader supports format 2, stop writers and run:
+
+```sh
+sockudo --config <file> --enable-append-storage
+```
+
+Activation seeds chunks for existing latest messages before enabling compact
+writes. This moves conversion of large existing aggregates into maintenance,
+so their first append can extend a seed. New creates, updates and imports keep
+full records and prepare a seed while chunked storage is enabled. Include the
+run/chunk tables and marker in consistent backups. Startup needs permission to
+create the companion tables and add nullable pointer columns.
+
+Marker changes use transactional fences on PostgreSQL, MySQL, DynamoDB and
+SurrealDB. ScyllaDB's channel-partition conditional batches cannot fence a
+separate store-wide row; the stopped-writer maintenance requirement is essential
+there. Older C2 writers ignore the marker, so remove them before activation.
+
+#### Rollback and retention
+
+Stop every writer, then check the backend's legacy representation constraints:
+
+```sh
+sockudo --config <file> --check-append-storage-rollback
+```
+
+This check does not change the format marker or rewrite version records. On
+DynamoDB it scans compact entries, receipts and latest states and checks their
+materialized item sizes, including attribute names. A successful check is valid
+only while writers remain stopped; it is not a cluster-wide admission fence.
+Numeric attributes use a conservative size bound, so an item extremely close
+to the service limit may be rejected even if DynamoDB could encode it smaller.
+
+To check, disable compact writes and materialize in one command, run:
+
+```sh
+sockudo --config <file> --rollback-append-storage
+```
+
+The command performs the size preflight before changing the marker. If a later
+database operation fails, keep writers stopped and rerun the command; earlier
+rewrites are safe to repeat. Start the older release only after completion.
+The separate `--disable-append-storage` and `--materialize-append-storage`
+commands remain available. DynamoDB materialization also performs a preflight
+before its first rewrite.
+
+Materialization supports both compact formats, including latest states and
+receipts, and is idempotent. It restores full per-version storage and its write
+cost. Disabling the marker alone does not make existing compact rows readable by
+older releases; those releases reject unknown formats rather than return
+partial data. DynamoDB's 400 KiB item limit cannot be raised by this command.
+If any required legacy row exceeds it, the preflight rejects rollback before
+changing the marker or rewriting entries. Continue using a release that supports
+chunked storage; do not truncate messages or delete receipts to force rollback.
+The limit applies to the encoded full item, which may contain multiple copies
+of message data, not just to the aggregate string length.
+
+Chunks are removed only when no retained entry or receipt needs them.
+PostgreSQL/MySQL remove chunks with unreferenced runs; SurrealDB also protects
+latest-state references and receipt-pinned runs. DynamoDB chunks do not receive
+an independent TTL that could expire before later entries: reference-checked
+cleanup reclaims inactive runs, and receipt references pin them. ScyllaDB keeps
+chunks with its non-expiring commit rows. Unpublished staged DynamoDB seeds
+become eligible for bounded cleanup after five minutes. A persisted deletion
+fence prevents late staging or publication from racing cleanup. Never delete snapshots or
+chunks independently of their entries.
+
 `op_id` is scoped by app, channel, message, and action. Replaying the same ID
 with the same canonical operation returns the original acknowledgement without
 fanout. Reusing it with a different operation is an idempotency conflict.

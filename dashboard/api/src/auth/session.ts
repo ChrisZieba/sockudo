@@ -22,13 +22,14 @@ export async function createSession(user: {
   name: string;
   role: UserRole;
   passwordHash: string;
+  authVersion?: string;
 }): Promise<string> {
   return new SignJWT({
     email: user.email,
     name: user.name,
     role: user.role,
     userId: user.id,
-    credentialVersion: credentialVersion(user.passwordHash),
+    credentialVersion: credentialVersion(user.passwordHash, user.authVersion),
   })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(user.id)
@@ -81,15 +82,25 @@ export async function verifySession(
 export function sessionMatchesPasswordHash(
   session: SessionPayload,
   passwordHash: string,
+  authVersion?: string,
 ): boolean {
   const actual = Buffer.from(session.credentialVersion, "utf8");
-  const expected = Buffer.from(credentialVersion(passwordHash), "utf8");
+  const expected = Buffer.from(
+    credentialVersion(passwordHash, authVersion),
+    "utf8",
+  );
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
-function credentialVersion(passwordHash: string): string {
+export function credentialVersion(
+  passwordHash: string,
+  authVersion = "",
+): string {
   return createHmac("sha256", secret)
-    .update(passwordHash, "utf8")
+    .update(
+      authVersion ? `${passwordHash}\0${authVersion}` : passwordHash,
+      "utf8",
+    )
     .digest("base64url");
 }
 

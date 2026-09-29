@@ -1076,13 +1076,13 @@ impl<'de> Deserialize<'de> for ApiMessageData {
     where
         D: serde::Deserializer<'de>,
     {
-        // A derived untagged enum replays buffered content into sonic `Value`,
-        // which rejects objects under serde_json (the HTTP body extractor).
+        // Untagged enum buffering is incompatible with sonic-rs Value.
+        // Use the same JSON bridge as MessageData for HTTP's serde_json reader.
         match JsonValue::deserialize(deserializer)? {
-            JsonValue::String(s) => Ok(ApiMessageData::String(s)),
-            v => Ok(ApiMessageData::Json(
-                serde_json_value_to_sonic(v).map_err(D::Error::custom)?,
-            )),
+            JsonValue::String(value) => Ok(Self::String(value)),
+            value => serde_json_value_to_sonic(value)
+                .map(Self::Json)
+                .map_err(D::Error::custom),
         }
     }
 }
@@ -1706,40 +1706,43 @@ mod tests {
     use sonic_rs::JsonValueTrait;
     use std::collections::{BTreeMap, HashMap};
 
-    /// HTTP publish bodies are decoded by serde_json (axum's extractor) and
-    /// by sonic-rs elsewhere; both must accept string and structured `data`.
     #[test]
-    fn api_message_data_accepts_string_and_structured_payloads_from_both_parsers() {
-        use super::{ApiMessageData, PusherApiMessage};
-
-        let structured = r#"{"name":"e","channel":"c","data":{"ok":true,"n":[1,2.5,"x"]}}"#;
-        let string = r#"{"name":"e","channel":"c","data":"{\"ok\":true}"}"#;
-
-        for parsed in [
-            serde_json::from_str::<PusherApiMessage>(structured).unwrap(),
-            sonic_rs::from_str::<PusherApiMessage>(structured).unwrap(),
+    fn api_message_data_accepts_json_with_both_deserializers() {
+        for input in [
+            r#""plain string""#,
+            r#""{\"still\":\"a string\"}""#,
+            r#"{"nested":{"ok":true},"items":[1,"é",null]}"#,
+            r#"[false,42,{"channel":"application data"}]"#,
+            "true",
+            "-42",
+            "18446744073709551615",
+            "1.25",
+            "null",
         ] {
-            let Some(ApiMessageData::Json(value)) = parsed.data else {
-                panic!("structured data should stay JSON, got {:?}", parsed.data);
-            };
-            assert_eq!(value["ok"].as_bool(), Some(true));
-            assert_eq!(value["n"][1].as_f64(), Some(2.5));
+            let expected: serde_json::Value = serde_json::from_str(input).unwrap();
+            let from_serde: super::ApiMessageData = serde_json::from_str(input).unwrap();
+            let from_sonic: super::ApiMessageData = sonic_rs::from_str(input).unwrap();
+            for actual in [from_serde, from_sonic] {
+                assert_eq!(
+                    matches!(actual, super::ApiMessageData::String(_)),
+                    expected.is_string()
+                );
+                assert_eq!(serde_json::to_value(actual).unwrap(), expected);
+            }
         }
-        for parsed in [
-            serde_json::from_str::<PusherApiMessage>(string).unwrap(),
-            sonic_rs::from_str::<PusherApiMessage>(string).unwrap(),
-        ] {
-            assert!(
-                matches!(&parsed.data, Some(ApiMessageData::String(s)) if s == r#"{"ok":true}"#),
-                "string data should stay a string, got {:?}",
-                parsed.data
-            );
-        }
-        for scalar in ["42", "true", "null"] {
-            let body = format!(r#"{{"name":"e","channel":"c","data":{scalar}}}"#);
-            let parsed = serde_json::from_str::<PusherApiMessage>(&body).unwrap();
-            assert!(!matches!(parsed.data, Some(ApiMessageData::String(_))));
-        }
+    }
+
+    #[test]
+    fn api_publish_and_batch_accept_object_data() {
+        let input = r#"{"name":"ai-run-start","channel":"private-ai-test","data":{"ok":true}}"#;
+        let message: super::PusherApiMessage = serde_json::from_str(input).unwrap();
+        assert!(matches!(message.data, Some(super::ApiMessageData::Json(_))));
+        let batch: super::BatchPusherApiMessage =
+            serde_json::from_str(&format!(r#"{{"batch":[{input}]}}"#)).unwrap();
+        assert!(matches!(
+            batch.batch[0].data,
+            Some(super::ApiMessageData::Json(_))
+        ));
     }
 
     #[test]

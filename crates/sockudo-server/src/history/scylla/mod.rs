@@ -265,6 +265,8 @@ mod version_store;
 #[cfg(feature = "versioned-messages")]
 #[allow(unused_imports)]
 pub(super) use annotation_store::create_scylla_annotation_store;
+#[cfg(test)]
+pub(super) use version_store::ScyllaVersionStore;
 pub(super) use version_store::create_scylla_version_store;
 
 #[cfg(test)]

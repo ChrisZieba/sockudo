@@ -15,6 +15,11 @@ const router = createRouter({
       component: () => import("@/components/Layout.vue"),
       children: [
         {
+          path: "profile",
+          name: "profile",
+          component: () => import("@/pages/ProfilePage.vue"),
+        },
+        {
           path: "",
           name: "apps",
           component: () => import("@/pages/AppsPage.vue"),

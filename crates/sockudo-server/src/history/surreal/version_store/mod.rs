@@ -1,6 +1,10 @@
+mod append_runs;
+mod mutation;
+mod payload_bytes;
 mod store_impl;
 
 use super::*;
+use payload_bytes::StoredPayloadBytes;
 
 // =================== SurrealVersionStore ===================
 
@@ -28,12 +32,26 @@ struct StoredVersionMessageRec {
     latest_entry_key: String,
     history_serial: i64,
     #[serde(default)]
-    latest_payload_bytes: Vec<u8>,
+    latest_payload_bytes: StoredPayloadBytes,
     #[serde(default)]
     append_count: i64,
     #[serde(default)]
     is_open_stream: bool,
     updated_at_ms: i64,
+    /// Run of the latest version when it is a compact append. Only a hint:
+    /// older releases never clear it, so the run head is always re-checked.
+    #[serde(default)]
+    latest_append_run: Option<String>,
+    #[serde(default)]
+    latest_append_len: Option<i64>,
+    /// Version the pointer describes; it is used only while this still
+    /// names the latest version.
+    #[serde(default)]
+    latest_append_head: Option<String>,
+    #[serde(default)]
+    latest_append_pinned: Option<bool>,
+    #[serde(default)]
+    latest_append_generation: Option<String>,
 }
 
 #[cfg(feature = "versioned-messages")]
@@ -44,7 +62,7 @@ struct StoredVersionEntryRec {
     message_serial: String,
     version_serial: String,
     delivery_serial: i64,
-    payload_bytes: Vec<u8>,
+    payload_bytes: StoredPayloadBytes,
     // Server-side append time (ms since epoch). Indexed for the purge worker
     // which deletes rows older than the retention cutoff in batched queries.
     created_at_ms: i64,
@@ -54,7 +72,7 @@ struct StoredVersionEntryRec {
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 struct StoredVersionReceiptRec {
     operation_fingerprint: String,
-    payload_bytes: Vec<u8>,
+    payload_bytes: StoredPayloadBytes,
     created_at_ms: i64,
 }
 
@@ -67,7 +85,7 @@ struct VersionLatestKeyRow {
 #[cfg(feature = "versioned-messages")]
 #[derive(Debug, Clone, Deserialize, SurrealValue)]
 struct VersionPayloadRow {
-    payload_bytes: Vec<u8>,
+    payload_bytes: StoredPayloadBytes,
 }
 
 #[cfg(feature = "versioned-messages")]
@@ -77,12 +95,16 @@ struct VersionStoreTables {
     messages: String,
     entries: String,
     receipts: String,
+    runs: String,
+    chunks: String,
+    format: String,
 }
 
 #[cfg(feature = "versioned-messages")]
 pub struct SurrealVersionStore {
     db: Surreal<Any>,
     tables: VersionStoreTables,
+    append_cache: sockudo_core::version_store::append_storage::AppendSnapshotCache,
 }
 
 #[cfg(feature = "versioned-messages")]
@@ -106,12 +128,32 @@ pub async fn create_surreal_version_store(
         &format!("{table_prefix}_version_entries"),
         "version entries table",
     )?;
+    validate_identifier(
+        &format!("{table_prefix}_version_append_runs"),
+        "version append runs table",
+    )?;
 
     let db = connect(db_config.url.as_str()).await.map_err(|e| {
         Error::Internal(format!(
             "Failed to connect to SurrealDB for version store: {e}"
         ))
     })?;
+    // The remote API does not expose the datastore engine reliably. Older
+    // memory engines can lose writes even inside transactions with UNIQUE
+    // indexes (surrealdb/surrealdb#7473), so require a fixed stable server for
+    // every durable version-store deployment before making any schema writes.
+    // The SDK parses and validates the server's semantic version for us.
+    let version = db.version().await.map_err(|_| Error::Internal(
+        "failed to verify SurrealDB server version; durable version storage requires stable SurrealDB 3.3.0 or newer".into(),
+    ))?;
+    if !version_store_server_supported(
+        (version.major, version.minor, version.patch),
+        version.pre.as_str(),
+    ) {
+        return Err(Error::Configuration(
+            "durable version storage requires stable SurrealDB 3.3.0 or newer; older memory engines can silently lose concurrent writes even with transaction and unique-index guards".into(),
+        ));
+    }
     db.signin(Root {
         username: db_config.username.clone(),
         password: db_config.password.clone(),
@@ -136,6 +178,9 @@ pub async fn create_surreal_version_store(
         messages: format!("{table_prefix}_version_messages"),
         entries: format!("{table_prefix}_version_entries"),
         receipts: format!("{table_prefix}_version_receipts"),
+        runs: format!("{table_prefix}_version_append_runs"),
+        chunks: format!("{table_prefix}_version_append_chunks"),
+        format: format!("{table_prefix}_version_append_format"),
     };
 
     let query = format!(
@@ -149,7 +194,9 @@ pub async fn create_surreal_version_store(
          DEFINE INDEX IF NOT EXISTS {}_updated_at_idx ON TABLE {} FIELDS updated_at_ms;\
          DEFINE INDEX IF NOT EXISTS {}_message_idx ON TABLE {} FIELDS app_id, channel, message_serial, version_serial;\
          DEFINE INDEX IF NOT EXISTS {}_delivery_idx ON TABLE {} FIELDS app_id, channel, delivery_serial;\
-         DEFINE INDEX IF NOT EXISTS {}_created_at_idx ON TABLE {} FIELDS created_at_ms;",
+         DEFINE INDEX IF NOT EXISTS {}_created_at_idx ON TABLE {} FIELDS created_at_ms;\
+         DEFINE TABLE IF NOT EXISTS {} SCHEMALESS;\
+         DEFINE INDEX IF NOT EXISTS {}_updated_at_idx ON TABLE {} FIELDS updated_at_ms;",
         tables.streams,
         tables.messages,
         tables.entries,
@@ -168,12 +215,73 @@ pub async fn create_surreal_version_store(
         tables.entries,
         tables.entries,
         tables.entries,
+        tables.runs,
+        tables.runs,
+        tables.runs,
     );
-    db.query(query).await.map_err(|e| {
-        Error::Internal(format!(
-            "Failed to initialize SurrealDB version store schema: {e}"
-        ))
-    })?;
+    db.query(query)
+        .await
+        .and_then(|response| response.check())
+        .map_err(|e| {
+            Error::Internal(format!(
+                "Failed to initialize SurrealDB version store schema: {e}"
+            ))
+        })?;
 
-    Ok(Arc::new(SurrealVersionStore { db, tables }))
+    // Defense in depth under the supported server's transaction guarantees:
+    // one app/channel position must never identify two committed versions.
+    // This constraint cannot repair isolation bugs in unsupported engines.
+    // A new index name also upgrades existing stores with the non-unique index.
+    db.query(format!(
+        "DEFINE INDEX IF NOT EXISTS {entries}_version_conflict_delivery_unique_v2 ON TABLE {entries} FIELDS app_id, channel, delivery_serial UNIQUE;",
+        entries = tables.entries,
+    ))
+    .await
+    .and_then(|response| response.check())
+    .map_err(|_| Error::Internal(
+        "failed to enforce unique version delivery positions; inspect existing history for duplicate positions before starting writers".into(),
+    ))?;
+
+    db.query(format!(
+        "DEFINE TABLE IF NOT EXISTS {chunks} SCHEMALESS; DEFINE INDEX IF NOT EXISTS {chunks}_run_idx ON TABLE {chunks} FIELDS run_id; DEFINE TABLE IF NOT EXISTS {format} SCHEMALESS; UPSERT ONLY type::record('{format}', 'format') SET enabled = enabled ?? false, epoch = epoch ?? 0, fence = fence ?? 0;",
+        chunks = tables.chunks,
+        format = tables.format,
+    ))
+    .await
+    .and_then(|response| response.check())
+    .map_err(|e| Error::Internal(format!("failed to initialize append storage format: {e}")))?;
+
+    let store = SurrealVersionStore {
+        db,
+        tables,
+        append_cache: sockudo_core::version_store::append_storage::AppendSnapshotCache::default(),
+    };
+    store.ensure_mutation_function().await?;
+    Ok(Arc::new(store))
+}
+
+fn version_store_server_supported(release: (u64, u64, u64), prerelease: &str) -> bool {
+    release >= (3, 3, 0) && prerelease.is_empty()
+}
+
+#[cfg(test)]
+mod server_version_tests {
+    use super::version_store_server_supported;
+
+    #[test]
+    fn rejects_affected_servers_and_unverified_prereleases() {
+        for (release, prerelease) in [
+            ((2, 9, 9), ""),
+            ((3, 0, 4), ""),
+            ((3, 2, 4), ""),
+            ((3, 2, 99), ""),
+            ((3, 3, 0), "beta.1"),
+            ((3, 4, 0), "rc.1"),
+        ] {
+            assert!(!version_store_server_supported(release, prerelease));
+        }
+        for release in [(3, 3, 0), (3, 3, 1), (3, 4, 0), (4, 0, 0)] {
+            assert!(version_store_server_supported(release, ""));
+        }
+    }
 }

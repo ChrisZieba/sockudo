@@ -9,6 +9,8 @@ export interface DashboardUser {
   active: boolean;
   created_at: string;
   updated_at: string;
+  totp_state?: string;
+  auth_version?: string;
 }
 
 export interface PublicUser {
@@ -19,6 +21,7 @@ export interface PublicUser {
   active: boolean;
   created_at: string;
   updated_at: string;
+  totp_enabled: boolean;
 }
 
 export interface CreateUserInput {
@@ -46,5 +49,6 @@ export function toPublicUser(user: DashboardUser): PublicUser {
     active: user.active,
     created_at: user.created_at,
     updated_at: user.updated_at,
+    totp_enabled: Boolean(JSON.parse(user.totp_state ?? "{}").secret),
   };
 }

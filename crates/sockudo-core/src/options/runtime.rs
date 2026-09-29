@@ -43,6 +43,7 @@ where
 pub struct HttpApiConfig {
     pub request_limit_in_mb: u32,
     pub accept_traffic: AcceptTraffic,
+    pub readiness: Readiness,
     pub usage_enabled: bool,
 }
 
@@ -57,6 +58,67 @@ pub struct AcceptTraffic {
     pub memory_limit_bytes: Option<u64>,
     /// Interval used by the admission sampler, independent of metrics scraping.
     pub sample_interval_ms: u64,
+}
+
+/// Capacity hysteresis for the `/ready` load-balancer probe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Readiness {
+    pub high_watermark: f64,
+    pub low_watermark: f64,
+}
+
+impl Default for Readiness {
+    fn default() -> Self {
+        Self {
+            high_watermark: 0.95,
+            low_watermark: 0.85,
+        }
+    }
+}
+
+impl Readiness {
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.high_watermark.is_finite()
+            || !self.low_watermark.is_finite()
+            || self.low_watermark < 0.0
+            || self.low_watermark >= self.high_watermark
+            || self.high_watermark > 1.0
+        {
+            return Err("watermarks must satisfy 0 <= low_watermark < high_watermark <= 1".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+
+    #[test]
+    fn validates_readiness_watermarks() {
+        assert!(Readiness::default().validate().is_ok());
+        for (low, high) in [
+            (0.95, 0.95),
+            (0.96, 0.95),
+            (-0.1, 0.95),
+            (0.85, 1.1),
+            (f64::NAN, 0.95),
+            (0.85, f64::INFINITY),
+        ] {
+            assert!(
+                Readiness {
+                    low_watermark: low,
+                    high_watermark: high
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        let defaults: Readiness = toml::from_str("").unwrap();
+        assert_eq!(defaults.low_watermark, 0.85);
+        assert_eq!(defaults.high_watermark, 0.95);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -466,6 +528,7 @@ impl Default for HttpApiConfig {
         Self {
             request_limit_in_mb: 10,
             accept_traffic: AcceptTraffic::default(),
+            readiness: Readiness::default(),
             usage_enabled: true,
         }
     }
