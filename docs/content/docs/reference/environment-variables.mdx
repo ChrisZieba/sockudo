@@ -98,7 +98,7 @@ url = "${REDIS_URL:-redis://localhost:6379}"
 | `HOST` | Main HTTP and WebSocket bind host. |
 | `PORT` | Main HTTP and WebSocket bind port. |
 | `ACTIVITY_TIMEOUT` | Pusher protocol activity timeout. |
-| `SHUTDOWN_GRACE_PERIOD` | Grace period for server shutdown. |
+| `SHUTDOWN_GRACE_PERIOD` | Seconds to keep the listener open after SIGTERM/SIGINT before closing existing connections. During this window `/up`, `/ready`, and `/accept-traffic` return 503 `DRAINING` and new WebSocket upgrades are rejected with 503. HTTP API requests are still served. A second signal ends the window early. |
 | `USER_AUTHENTICATION_TIMEOUT` | Timeout used by user authentication flows. |
 | `SOCKUDO_MAX_CONNECTIONS` | Per-node WebSocket connection limit. `0` disables. |
 | `WEBSOCKET_MAX_PAYLOAD_KB` | Legacy maximum WebSocket payload size in KiB. |

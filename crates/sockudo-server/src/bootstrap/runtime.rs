@@ -18,7 +18,7 @@ use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::net::TcpListener;
 #[cfg(unix)]
@@ -343,19 +343,9 @@ impl SockudoServer {
 
         info!(listen_addr = %path.display(), "unix socket server listening");
         let app = router_with_middleware.into_make_service_with_connect_info::<UdsConnectInfo>();
-        let running = &self.state.running;
 
-        tokio::select! {
-            result = axum::serve(uds, app) => {
-                if let Err(err) = result {
-                    error!(error = %err, "unix socket server error");
-                }
-            }
-            _ = self.shutdown_signal() => {
-                info!("Shutdown signal received, stopping Unix socket server...");
-                running.store(false, Ordering::SeqCst);
-            }
-        }
+        self.serve_until_shutdown(axum::serve(uds, app), "unix socket")
+            .await;
 
         info!("Unix socket server stopped. Initiating final stop sequence.");
         Ok(())
@@ -426,45 +416,27 @@ impl SockudoServer {
             }
 
             info!(listen_addr = %http_addr, "https server listening");
-            let running = &self.state.running;
-            let server = axum_server::bind(http_addr).acceptor(
-                RustlsAcceptor::new(tls_config)
-                    .acceptor(axum_server::accept::NoDelayAcceptor::new()),
-            );
+            let server = axum_server::bind(http_addr)
+                .acceptor(
+                    RustlsAcceptor::new(tls_config)
+                        .acceptor(axum_server::accept::NoDelayAcceptor::new()),
+                )
+                .serve(
+                    router_with_middleware_ssl.into_make_service_with_connect_info::<SocketAddr>(),
+                );
 
-            tokio::select! {
-                result = server.serve(router_with_middleware_ssl.into_make_service_with_connect_info::<SocketAddr>()) => {
-                    if let Err(err) = result {
-                        error!(error = %err, "https server error");
-                    }
-                }
-                _ = self.shutdown_signal() => {
-                    info!("Shutdown signal received, stopping HTTPS server...");
-                    running.store(false, Ordering::SeqCst);
-                }
-            }
+            self.serve_until_shutdown(server, "https").await;
         } else {
             info!("SSL is not enabled, starting HTTP server");
             info!(listen_addr = %http_addr, "http server listening");
 
-            let running = &self.state.running;
             let http_server = axum_server::bind(http_addr)
                 .acceptor(axum_server::accept::NoDelayAcceptor::new())
                 .serve(
                     router_with_middleware_http.into_make_service_with_connect_info::<SocketAddr>(),
                 );
 
-            tokio::select! {
-                res = http_server => {
-                    if let Err(err) = res {
-                        error!(error = %err, "http server error");
-                    }
-                }
-                _ = self.shutdown_signal() => {
-                    info!("Shutdown signal received, stopping HTTP server...");
-                    running.store(false, Ordering::SeqCst);
-                }
-            }
+            self.serve_until_shutdown(http_server, "http").await;
         }
 
         info!("HTTP server stopped. Initiating final stop sequence.");
@@ -487,6 +459,20 @@ impl SockudoServer {
         RustlsConfig::from_pem_file(cert_path, key_path)
             .await
             .map_err(|e| Error::Internal(format!("Failed to load TLS configuration: {e}")))
+    }
+
+    async fn serve_until_shutdown<F>(&self, server: F, name: &str)
+    where
+        F: IntoFuture<Output = std::io::Result<()>>,
+    {
+        serve_until_shutdown(
+            server,
+            || self.shutdown_signal(),
+            &self.state.running,
+            Duration::from_secs(self.config.shutdown_grace_period),
+            name,
+        )
+        .await;
     }
 
     async fn shutdown_signal(&self) {
@@ -622,13 +608,58 @@ impl SockudoServer {
             }
         }
 
-        info!(
-            grace_period_s = self.config.shutdown_grace_period,
-            "waiting for shutdown grace period"
-        );
-        tokio::time::sleep(Duration::from_secs(self.config.shutdown_grace_period)).await;
         info!("Server stopped");
         Ok(())
+    }
+}
+
+/// Runs `server` until a shutdown signal, then clears `running` and keeps the
+/// listener open for `grace_period` so load balancers can observe the 503s from
+/// `/up` and `/ready` before it closes. A second signal ends the grace period early.
+async fn serve_until_shutdown<F, S>(
+    server: F,
+    shutdown: impl Fn() -> S,
+    running: &AtomicBool,
+    grace_period: Duration,
+    name: &str,
+) where
+    F: IntoFuture<Output = std::io::Result<()>>,
+    S: Future<Output = ()>,
+{
+    let server = server.into_future();
+    tokio::pin!(server);
+
+    tokio::select! {
+        result = &mut server => {
+            if let Err(err) = result {
+                error!(error = %err, "{name} server error");
+            }
+            return;
+        }
+        _ = shutdown() => {
+            info!("Shutdown signal received, stopping {name} server...");
+            running.store(false, Ordering::SeqCst);
+        }
+    }
+
+    if grace_period.is_zero() {
+        return;
+    }
+
+    info!(
+        grace_period_s = grace_period.as_secs(),
+        "reporting not ready before closing {name} listener"
+    );
+    tokio::select! {
+        result = &mut server => {
+            if let Err(err) = result {
+                error!(error = %err, "{name} server error");
+            }
+        }
+        _ = tokio::time::sleep(grace_period) => {}
+        _ = shutdown() => {
+            info!("Second shutdown signal received, ending grace period early");
+        }
     }
 }
 
@@ -655,4 +686,122 @@ fn make_https(host: &str, uri: Uri, https_port: u16) -> core::result::Result<Uri
     );
 
     Uri::from_parts(parts).map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::routing::get;
+    use std::time::Instant;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    async fn ready_status_line(addr: SocketAddr) -> std::io::Result<String> {
+        let mut stream = TcpStream::connect(addr).await?;
+        stream
+            .write_all(b"GET /ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await?;
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await?;
+        Ok(response.lines().next().unwrap_or_default().to_string())
+    }
+
+    struct TestServer {
+        addr: SocketAddr,
+        running: Arc<AtomicBool>,
+        signal: Arc<tokio::sync::Notify>,
+        handle: tokio::task::JoinHandle<()>,
+    }
+
+    async fn spawn_test_server(grace_period: Duration) -> TestServer {
+        let running = Arc::new(AtomicBool::new(true));
+        let flag = running.clone();
+        let app = Router::new().route(
+            "/ready",
+            get(move || {
+                let flag = flag.clone();
+                async move {
+                    if flag.load(Ordering::SeqCst) {
+                        StatusCode::OK
+                    } else {
+                        StatusCode::SERVICE_UNAVAILABLE
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let signal = Arc::new(tokio::sync::Notify::new());
+
+        let server_running = running.clone();
+        let server_signal = signal.clone();
+        let handle = tokio::spawn(async move {
+            serve_until_shutdown(
+                axum::serve(listener, app),
+                || {
+                    let signal = server_signal.clone();
+                    async move { signal.notified().await }
+                },
+                &server_running,
+                grace_period,
+                "test",
+            )
+            .await;
+        });
+
+        TestServer {
+            addr,
+            running,
+            signal,
+            handle,
+        }
+    }
+
+    async fn wait_until_draining(running: &AtomicBool) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while running.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("running flag was not cleared after the shutdown signal");
+    }
+
+    #[tokio::test]
+    async fn listener_stays_open_and_reports_draining_during_grace_period() {
+        let grace_period = Duration::from_millis(500);
+        let server = spawn_test_server(grace_period).await;
+
+        assert_eq!(
+            ready_status_line(server.addr).await.unwrap(),
+            "HTTP/1.1 200 OK"
+        );
+
+        let signalled_at = Instant::now();
+        server.signal.notify_one();
+        wait_until_draining(&server.running).await;
+
+        assert_eq!(
+            ready_status_line(server.addr).await.unwrap(),
+            "HTTP/1.1 503 Service Unavailable"
+        );
+
+        server.handle.await.unwrap();
+        assert!(signalled_at.elapsed() >= grace_period);
+        assert!(ready_status_line(server.addr).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn second_signal_ends_grace_period_early() {
+        let server = spawn_test_server(Duration::from_secs(60)).await;
+
+        server.signal.notify_one();
+        wait_until_draining(&server.running).await;
+        server.signal.notify_one();
+
+        tokio::time::timeout(Duration::from_secs(5), server.handle)
+            .await
+            .expect("grace period did not end on the second signal")
+            .unwrap();
+    }
 }
