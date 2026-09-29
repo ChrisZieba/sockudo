@@ -212,7 +212,11 @@ impl From<sockudo_core::error::Error> for AppError {
                     message,
                 }
             }
-            _ => AppError::InternalError(err.to_string()),
+            _ => {
+                // The response body is generic; keep the cause diagnosable.
+                warn!(error = %err, "internal error returned to HTTP client");
+                AppError::InternalError(err.to_string())
+            }
         }
     }
 }
