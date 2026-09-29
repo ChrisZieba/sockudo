@@ -1064,11 +1064,27 @@ pub struct BatchPusherApiMessage {
     pub batch: Vec<PusherApiMessage>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum ApiMessageData {
     String(String),
     Json(Value),
+}
+
+impl<'de> Deserialize<'de> for ApiMessageData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // A derived untagged enum replays buffered content into sonic `Value`,
+        // which rejects objects under serde_json (the HTTP body extractor).
+        match JsonValue::deserialize(deserializer)? {
+            JsonValue::String(s) => Ok(ApiMessageData::String(s)),
+            v => Ok(ApiMessageData::Json(
+                serde_json_value_to_sonic(v).map_err(D::Error::custom)?,
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1689,6 +1705,42 @@ mod tests {
     };
     use sonic_rs::JsonValueTrait;
     use std::collections::{BTreeMap, HashMap};
+
+    /// HTTP publish bodies are decoded by serde_json (axum's extractor) and
+    /// by sonic-rs elsewhere; both must accept string and structured `data`.
+    #[test]
+    fn api_message_data_accepts_string_and_structured_payloads_from_both_parsers() {
+        use super::{ApiMessageData, PusherApiMessage};
+
+        let structured = r#"{"name":"e","channel":"c","data":{"ok":true,"n":[1,2.5,"x"]}}"#;
+        let string = r#"{"name":"e","channel":"c","data":"{\"ok\":true}"}"#;
+
+        for parsed in [
+            serde_json::from_str::<PusherApiMessage>(structured).unwrap(),
+            sonic_rs::from_str::<PusherApiMessage>(structured).unwrap(),
+        ] {
+            let Some(ApiMessageData::Json(value)) = parsed.data else {
+                panic!("structured data should stay JSON, got {:?}", parsed.data);
+            };
+            assert_eq!(value["ok"].as_bool(), Some(true));
+            assert_eq!(value["n"][1].as_f64(), Some(2.5));
+        }
+        for parsed in [
+            serde_json::from_str::<PusherApiMessage>(string).unwrap(),
+            sonic_rs::from_str::<PusherApiMessage>(string).unwrap(),
+        ] {
+            assert!(
+                matches!(&parsed.data, Some(ApiMessageData::String(s)) if s == r#"{"ok":true}"#),
+                "string data should stay a string, got {:?}",
+                parsed.data
+            );
+        }
+        for scalar in ["42", "true", "null"] {
+            let body = format!(r#"{{"name":"e","channel":"c","data":{scalar}}}"#);
+            let parsed = serde_json::from_str::<PusherApiMessage>(&body).unwrap();
+            assert!(!matches!(parsed.data, Some(ApiMessageData::String(_))));
+        }
+    }
 
     #[test]
     fn protocol_heartbeat_detection_matches_both_prefix_families() {
