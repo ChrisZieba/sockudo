@@ -403,6 +403,58 @@ async fn create_server_writer_with_client() -> (WebSocketWriter, ClientWs) {
     (writer, client_ws)
 }
 
+/// Reading a peer Close and then dropping both split halves (as connection
+/// cleanup does) must still deliver the echoed Close, not a transport reset.
+#[tokio::test]
+async fn finish_peer_close_delivers_close_reply_before_halves_drop() {
+    use sockudo_ws::Config as WsConfig;
+    use sockudo_ws::Http1;
+    use sockudo_ws::Message;
+    use sockudo_ws::axum_integration::WebSocket;
+    use sockudo_ws::client::WebSocketClient;
+    use tokio::net::{TcpListener, TcpStream};
+
+    // The unfixed race loses the reply on a large share of closes; repeat so
+    // a regression cannot pass by luck.
+    for attempt in 0..25 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            sockudo_ws::handshake::server_handshake(&mut stream)
+                .await
+                .unwrap();
+            let (mut reader, writer) = WebSocket::from_tcp(stream, WsConfig::default()).split();
+            while let Some(Ok(message)) = reader.next().await {
+                if matches!(message, Message::Close(_)) {
+                    finish_peer_close(&mut reader).await;
+                    break;
+                }
+            }
+            drop(reader);
+            drop(writer);
+        });
+
+        let client_stream = TcpStream::connect(local_addr).await.unwrap();
+        let (mut client, _): (ClientWs, _) = WebSocketClient::<Http1>::new(WsConfig::default())
+            .connect(client_stream, &local_addr.to_string(), "/", None)
+            .await
+            .unwrap();
+        client.close(1000, "bye").await.unwrap();
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), client.next())
+            .await
+            .expect("timed out waiting for close reply");
+        match reply {
+            Some(Ok(Message::Close(Some(reason)))) => {
+                assert_eq!(reason.code, 1000, "attempt {attempt}: echoed close code");
+            }
+            other => panic!("attempt {attempt}: expected close reply, got {other:?}"),
+        }
+        server.await.unwrap();
+    }
+}
+
 async fn create_websocket_ref() -> WebSocketRef {
     create_websocket_ref_with_buffer_config(WebSocketBufferConfig::default()).await
 }

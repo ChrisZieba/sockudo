@@ -388,10 +388,8 @@ pub(super) async fn run_ably_realtime_socket(
             tokio::select! {
                 peer_close = &mut peer_close_rx => {
                     if peer_close.is_ok() {
-                        // Reading the peer close schedules the required close
-                        // response in sockudo-ws. Flush it immediately so the
-                        // browser does not wait for session cleanup.
-                        let _ = writer.flush().await;
+                        // The reader signals this only after sockudo-ws wrote
+                        // the peer-Close reply and shut the transport down.
                         return;
                     }
                     break;
@@ -652,6 +650,9 @@ pub(super) async fn run_ably_realtime_socket(
             }
             Message::Pong(_) => continue,
             Message::Close(_) => {
+                // Dropping either split half cancels the driver that writes the
+                // Close reply; keep them alive until the handshake completes.
+                sockudo_core::websocket::finish_peer_close(&mut reader).await;
                 if let Some(peer_close_tx) = peer_close_tx.take() {
                     peer_close_tx.send(());
                 }
