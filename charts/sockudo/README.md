@@ -91,6 +91,39 @@ spec:
         key: SOCKUDO_CONFIG_FILE
 ```
 
+## Redis Sentinel
+
+The app already supports Sentinel via `database.redis.sentinels` in the config file.
+Set `redis.sentinels` so the generated ConfigMap includes that block. Master
+credentials still come from `redis.password` / `existingSecret` (`redis-password`).
+`redis.host` is optional when Sentinel is set.
+
+```yaml
+config:
+  adapterDriver: redis
+  cacheDriver: redis
+  queueDriver: redis
+  rateLimiterDriver: redis
+redis:
+  existingSecret: sockudo-redis
+  sentinelMasterName: mymaster
+  sentinels:
+    - host: redis-ha-announce-0.redis.svc.cluster.local
+      port: 26379
+    - host: redis-ha-announce-1.redis.svc.cluster.local
+      port: 26379
+    - host: redis-ha-announce-2.redis.svc.cluster.local
+      port: 26379
+```
+
+If Sentinels themselves use `requirepass`, put it in the same secret as
+`redis-sentinel-password`, or set `redis.sentinelPassword`. That key is optional
+on `existingSecret` so deployments that only authenticate the Redis master keep
+working.
+
+`redis.sentinels` is ignored when `configJson` or `config.existingSecret` supplies
+the config file; put `database.redis.sentinels` in that file instead.
+
 ## OpenTelemetry
 
 OpenTelemetry export is disabled by default. Enable any combination of stable traces, metrics,

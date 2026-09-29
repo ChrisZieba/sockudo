@@ -1,0 +1,17 @@
+replicaCount: 2
+config:
+  adapterDriver: redis
+  cacheDriver: redis
+  queueDriver: redis
+  rateLimiterDriver: redis
+redis:
+  password: ci-render-only-not-a-real-password
+  sentinelPassword: ci-render-only-not-a-real-sentinel-password
+  sentinelMasterName: mymaster
+  sentinels:
+    - host: redis-ha-announce-0.redis.svc.cluster.local
+      port: 26379
+    - host: redis-ha-announce-1.redis.svc.cluster.local
+      port: 26379
+    - host: redis-ha-announce-2.redis.svc.cluster.local
+      port: 26379
