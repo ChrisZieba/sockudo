@@ -1,3 +1,0 @@
-# Immutable benchmark source snapshots: unified-diff context includes blank-space lines.
-audits/performance-2026-09-05/c2/prerequisite-read-fixes.patch -whitespace linguist-generated=true
-audits/performance-2026-09-05/c2-followup/source-snapshots/c2-final-from-baseline.patch -whitespace linguist-generated=true
