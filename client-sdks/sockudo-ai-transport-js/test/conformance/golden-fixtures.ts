@@ -28,6 +28,10 @@ export interface GoldenFrame {
   delivery_serial?: string | number;
   serial?: string | number;
   version?: { serial?: string; timestamp_ms?: string | number };
+  extras?: {
+    ai?: { transport?: Record<string, string> };
+    headers?: Record<string, unknown>;
+  };
 }
 
 export interface GoldenTranscript {
@@ -60,7 +64,8 @@ export function hydrateGoldenFrame(
   frame: GoldenFrame,
   index: number,
 ): SockudoRawMessage | undefined {
-  if (frame.event === "sockudo:subscription_succeeded") {
+  // Older goldens used the SDK-facing name; live V2 frames use the internal one.
+  if (frame.event.endsWith(":subscription_succeeded")) {
     return undefined;
   }
   const channel = frame.channel ?? "private-ai-unknown-golden";
@@ -116,6 +121,8 @@ function logicalName(frame: GoldenFrame): string {
 
 function rawMutableAction(action: string | undefined): string | undefined {
   switch (action) {
+    case "create":
+      return "message.create";
     case "append":
       return "message.append";
     case "update":
@@ -133,7 +140,19 @@ function hydratedAction(frame: GoldenFrame): string | undefined {
   if (frame.event === "history:get_latest" || isStateOnlyOutput(frame)) {
     return "message.append";
   }
-  return rawMutableAction(frame.action);
+  return rawMutableAction(mutableAction(frame));
+}
+
+/**
+ * Mutation action of a golden frame: top-level in older goldens, in
+ * `extras.headers.sockudo_action` (as `message.<action>`) in live-shape ones.
+ */
+function mutableAction(frame: GoldenFrame): string | undefined {
+  if (frame.action !== undefined) {
+    return frame.action;
+  }
+  const header = frame.extras?.headers?.sockudo_action;
+  return typeof header === "string" ? header.replace(/^message\./u, "") : undefined;
 }
 
 function scenarioName(channel: string): string {
@@ -209,7 +228,12 @@ function streamStatus(frame: GoldenFrame, scenario: string): string {
   if (frame.event === "history:get_latest") {
     return "complete";
   }
-  if (frame.action === "update" && scenario === "abort") {
+  // Live-shape goldens carry the real status; older ones need the heuristics below.
+  const recorded = frame.extras?.ai?.transport?.status;
+  if (recorded !== undefined && frame.event.startsWith("sockudo:message.")) {
+    return recorded;
+  }
+  if (mutableAction(frame) === "update" && scenario === "abort") {
     return "cancelled";
   }
   return isTerminalMutation(frame) ? "complete" : "streaming";
@@ -221,7 +245,7 @@ function isStateOnlyOutput(frame: GoldenFrame): boolean {
 
 function isTerminalMutation(frame: GoldenFrame): boolean {
   return (
-    frame.action === "update" ||
+    mutableAction(frame) === "update" ||
     frame.data === "hello world" ||
     frame.data === "new answer" ||
     frame.data === "recoverable"
