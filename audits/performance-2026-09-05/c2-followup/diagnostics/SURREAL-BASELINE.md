@@ -77,3 +77,23 @@ Machine-readable totals and exact executable hashes: `results/pr461-surreal-fixe
 The final row uses the preserved PR binary before the additional concurrency
 constraint in this follow-up; the new constraint is validated separately by
 strict live correctness tests.
+
+## Final supported-server comparison (3.3.0)
+
+The unchanged baseline and C2 executables and the current PR executable all
+completed the same 512 × 256 workload on freshly restarted 3.3.0 fixtures.
+The current executable includes the server-version gate, checked transaction
+errors, bounded retries and unique delivery index. Its full historical reads,
+replay and restart digests also passed. Build profiles differ (historical
+release versus current debug); only serialized wire volume is compared, with
+no latency claim.
+
+| Build | Client bytes per append | Maximum client bytes per append |
+| --- | ---: | ---: |
+| baseline | 7,426,132.36 | 14,751,846 |
+| c2 | 3,752,545.55 | 7,415,438 |
+| current | 6,553.64 | 8,480 |
+
+Raw totals, exact executable hashes and the common pinned image are recorded
+in `results/pr461-surreal-330-comparison.json`; corresponding run directories
+retain workload logs, host/container samples and completion manifests.
