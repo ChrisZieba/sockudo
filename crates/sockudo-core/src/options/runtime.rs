@@ -207,8 +207,9 @@ impl WebSocketConfig {
         let compression = match self.compression.to_lowercase().as_str() {
             "dedicated" => Compression::Dedicated,
             "shared" => Compression::Shared,
-            "window256b" => Compression::Window256B,
-            "window1kb" => Compression::Window1KB,
+            // sockudo-ws 3 rejects 8-bit encoder windows; keep legacy configs
+            // on the smallest supported window instead of disabling compression.
+            "window256b" | "window1kb" => Compression::Window1KB,
             "window2kb" => Compression::Window2KB,
             "window4kb" => Compression::Window4KB,
             "window8kb" => Compression::Window8KB,
@@ -287,6 +288,17 @@ mod websocket_config_tests {
         let config = websocket.to_sockudo_ws_config(64, 120);
 
         assert_eq!(config.ping_interval, 0);
+    }
+
+    #[test]
+    fn legacy_window256b_compression_uses_smallest_supported_window() {
+        let websocket = WebSocketConfig {
+            compression: "Window256B".to_string(),
+            ..WebSocketConfig::default()
+        };
+        let config = websocket.to_sockudo_ws_config(64, 120);
+
+        assert_eq!(config.compression, sockudo_ws::Compression::Window1KB);
     }
 }
 
