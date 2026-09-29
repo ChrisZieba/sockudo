@@ -3,7 +3,20 @@
     "event": "history:get_latest",
     "channel": "private-ai-late-golden",
     "data": {
+      "event": "sockudo:message.append",
+      "channel": "private-ai-late-golden",
       "data": "late-state",
+      "name": "ai-output",
+      "serial": "<serial>",
+      "extras": {
+        "ai": {
+          "transport": {
+            "status": "complete"
+          },
+          "codec": {}
+        }
+      },
+      "action": "append",
       "message_serial": "<message_serial>",
       "history_serial": "<serial>",
       "delivery_serial": "<serial>",

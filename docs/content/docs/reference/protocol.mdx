@@ -96,7 +96,7 @@ sequenceDiagram
   participant Sockudo
   participant History
   Client->>Sockudo: subscribe orders with protocol_version=2
-  Sockudo-->>Client: sockudo:subscription_succeeded
+  Sockudo-->>Client: sockudo_internal:subscription_succeeded
   Sockudo->>History: persist event with stream_id and serial
   Sockudo-->>Client: order.created with message_id and serial
   Client->>Sockudo: resume from last serial

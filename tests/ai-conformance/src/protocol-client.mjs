@@ -23,12 +23,16 @@ export class AitProtocolClient {
       transcript.push(parseFrame(event.data));
     });
     await waitForEvent(socket, "open", this.timeoutMs);
-    await waitUntil(
-      () => transcript.some((frame) => frame.event === "sockudo:connection_established"),
+    const established = await waitUntil(
+      () => transcript.find((frame) => frame.event === "sockudo:connection_established"),
       this.timeoutMs,
       "connection_established",
     );
-    return new AitWsSession(socket, transcript, this.timeoutMs);
+    return new AitWsSession(socket, transcript, this.timeoutMs, {
+      key: this.key,
+      secret: this.secret,
+      socketId: established.data.socket_id,
+    });
   }
 
   async publish({ name, channel, data, extras, messageId, idempotencyKey }) {
@@ -114,10 +118,11 @@ export class AitProtocolClient {
 }
 
 export class AitWsSession {
-  constructor(socket, transcript, timeoutMs) {
+  constructor(socket, transcript, timeoutMs, credentials) {
     this.socket = socket;
     this.transcript = transcript;
     this.timeoutMs = timeoutMs;
+    this.credentials = credentials;
   }
 
   send(event, data, channel) {
@@ -125,7 +130,21 @@ export class AitWsSession {
   }
 
   subscribe(channel, extra = {}) {
-    this.send("pusher:subscribe", { channel, ...extra });
+    const auth = channel.startsWith("private-") ? { auth: this.channelAuth(channel) } : {};
+    this.send("pusher:subscribe", { channel, ...auth, ...extra });
+  }
+
+  async subscribed(channel) {
+    return this.waitForEvent(
+      (frame) => frame.event === "sockudo_internal:subscription_succeeded" && frame.channel === channel,
+      `subscription to ${channel}`,
+    );
+  }
+
+  channelAuth(channel) {
+    const { key, secret, socketId } = this.credentials;
+    const signature = crypto.createHmac("sha256", secret).update(`${socketId}:${channel}`).digest("hex");
+    return `${key}:${signature}`;
   }
 
   async waitForEvent(predicate, label) {
@@ -163,13 +182,18 @@ function normalizeValue(value) {
     for (const [key, raw] of Object.entries(value)) {
       if (key === "socket_id") {
         normalized[key] = "<socket>";
+      } else if (key === "stream_id" && typeof raw === "string") {
+        normalized[key] = "<stream_id>";
       } else if (key === "channel" && typeof raw === "string") {
         normalized[key] = normalizeChannel(raw);
       } else if (key.endsWith("_serial") || key === "serial") {
-        normalized[key] = typeof raw === "number" ? "<serial>" : normalizeValue(raw);
-      } else if (key === "timestamp_ms" || key === "timestamp") {
+        // Numeric serials are positions; string serials embed time and node identity.
+        if (typeof raw === "number") normalized[key] = "<serial>";
+        else if (typeof raw === "string" && raw.length > 0) normalized[key] = `<${key}>`;
+        else normalized[key] = normalizeValue(raw);
+      } else if (key.endsWith("timestamp_ms") || key === "timestamp") {
         normalized[key] = "<timestamp>";
-      } else if (key === "message_id" || key === "message_serial" || key === "version_serial") {
+      } else if (key === "message_id") {
         normalized[key] = typeof raw === "string" && raw.length > 0 ? `<${key}>` : raw;
       } else if (key === "version" && raw && typeof raw === "object") {
         normalized[key] = { ...normalizeValue(raw), serial: "<version_serial>", timestamp_ms: "<timestamp>" };

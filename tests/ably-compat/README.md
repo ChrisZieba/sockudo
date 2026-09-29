@@ -60,7 +60,21 @@ publishes, receives the same message, reads history, and detaches.
 `npm run multi-key` consumes the generated six-key conformance fixture. It
 proves that a capability-scoped key can publish and enter presence while the
 primary key observes the same live delivery, history, and presence state, and
-that a subscribe-only key cannot publish.
+that a subscribe-only key cannot publish. Generate the fixture by provisioning
+the upstream `ably-common` test app through the local sandbox, which starts a
+dedicated Sockudo for it (`test-app-setup.json` ships in an `ably-js` checkout
+under `test/common/ably-common/test-resources/`):
+
+```bash
+node tests/ably-compat/upstream-sandbox.mjs --sockudo-bin target/debug/sockudo \
+  --config config/config.toml --listen 127.0.0.1:9080 &
+jq .post_apps <ably-js>/test/common/ably-common/test-resources/test-app-setup.json |
+  curl -s -X POST -H 'content-type: application/json' --data @- \
+    http://127.0.0.1:9080/apps > /tmp/ably-test-app.json
+cd tests/ably-compat
+ABLY_TEST_APP_FILE=/tmp/ably-test-app.json \
+  ABLY_PORT="$(jq -r .port /tmp/ably-test-app.json)" npm run multi-key
+```
 
 `npm run protocol:discovery` probes a broader stock `ably` SDK surface and emits
 a machine-readable scorecard. The required lane is the JSON Realtime Pub/Sub

@@ -1,26 +1,63 @@
 [
   {
-    "event": "sockudo:subscription_succeeded",
+    "event": "sockudo_internal:subscription_succeeded",
     "channel": "private-ai-regenerate-golden",
-    "data": {}
+    "data": {
+      "attach_serial": "<serial>"
+    },
+    "message_id": "<message_id>",
+    "stream_id": "<stream_id>",
+    "serial": "<serial>"
   },
   {
     "event": "ai-output",
     "channel": "private-ai-regenerate-golden",
-    "data": ""
+    "data": "",
+    "message_id": "<message_id>",
+    "stream_id": "<stream_id>",
+    "serial": "<serial>",
+    "extras": {
+      "headers": {
+        "sockudo_message_serial": "<sockudo_message_serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_action": "message.create"
+      },
+      "ai": {
+        "transport": {
+          "stream": "true",
+          "status": "streaming",
+          "role": "assistant",
+          "run-id": "run-regenerate"
+        },
+        "codec": {}
+      }
+    }
   },
   {
     "event": "sockudo:message.append",
     "channel": "private-ai-regenerate-golden",
     "data": "new answer",
-    "action": "append",
-    "message_serial": "<message_serial>",
-    "history_serial": "<serial>",
-    "delivery_serial": "<serial>",
+    "name": "ai-output",
+    "message_id": "<message_id>",
+    "stream_id": "<stream_id>",
     "serial": "<serial>",
-    "version": {
-      "serial": "<version_serial>",
-      "timestamp_ms": "<timestamp>"
+    "extras": {
+      "headers": {
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_action": "message.append",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>",
+        "sockudo_message_serial": "<sockudo_message_serial>"
+      },
+      "ai": {
+        "transport": {
+          "status": "complete",
+          "msg-regenerate": "old-message"
+        },
+        "codec": {}
+      }
     }
   }
 ]

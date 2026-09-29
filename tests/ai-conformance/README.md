@@ -10,9 +10,12 @@ WebSocket client to exercise the server wire surface directly.
 Start an AI-enabled Sockudo server, then:
 
 ```bash
-cd tests/ai-conformance
-node src/run.mjs
+scripts/ai-conformance-node.sh
 ```
+
+The script gives each run a fresh `AIT_CONFORMANCE_RUN_ID` so channels, history, and idempotency
+state never collide with earlier runs against the same server. Private AI channel subscriptions are
+signed with the app secret, as a server-side auth endpoint would.
 
 Defaults:
 
@@ -30,8 +33,14 @@ AIT_CONFORMANCE_OFFLINE=1 node src/run.mjs
 
 ## Golden Transcripts
 
-Golden files live in `fixtures/golden/`. Runtime serials, timestamps, UUID-like IDs, and socket IDs
-are normalized before comparison. The golden transcripts are the SDK-facing executable spec for
-canonical AI Transport sequences.
+Golden files live in `fixtures/golden/`. Runtime serials, timestamps, stream and message IDs, and
+socket IDs are normalized before comparison. The golden transcripts are the SDK-facing executable
+spec for canonical AI Transport sequences, recorded with the V2 default `append_mode=delta`.
+
+After an intentional wire change, regenerate them from a live server and review the diff:
+
+```bash
+AIT_CONFORMANCE_UPDATE_GOLDEN=1 scripts/ai-conformance-node.sh
+```
 
 Forward-compat fixtures live in `fixtures/forward-compat/` and are consumed by SDK tolerance lanes.

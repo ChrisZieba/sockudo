@@ -1,47 +1,112 @@
 [
   {
-    "event": "sockudo:subscription_succeeded",
+    "event": "sockudo_internal:subscription_succeeded",
     "channel": "private-ai-normal-golden",
-    "data": {}
+    "data": {
+      "attach_serial": "<serial>"
+    },
+    "message_id": "<message_id>",
+    "stream_id": "<stream_id>",
+    "serial": "<serial>"
   },
   {
     "event": "ai-run-start",
     "channel": "private-ai-normal-golden",
     "data": {
       "ok": true
+    },
+    "message_id": "<message_id>",
+    "stream_id": "<stream_id>",
+    "serial": "<serial>",
+    "extras": {
+      "headers": {
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_action": "message.create",
+        "sockudo_version_timestamp_ms": "<timestamp>",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>"
+      },
+      "ai": {
+        "transport": {
+          "run-id": "run-normal",
+          "invocation-id": "invoke-normal"
+        },
+        "codec": {}
+      }
     }
   },
   {
     "event": "ai-output",
     "channel": "private-ai-normal-golden",
-    "data": ""
-  },
-  {
-    "event": "sockudo:message.append",
-    "channel": "private-ai-normal-golden",
-    "data": "hello",
-    "action": "append",
-    "message_serial": "<message_serial>",
-    "history_serial": "<serial>",
-    "delivery_serial": "<serial>",
+    "data": "",
+    "message_id": "<message_id>",
+    "stream_id": "<stream_id>",
     "serial": "<serial>",
-    "version": {
-      "serial": "<version_serial>",
-      "timestamp_ms": "<timestamp>"
+    "extras": {
+      "headers": {
+        "sockudo_history_serial": "<serial>",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>",
+        "sockudo_action": "message.create",
+        "sockudo_message_serial": "<sockudo_message_serial>"
+      },
+      "ai": {
+        "transport": {
+          "stream": "true",
+          "status": "streaming",
+          "run-id": "run-normal",
+          "role": "assistant"
+        },
+        "codec": {}
+      }
     }
   },
   {
     "event": "sockudo:message.append",
     "channel": "private-ai-normal-golden",
-    "data": "hello world",
-    "action": "append",
-    "message_serial": "<message_serial>",
-    "history_serial": "<serial>",
-    "delivery_serial": "<serial>",
+    "data": "hello",
+    "name": "ai-output",
+    "message_id": "<message_id>",
+    "stream_id": "<stream_id>",
     "serial": "<serial>",
-    "version": {
-      "serial": "<version_serial>",
-      "timestamp_ms": "<timestamp>"
+    "extras": {
+      "headers": {
+        "sockudo_history_serial": "<serial>",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>",
+        "sockudo_action": "message.append",
+        "sockudo_version_timestamp_ms": "<timestamp>"
+      },
+      "ai": {
+        "transport": {
+          "status": "streaming"
+        },
+        "codec": {}
+      }
+    }
+  },
+  {
+    "event": "sockudo:message.append",
+    "channel": "private-ai-normal-golden",
+    "data": " world",
+    "name": "ai-output",
+    "message_id": "<message_id>",
+    "stream_id": "<stream_id>",
+    "serial": "<serial>",
+    "extras": {
+      "headers": {
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_action": "message.append",
+        "sockudo_version_timestamp_ms": "<timestamp>"
+      },
+      "ai": {
+        "transport": {
+          "status": "complete"
+        },
+        "codec": {}
+      }
     }
   },
   {
@@ -49,6 +114,25 @@
     "channel": "private-ai-normal-golden",
     "data": {
       "ok": true
+    },
+    "message_id": "<message_id>",
+    "stream_id": "<stream_id>",
+    "serial": "<serial>",
+    "extras": {
+      "headers": {
+        "sockudo_action": "message.create",
+        "sockudo_version_serial": "<sockudo_version_serial>",
+        "sockudo_version_timestamp_ms": "<timestamp>",
+        "sockudo_history_serial": "<serial>",
+        "sockudo_message_serial": "<sockudo_message_serial>"
+      },
+      "ai": {
+        "transport": {
+          "run-reason": "complete",
+          "run-id": "run-normal"
+        },
+        "codec": {}
+      }
     }
   }
 ]
