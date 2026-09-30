@@ -45,6 +45,8 @@ existing defaults.
 
 ### Changed
 
+- Raised the minimum supported Rust version to 1.95, which `sockudo-ws` 3.0.0 requires
+  (`Atomic*::try_update`). The musl release binaries build on the declared minimum.
 - Upgraded `sockudo-ws` to 3.0.0. The removed 256-byte compression window maps the legacy
   `window256b` config value to the 1 KB window instead of disabling compression.
 - Mutable-message appends can store bounded, versioned chunks across PostgreSQL, MySQL, DynamoDB,
