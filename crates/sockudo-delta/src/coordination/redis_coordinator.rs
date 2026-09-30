@@ -55,6 +55,9 @@ impl RedisCoordinationConnection {
 /// Redis-based cluster coordinator for delta interval synchronization
 pub struct RedisClusterCoordinator {
     connection: Arc<tokio::sync::Mutex<RedisCoordinationConnection>>,
+    /// Standalone/Sentinel source, refreshed per operation so the coordinator
+    /// follows a Sentinel failover. `None` for Redis Cluster.
+    client: Option<RedisClient>,
     prefix: String,
     ttl_seconds: u64,
     backend_name: &'static str,
@@ -88,6 +91,7 @@ impl RedisClusterCoordinator {
             connection: Arc::new(tokio::sync::Mutex::new(
                 RedisCoordinationConnection::Standard(connection),
             )),
+            client: Some(client),
             prefix: prefix.unwrap_or("sockudo").to_string(),
             ttl_seconds: 300,
             backend_name: "redis",
@@ -119,10 +123,24 @@ impl RedisClusterCoordinator {
             connection: Arc::new(tokio::sync::Mutex::new(
                 RedisCoordinationConnection::Cluster(connection),
             )),
+            client: None,
             prefix: prefix.unwrap_or("sockudo").to_string(),
             ttl_seconds: 300,
             backend_name: "redis_cluster",
         })
+    }
+
+    /// Locks the coordination connection. Standalone/Sentinel connections are
+    /// re-read from the client's cache (a cheap clone) so a promoted primary is
+    /// used as soon as the client notices the failover.
+    async fn lock_connection(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, RedisCoordinationConnection>> {
+        let mut connection = self.connection.lock().await;
+        if let Some(client) = &self.client {
+            *connection = RedisCoordinationConnection::Standard(client.command_connection().await?);
+        }
+        Ok(connection)
     }
 
     fn get_key(&self, app_id: &str, channel: &str, conflation_key: &str) -> String {
@@ -147,7 +165,7 @@ impl ClusterCoordinator for RedisClusterCoordinator {
         interval: u32,
     ) -> Result<(bool, u32)> {
         let key = self.get_key(app_id, channel, conflation_key);
-        let mut conn = self.connection.lock().await;
+        let mut conn = self.lock_connection().await?;
 
         let count: u32 = conn
             .incr(&key, 1)
@@ -200,7 +218,7 @@ impl ClusterCoordinator for RedisClusterCoordinator {
 
     async fn reset_counter(&self, app_id: &str, channel: &str, conflation_key: &str) -> Result<()> {
         let key = self.get_key(app_id, channel, conflation_key);
-        let mut conn = self.connection.lock().await;
+        let mut conn = self.lock_connection().await?;
 
         let _: () = conn
             .del(&key)
@@ -213,7 +231,7 @@ impl ClusterCoordinator for RedisClusterCoordinator {
 
     async fn get_counter(&self, app_id: &str, channel: &str, conflation_key: &str) -> Result<u32> {
         let key = self.get_key(app_id, channel, conflation_key);
-        let mut conn = self.connection.lock().await;
+        let mut conn = self.lock_connection().await?;
 
         let count: Option<u32> = conn
             .get(&key)
@@ -228,6 +246,7 @@ impl Clone for RedisClusterCoordinator {
     fn clone(&self) -> Self {
         Self {
             connection: Arc::clone(&self.connection),
+            client: self.client.clone(),
             prefix: self.prefix.clone(),
             ttl_seconds: self.ttl_seconds,
             backend_name: self.backend_name,

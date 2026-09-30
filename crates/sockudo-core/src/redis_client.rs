@@ -3,17 +3,26 @@
 //! Command connections are cached and cheap to clone. Worker/listener paths can
 //! request a fresh connection so a blocking command never stalls unrelated work.
 //!
+//! Sentinel-backed clients watch the primary address in the background. When
+//! Sentinel promotes a new primary, cached connections are dropped so the next
+//! caller reconnects to it, and [`MasterChanges`] wakes long-lived listeners
+//! (Pub/Sub) so they can resubscribe.
+//!
 //! Cluster connections do not retry initial node discovery on their own;
 //! use [`cluster_connect_with_retry`] at startup.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use parking_lot::Mutex;
 use redis::aio::{ConnectionManager, ConnectionManagerConfig, MultiplexedConnection, PubSub};
 use redis::sentinel::{SentinelClient, SentinelClientBuilder, SentinelServerType};
-use redis::{ClientTlsConfig, ConnectionAddr, IntoConnectionInfo, TlsCertificates, TlsMode};
-use tracing::{info, warn};
+use redis::{
+    ClientTlsConfig, ConnectionAddr, IntoConnectionInfo, RedisConnectionInfo, TlsCertificates,
+    TlsMode,
+};
+use tokio::sync::watch;
+use tracing::{debug, info, warn};
 
 use crate::error::{Error, Result};
 use crate::options::{RedisTlsOptions, SentinelSpec};
@@ -30,6 +39,12 @@ const CONNECT_MAX_DELAY: Duration = Duration::from_millis(5_000);
 /// Initial delay (ms) for the cluster startup retry loop.
 const CLUSTER_CONNECT_BASE_DELAY_MS: u64 = 200;
 
+/// How often a Sentinel-backed client asks Sentinel for the current primary.
+const SENTINEL_MASTER_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Upper bound on a single Sentinel primary lookup, including connecting.
+const SENTINEL_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
+
 pub fn connection_manager_config() -> ConnectionManagerConfig {
     ConnectionManagerConfig::new()
         .set_number_of_retries(CONNECT_MAX_RETRIES)
@@ -44,12 +59,80 @@ enum ClientSource {
     Sentinel(tokio::sync::Mutex<SentinelClient>),
 }
 
+/// What the background primary watcher needs to query Sentinel directly.
+struct SentinelWatch {
+    master_name: String,
+    /// One client per configured Sentinel, with the Sentinel credentials/TLS.
+    nodes: Vec<redis::Client>,
+}
+
+/// Host and port of a Redis primary, as Sentinel reports it.
+type MasterAddr = (String, u16);
+
 struct Inner {
     source: ClientSource,
+    /// Present for Sentinel sources.
+    sentinel_watch: Option<SentinelWatch>,
     manager_config: ConnectionManagerConfig,
     connection: Mutex<Option<ConnectionManager>>,
     events_connection: Mutex<Option<ConnectionManager>>,
     health_connection: Mutex<Option<ConnectionManager>>,
+    /// Primary the most recent Sentinel resolution returned.
+    master_addr: Mutex<Option<MasterAddr>>,
+    /// Incremented each time the Sentinel primary moves.
+    master_changes: watch::Sender<u64>,
+}
+
+impl Inner {
+    fn clear_slots(&self) {
+        *self.connection.lock() = None;
+        *self.events_connection.lock() = None;
+        *self.health_connection.lock() = None;
+    }
+
+    /// Records the primary Sentinel currently reports. When it differs from the
+    /// one cached connections were built against, drops them and notifies
+    /// listeners. Returns whether the primary changed.
+    fn observe_master(&self, current: MasterAddr) -> bool {
+        let previous = {
+            let mut recorded = self.master_addr.lock();
+            if recorded.as_ref() == Some(&current) {
+                return false;
+            }
+            recorded.replace(current.clone())
+        };
+        let Some(previous) = previous else {
+            return false;
+        };
+        info!(
+            previous_master = %format_args!("{}:{}", previous.0, previous.1),
+            current_master = %format_args!("{}:{}", current.0, current.1),
+            "redis sentinel primary changed, reconnecting"
+        );
+        self.clear_slots();
+        self.master_changes
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+        true
+    }
+}
+
+/// Wakes a long-lived listener when the Sentinel primary moves.
+pub struct MasterChanges(watch::Receiver<u64>);
+
+impl MasterChanges {
+    /// Resolves after the next primary change. Never resolves for standalone
+    /// clients, so it is safe to `select!` on unconditionally.
+    pub async fn changed(&mut self) {
+        if self.0.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+
+    /// Marks every change so far as handled. Call before re-resolving the
+    /// primary so a change that is already being acted on does not fire again.
+    pub fn mark_seen(&mut self) {
+        self.0.borrow_and_update();
+    }
 }
 
 /// Cheap-to-clone handle over standalone Redis/rediss or a Sentinel primary.
@@ -76,6 +159,7 @@ impl RedisClient {
     pub async fn from_client(client: redis::Client) -> Result<Self> {
         Self::from_source(
             ClientSource::Standalone(client),
+            None,
             connection_manager_config(),
         )
         .await
@@ -98,45 +182,67 @@ impl RedisClient {
         let manager_config =
             connection_manager_config().set_response_timeout(options.response_timeout);
 
-        let source = match options.sentinel {
-            Some(spec) => {
-                ClientSource::Sentinel(tokio::sync::Mutex::new(build_sentinel_client(&spec).await?))
-            }
-            None => ClientSource::Standalone(build_standalone_client(url, &options.tls).await?),
+        let (source, sentinel_watch) = match options.sentinel {
+            Some(spec) => (
+                ClientSource::Sentinel(tokio::sync::Mutex::new(
+                    build_sentinel_client(&spec).await?,
+                )),
+                Some(SentinelWatch {
+                    master_name: spec.master_name.clone(),
+                    nodes: build_sentinel_node_clients(&spec).await?,
+                }),
+            ),
+            None => (
+                ClientSource::Standalone(build_standalone_client(url, &options.tls).await?),
+                None,
+            ),
         };
 
-        Self::from_source(source, manager_config).await
+        Self::from_source(source, sentinel_watch, manager_config).await
     }
 
     async fn from_source(
         source: ClientSource,
+        sentinel_watch: Option<SentinelWatch>,
         manager_config: ConnectionManagerConfig,
     ) -> Result<Self> {
         let client = Self {
             inner: Arc::new(Inner {
                 source,
+                sentinel_watch,
                 manager_config,
                 connection: Mutex::new(None),
                 events_connection: Mutex::new(None),
                 health_connection: Mutex::new(None),
+                master_addr: Mutex::new(None),
+                master_changes: watch::Sender::new(0),
             }),
         };
         let _ = client.command_connection().await?;
         let _ = client.events_connection().await?;
+        if client.inner.sentinel_watch.is_some() {
+            spawn_master_watch(Arc::downgrade(&client.inner));
+        }
         Ok(client)
     }
 
     async fn master_client(&self) -> Result<redis::Client> {
         match &self.inner.source {
             ClientSource::Standalone(client) => Ok(client.clone()),
-            ClientSource::Sentinel(sentinel) => sentinel
-                .lock()
-                .await
-                .async_get_client()
-                .await
-                .map_err(|error| {
-                    Error::Redis(format!("failed to resolve Redis Sentinel primary: {error}"))
-                }),
+            ClientSource::Sentinel(sentinel) => {
+                let client = sentinel
+                    .lock()
+                    .await
+                    .async_get_client()
+                    .await
+                    .map_err(|error| {
+                        Error::Redis(format!("failed to resolve Redis Sentinel primary: {error}"))
+                    })?;
+                if let Some(addr) = master_addr_of(client.get_connection_info().addr()) {
+                    self.inner.observe_master(addr);
+                }
+                Ok(client)
+            }
         }
     }
 
@@ -205,10 +311,15 @@ impl RedisClient {
     /// Invalidates cached data-plane connections after a Sentinel failover.
     pub fn invalidate(&self) {
         if matches!(self.inner.source, ClientSource::Sentinel(_)) {
-            *self.inner.connection.lock() = None;
-            *self.inner.events_connection.lock() = None;
-            *self.inner.health_connection.lock() = None;
+            self.inner.clear_slots();
         }
+    }
+
+    /// Subscribes to Sentinel primary changes. Long-lived connections that are
+    /// not rebuilt per call, such as Pub/Sub, should reconnect when it fires.
+    #[must_use]
+    pub fn master_changes(&self) -> MasterChanges {
+        MasterChanges(self.inner.master_changes.subscribe())
     }
 
     #[must_use]
@@ -395,6 +506,143 @@ pub async fn cluster_connect_with_retry(
     )))
 }
 
+/// Extracts the host and port a resolved primary client connects to.
+fn master_addr_of(addr: &ConnectionAddr) -> Option<MasterAddr> {
+    match addr {
+        ConnectionAddr::Tcp(host, port) | ConnectionAddr::TcpTls { host, port, .. } => {
+            Some((host.clone(), *port))
+        }
+        _ => None,
+    }
+}
+
+/// Polls Sentinel for the current primary until every [`RedisClient`] handle is
+/// dropped. Only a [`Weak`] reference is held between polls.
+fn spawn_master_watch(inner: Weak<Inner>) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(SENTINEL_MASTER_CHECK_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        ticker.tick().await;
+        let mut node = 0usize;
+        let mut connection = None;
+        let mut failing = false;
+
+        loop {
+            ticker.tick().await;
+            let Some(inner) = inner.upgrade() else {
+                break;
+            };
+            let Some(watch) = &inner.sentinel_watch else {
+                break;
+            };
+            match query_master_addr(watch, &mut node, &mut connection).await {
+                Ok(addr) => {
+                    if failing {
+                        info!("redis sentinel primary lookup recovered");
+                        failing = false;
+                    }
+                    inner.observe_master(addr);
+                }
+                Err(error) => {
+                    if !failing {
+                        warn!(error = %error, "redis sentinel primary lookup failed");
+                        failing = true;
+                    }
+                }
+            }
+        }
+        debug!("redis sentinel primary watch stopped");
+    });
+}
+
+/// Asks the configured Sentinels, starting with the last one that answered,
+/// for the primary address. Rotates to the next Sentinel on any failure.
+async fn query_master_addr(
+    source: &SentinelWatch,
+    node: &mut usize,
+    connection: &mut Option<MultiplexedConnection>,
+) -> Result<MasterAddr> {
+    let mut last_error = None;
+    for _ in 0..source.nodes.len() {
+        let attempt = tokio::time::timeout(SENTINEL_QUERY_TIMEOUT, async {
+            if connection.is_none() {
+                *connection = Some(
+                    source.nodes[*node]
+                        .get_multiplexed_async_connection()
+                        .await?,
+                );
+            }
+            let conn = connection.as_mut().expect("sentinel connection is set");
+            redis::cmd("SENTINEL")
+                .arg("get-master-addr-by-name")
+                .arg(&source.master_name)
+                .query_async::<Option<(String, String)>>(conn)
+                .await
+        })
+        .await;
+
+        let error = match attempt {
+            Ok(Ok(Some((host, port)))) => match port.parse::<u16>() {
+                Ok(port) => return Ok((host, port)),
+                Err(_) => format!("sentinel returned invalid port {port}"),
+            },
+            Ok(Ok(None)) => format!("sentinel does not know primary {}", source.master_name),
+            Ok(Err(error)) => error.to_string(),
+            Err(_) => "sentinel query timed out".to_string(),
+        };
+        last_error = Some(error);
+        *connection = None;
+        *node = (*node + 1) % source.nodes.len();
+    }
+    Err(Error::Redis(last_error.unwrap_or_else(|| {
+        "Redis Sentinel configured without any hosts".to_string()
+    })))
+}
+
+/// Builds one direct client per Sentinel with the Sentinel credentials and TLS
+/// material, for topology queries outside redis-rs master resolution.
+async fn build_sentinel_node_clients(spec: &SentinelSpec) -> Result<Vec<redis::Client>> {
+    let certificates = if spec.sentinel_tls.enabled {
+        load_tls_certificates(&spec.sentinel_tls, "sentinel").await?
+    } else {
+        None
+    };
+    let mut settings = RedisConnectionInfo::default();
+    if let Some(username) = &spec.sentinel_username {
+        settings = settings.set_username(username);
+    }
+    if let Some(password) = &spec.sentinel_password {
+        settings = settings.set_password(password);
+    }
+
+    spec.hosts
+        .iter()
+        .map(|(host, port)| {
+            let addr = if spec.sentinel_tls.enabled {
+                ConnectionAddr::TcpTls {
+                    host: host.clone(),
+                    port: *port,
+                    insecure: spec.sentinel_tls.accept_invalid_certs,
+                    tls_params: None,
+                }
+            } else {
+                ConnectionAddr::Tcp(host.clone(), *port)
+            };
+            let info = addr
+                .into_connection_info()
+                .map_err(|error| Error::Redis(format!("invalid Redis Sentinel address: {error}")))?
+                .set_redis_settings(settings.clone());
+            match &certificates {
+                Some(certificates) => redis::Client::build_with_tls(info, certificates.clone()),
+                None => redis::Client::open(info),
+            }
+            .map_err(|error| {
+                Error::Redis(format!("failed to create Redis Sentinel client: {error}"))
+            })
+        })
+        .collect()
+}
+
 async fn build_sentinel_client(spec: &SentinelSpec) -> Result<SentinelClient> {
     if spec.hosts.is_empty() {
         return Err(Error::Redis(
@@ -478,6 +726,111 @@ mod tests {
     #[tokio::test]
     async fn sentinel_client_build_is_offline_safe() {
         build_sentinel_client(&spec()).await.unwrap();
+    }
+
+    fn offline_inner() -> Inner {
+        Inner {
+            source: ClientSource::Standalone(
+                redis::Client::open("redis://127.0.0.1:1/").expect("client metadata"),
+            ),
+            sentinel_watch: None,
+            manager_config: connection_manager_config(),
+            connection: Mutex::new(None),
+            events_connection: Mutex::new(None),
+            health_connection: Mutex::new(None),
+            master_addr: Mutex::new(None),
+            master_changes: watch::Sender::new(0),
+        }
+    }
+
+    #[tokio::test]
+    async fn observe_master_notifies_only_when_the_primary_moves() {
+        let inner = offline_inner();
+        let mut changes = MasterChanges(inner.master_changes.subscribe());
+
+        // The first resolution records the primary without a notification.
+        assert!(!inner.observe_master(("10.0.0.1".to_string(), 6379)));
+        assert!(!inner.observe_master(("10.0.0.1".to_string(), 6379)));
+        assert_eq!(*inner.master_changes.borrow(), 0);
+
+        assert!(inner.observe_master(("10.0.0.2".to_string(), 6379)));
+        assert_eq!(*inner.master_changes.borrow(), 1);
+        tokio::time::timeout(Duration::from_secs(1), changes.changed())
+            .await
+            .expect("listeners are woken after a primary change");
+        assert_eq!(
+            inner.master_addr.lock().clone(),
+            Some(("10.0.0.2".to_string(), 6379))
+        );
+
+        // A port change on the same host is a different primary.
+        assert!(inner.observe_master(("10.0.0.2".to_string(), 6380)));
+        assert_eq!(*inner.master_changes.borrow(), 2);
+
+        // A change that is already being handled does not fire again.
+        changes.mark_seen();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), changes.changed())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn master_changes_never_fire_without_a_primary_change() {
+        let inner = offline_inner();
+        let mut changes = MasterChanges(inner.master_changes.subscribe());
+        inner.observe_master(("10.0.0.1".to_string(), 6379));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), changes.changed())
+                .await
+                .is_err()
+        );
+
+        // A dropped sender must not turn `changed()` into a busy loop.
+        let mut closed = MasterChanges(watch::Sender::new(0u64).subscribe());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), closed.changed())
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn master_addr_of_reads_tcp_and_tls_addresses() {
+        assert_eq!(
+            master_addr_of(&ConnectionAddr::Tcp("10.0.0.1".to_string(), 6379)),
+            Some(("10.0.0.1".to_string(), 6379))
+        );
+        assert_eq!(
+            master_addr_of(&ConnectionAddr::TcpTls {
+                host: "redis.internal".to_string(),
+                port: 6380,
+                insecure: false,
+                tls_params: None,
+            }),
+            Some(("redis.internal".to_string(), 6380))
+        );
+        assert_eq!(
+            master_addr_of(&ConnectionAddr::Unix("/tmp/redis.sock".into())),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn sentinel_node_clients_carry_sentinel_credentials() {
+        let mut value = spec();
+        value.hosts.push(("127.0.0.1".to_string(), 26380));
+        value.sentinel_username = Some("watcher".to_string());
+        value.sentinel_password = Some("sentinel-secret".to_string());
+        value.redis_password = Some("master-secret".to_string());
+
+        let nodes = build_sentinel_node_clients(&value).await.unwrap();
+        assert_eq!(nodes.len(), 2);
+        let info = nodes[1].get_connection_info();
+        assert!(matches!(info.addr(), ConnectionAddr::Tcp(host, 26380) if host == "127.0.0.1"));
+        assert_eq!(info.redis_settings().username(), Some("watcher"));
+        assert_eq!(info.redis_settings().password(), Some("sentinel-secret"));
     }
 
     #[tokio::test]

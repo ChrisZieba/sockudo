@@ -400,6 +400,7 @@ jobs:
             sockudo-push
             sockudo-adapter
             sockudo-ably-compat
+            sockudo-mcp
             sockudo
           )
 
