@@ -142,12 +142,19 @@ Operational recommendations:
 
 ## Rolling deploys
 
-1. Mark the node unready.
-2. Stop accepting new connections.
-3. Let existing connections drain or close with a reconnect-friendly code.
-4. Keep adapter and cache dependencies available.
-5. Watch reconnect, resume, and missed-message metrics.
-6. Roll nodes in small batches.
+On SIGTERM or SIGINT, Sockudo:
+
+1. Reports not ready: `/up` and `/ready` return 503 `DRAINING` and new WebSocket upgrades are
+   rejected with 503. The listener stays open and HTTP API requests are still served.
+2. Waits `shutdown_grace_period` seconds so load balancers can remove the node.
+3. Closes existing connections with code 4200, disconnects from backends, and exits.
+
+Set `shutdown_grace_period` longer than your load balancer's deregistration time (for a
+readiness probe, roughly `periodSeconds × failureThreshold` plus endpoint propagation). Then:
+
+1. Keep adapter and cache dependencies available.
+2. Watch reconnect, resume, and missed-message metrics.
+3. Roll nodes in small batches.
 
 ## Metrics to watch
 
