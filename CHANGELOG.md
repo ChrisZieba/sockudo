@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [5.1.0] - 2026-09-30
+
+Protocol V1 Pusher compatibility is unchanged. All new capabilities are opt-in and keep their
+existing defaults.
+
 ### Added
 
 - Model Context Protocol server. The new `sockudo-mcp` crate (built on the official `rmcp` SDK)
@@ -12,6 +17,66 @@
   scopes and app allow-lists, per-token rate limits, audit logs, `mcp_*` Prometheus metrics),
   driving its own API router in-process. The standalone `sockudo-mcp` binary serves stdio or HTTP
   against a remote deployment.
+- Full OpenTelemetry support: OTLP traces, metrics, and logs over gRPC, HTTP/protobuf, or
+  HTTP/JSON, with W3C trace-context and baggage propagation through HTTP, WebSockets, horizontal
+  fanout, durable queue jobs, webhooks, and push-provider requests. Local logs and Prometheus are
+  preserved; standard `OTEL_*` controls, Helm values, and a Compose collector overlay are included.
+- Apple Live Activities: token-based push-to-start, update, and end, iOS 18 broadcast channels
+  with signed create/read/list/delete APIs, APNs payload and header validation, bounded HTTP/2
+  pooling, retries, and metrics, plus typed helpers across the official server SDKs and the
+  Swift, Flutter, JavaScript, and .NET clients.
+- Feature-gated OMQ horizontal adapter (`adapter.driver = "omq"`) using a brokerless PUB/SUB mesh
+  for broadcasts, requests, responses, and per-node targeted requests.
+- Opt-in memory-pressure admission control that rejects new native and Ably WebSocket connections
+  under cgroup v1/v2 or explicit byte limits while keeping established sessions, with an
+  `/accept-traffic` endpoint and shedding metrics.
+- `/ready` readiness endpoint with configurable connection-capacity hysteresis, independent of
+  `/up` dependency health.
+- Dashboard account page with password self-service, administrator resets, and optional per-user
+  TOTP with recovery codes.
+- First-party `sockudo/laravel` broadcasting package for Laravel 12 and 13.
+- `reconnectJitter` option across the JavaScript, .NET, Flutter, Kotlin, Python, and Swift
+  clients (defaults to 0, preserving existing delays), and typed connection and channel event
+  listeners in the Kotlin client.
+- Helm chart support for config from a Secret, deployment strategy, raw HPA metrics, and Redis
+  Sentinel values.
+- `request_type` label on horizontal adapter promise counters, `node_count` in request timeout
+  warnings, and counters for bounded sharded Pub/Sub fan-in drops.
+
+### Changed
+
+- Upgraded `sockudo-ws` to 3.0.0. The removed 256-byte compression window maps the legacy
+  `window256b` config value to the 1 KB window instead of disabling compression.
+- Mutable-message appends can store bounded, versioned chunks across PostgreSQL, MySQL, DynamoDB,
+  ScyllaDB, and SurrealDB, removing quadratic write volume on long appends. The persisted format
+  marker defaults off; explicit maintenance commands enable, preflight, and roll back the format.
+- When the binary is built without the `versioned-messages` feature, `[versioned_messages]` and
+  `[annotations]` settings now log a startup warning and are disabled instead of failing every HTTP
+  publish.
+
+### Fixed
+
+- WebSocket connections now finish the peer Close handshake before cleanup, so clients receive a
+  clean close instead of 1006 on the native and Ably read loops.
+- `POST /events` accepts object `data` again instead of returning 422.
+- Restored `cargo install sockudo` outside the repository by gating Tokio unstable metrics, and
+  made the bundled Docker configuration start with node-local drivers.
+- Allowed `,` and `;` in Pusher-compatible channel names.
+- Decoded binary Ably annotation payloads through the shared base64 normalization.
+- Retried Redis Cluster startup discovery with backoff, forwarded the Redis Cluster ACL username,
+  inherited `database.redis.cluster` seeds for the queue when `queue.redis_cluster.nodes` is unset,
+  and reused a dedicated Redis health connection instead of one per probe.
+- Expired dead horizontal nodes locally regardless of leader or broadcast state.
+- Extended `resolve_time` histogram buckets to cover the request timeout.
+- Closed DynamoDB history, replay, and latest-version pagination gaps and rejected oversized
+  append rollbacks before rewriting records.
+- Moved Kotlin client callbacks off the WebSocket reader thread and lowered its JVM target to 17.
+
+### Performance
+
+- Indexed mutable version-store operations (latest version, identity, receipts, append counts, and
+  open streams) across memory and SQL backends, cutting memory batch p50 at 1,024 revisions from
+  about 1 ms to about 45 µs and SQL append-count lookups to a single counter row.
 
 ## [5.0.1] - 2026-08-21
 
