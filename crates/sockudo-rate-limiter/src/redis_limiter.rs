@@ -7,15 +7,14 @@ use redis::{AsyncCommands, Client};
 use sockudo_core::error::{Error, Result};
 use sockudo_core::rate_limiter::{RateLimitConfig, RateLimitResult, RateLimiter};
 use sockudo_core::redis_client::RedisClient;
-use tokio::sync::RwLock;
 use tracing::warn;
 
 /// Redis-based rate limiter implementation
 pub struct RedisRateLimiter {
-    /// Shared Redis provider used to establish a fresh connection for safe retry.
+    /// Shared Redis provider. Commands use its cached connection (a cheap
+    /// clone) so a Sentinel failover is followed; a fresh connection is only
+    /// opened for the single safe retry after a dropped connection.
     client: RedisClient,
-    /// Redis connection with automatic reconnection
-    connection: RwLock<redis::aio::ConnectionManager>,
     /// Prefix for Redis keys
     prefix: String,
     /// Configuration for rate limiting
@@ -76,11 +75,10 @@ impl RedisRateLimiter {
         prefix: String,
         config: RateLimitConfig,
     ) -> Result<Self> {
-        let connection = client.command_connection().await?;
+        client.command_connection().await?;
 
         Ok(Self {
             client,
-            connection: RwLock::new(connection),
             prefix,
             config,
         })
@@ -115,7 +113,7 @@ impl RedisRateLimiter {
             member: &member,
         };
 
-        let mut connection = { self.connection.read().await.clone() };
+        let mut connection = self.client.command_connection().await?;
         let first_result = crate::redis_window::run_sliding_window(&mut connection, request).await;
 
         match first_result {
@@ -127,18 +125,16 @@ impl RedisRateLimiter {
                     retryable = true,
                     "redis rate limiter command retry scheduled"
                 );
-                let replacement = self.client.fresh_connection_manager().await?;
-                let mut retry_connection = replacement.clone();
-                let result =
-                    crate::redis_window::run_sliding_window(&mut retry_connection, request)
-                        .await
-                        .map_err(|retry_error| {
-                            Error::Redis(format!(
-                                "redis sliding-window command failed after reconnect: {retry_error}"
-                            ))
-                        })?;
-                *self.connection.write().await = replacement;
-                Ok(result)
+                // Rebuild cached Sentinel connections against the current primary.
+                self.client.invalidate();
+                let mut retry_connection = self.client.fresh_connection_manager().await?;
+                crate::redis_window::run_sliding_window(&mut retry_connection, request)
+                    .await
+                    .map_err(|retry_error| {
+                        Error::Redis(format!(
+                            "redis sliding-window command failed after reconnect: {retry_error}"
+                        ))
+                    })
             }
             Err(error) => Err(Error::Redis(format!(
                 "redis sliding-window command failed: {error}"
@@ -159,7 +155,7 @@ impl RateLimiter for RedisRateLimiter {
 
     async fn reset(&self, key: &str) -> Result<()> {
         let redis_key = self.get_key(key);
-        let mut conn = { self.connection.read().await.clone() };
+        let mut conn = self.client.command_connection().await?;
 
         let _: () = conn
             .del(&redis_key)

@@ -40,13 +40,9 @@ impl Default for RedisCacheConfig {
 
 /// A Redis-based implementation of the CacheManager trait
 pub struct RedisCacheManager {
-    /// Redis client
+    /// Redis client. Connections are fetched per operation (a cheap clone of
+    /// the cached manager) so a Sentinel failover is picked up without restart.
     client: RedisClient,
-    /// Connection manager with automatic reconnection. Clone is cheap (shared internal state).
-    connection: ConnectionManager,
-    /// Dedicated connection manager for health checks so probes do not open a
-    /// new Redis connection or queue behind normal cache operations.
-    health_connection: ConnectionManager,
     /// Key prefix
     prefix: String,
 }
@@ -74,20 +70,9 @@ impl RedisCacheManager {
         )
         .await
         .map_err(|error| Error::Cache(format!("Failed to connect to Redis: {error}")))?;
-        let connection = client
-            .command_connection()
-            .await
-            .map_err(|error| Error::Cache(format!("Failed to connect to Redis: {error}")))?;
-        let health_connection = client.events_connection().await.map_err(|error| {
-            Error::Cache(format!(
-                "Failed to connect Redis health check connection: {error}"
-            ))
-        })?;
 
         Ok(Self {
             client,
-            connection,
-            health_connection,
             prefix: config.prefix,
         })
     }
@@ -107,12 +92,20 @@ impl RedisCacheManager {
     fn prefixed_key(&self, key: &str) -> String {
         format!("{}:{}", self.prefix, key)
     }
+
+    /// Current command connection; follows the Sentinel primary.
+    async fn connection(&self) -> Result<ConnectionManager> {
+        self.client
+            .command_connection()
+            .await
+            .map_err(|error| Error::Cache(format!("Failed to connect to Redis: {error}")))
+    }
 }
 
 #[async_trait]
 impl CacheManager for RedisCacheManager {
     async fn has(&self, key: &str) -> Result<bool> {
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
         let exists: bool = connection
             .exists(self.prefixed_key(key))
             .await
@@ -121,7 +114,7 @@ impl CacheManager for RedisCacheManager {
     }
 
     async fn get(&self, key: &str) -> Result<Option<String>> {
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
         let value: Option<String> = connection
             .get(self.prefixed_key(key))
             .await
@@ -131,7 +124,7 @@ impl CacheManager for RedisCacheManager {
 
     async fn set(&self, key: &str, value: &str, ttl_seconds: u64) -> Result<()> {
         let prefixed_key = self.prefixed_key(key);
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
 
         if ttl_seconds > 0 {
             connection
@@ -149,7 +142,7 @@ impl CacheManager for RedisCacheManager {
     }
 
     async fn remove(&self, key: &str) -> Result<()> {
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
         let deleted: i32 = connection
             .del(self.prefixed_key(key))
             .await
@@ -169,7 +162,13 @@ impl CacheManager for RedisCacheManager {
     }
 
     async fn check_health(&self) -> Result<()> {
-        let mut conn = self.health_connection.clone();
+        // The events slot is otherwise unused by the cache, so probes keep a
+        // dedicated connection and never queue behind normal cache operations.
+        let mut conn = self.client.events_connection().await.map_err(|error| {
+            Error::Cache(format!(
+                "Failed to connect Redis health check connection: {error}"
+            ))
+        })?;
 
         let response = redis::cmd("PING")
             .query_async::<String>(&mut conn)
@@ -186,7 +185,7 @@ impl CacheManager for RedisCacheManager {
     }
 
     async fn ttl(&self, key: &str) -> Result<Option<Duration>> {
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
         let ttl: i64 = connection
             .ttl(self.prefixed_key(key))
             .await
@@ -205,7 +204,7 @@ impl CacheManager for RedisCacheManager {
 
         let pattern = format!("{}:{}*", self.prefix, prefix);
         let cache_prefix = format!("{}:", self.prefix);
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
         let mut keys = Vec::with_capacity(limit.min(64));
 
         {
@@ -257,7 +256,7 @@ impl CacheManager for RedisCacheManager {
             .map_err(|e| Error::Cache(format!("Redis scan cursor is invalid: {e}")))?;
         let pattern = format!("{}:{}*", self.prefix, prefix);
         let cache_prefix = format!("{}:", self.prefix);
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
         let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
             .arg(cursor)
             .arg("MATCH")
@@ -289,7 +288,7 @@ impl CacheManager for RedisCacheManager {
 
     async fn set_if_not_exists(&self, key: &str, value: &str, ttl_seconds: u64) -> Result<bool> {
         let prefixed_key = self.prefixed_key(key);
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
         let result: Option<String> = redis::cmd("SET")
             .arg(&prefixed_key)
             .arg(value)
@@ -309,7 +308,7 @@ impl CacheManager for RedisCacheManager {
         value: &str,
         ttl_seconds: u64,
     ) -> Result<bool> {
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
         let result: i32 = redis::Script::new(
             "if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3]); return 1 else return 0 end",
         )
@@ -324,7 +323,7 @@ impl CacheManager for RedisCacheManager {
     }
 
     async fn compare_and_remove(&self, key: &str, expected: &str) -> Result<bool> {
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
         let result: i32 = redis::Script::new(
             "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end",
         )
@@ -338,7 +337,7 @@ impl CacheManager for RedisCacheManager {
 
     async fn increment_by(&self, key: &str, delta: i64, ttl_seconds: u64) -> Result<i64> {
         let prefixed_key = self.prefixed_key(key);
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
         let value: i64 = connection
             .incr(&prefixed_key, delta)
             .await
@@ -355,7 +354,7 @@ impl CacheManager for RedisCacheManager {
 
 impl RedisCacheManager {
     pub async fn delete(&self, key: &str) -> Result<bool> {
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
         let deleted: i32 = connection
             .del(self.prefixed_key(key))
             .await
@@ -365,7 +364,7 @@ impl RedisCacheManager {
 
     pub async fn clear_prefix(&self) -> Result<usize> {
         let pattern = format!("{}:*", self.prefix);
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
 
         let keys = {
             let mut keys = Vec::new();
@@ -413,7 +412,7 @@ impl RedisCacheManager {
             }
         }
 
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
         pipe.query_async::<()>(&mut connection)
             .await
             .map_err(|e| Error::Cache(format!("Redis pipeline error: {e}")))?;
@@ -422,7 +421,7 @@ impl RedisCacheManager {
     }
 
     pub async fn increment(&self, key: &str, by: i64) -> Result<i64> {
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
         let value: i64 = connection
             .incr(self.prefixed_key(key), by)
             .await
@@ -440,7 +439,7 @@ impl RedisCacheManager {
         }
 
         let prefixed_keys: Vec<String> = keys.iter().map(|k| self.prefixed_key(k)).collect();
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
         let values: Vec<Option<String>> = connection
             .mget(prefixed_keys)
             .await
@@ -450,7 +449,7 @@ impl RedisCacheManager {
     }
 
     pub async fn flush_db(&self) -> Result<()> {
-        let mut connection = self.connection.clone();
+        let mut connection = self.connection().await?;
         redis::cmd("FLUSHDB")
             .query_async::<()>(&mut connection)
             .await
@@ -459,8 +458,10 @@ impl RedisCacheManager {
         Ok(())
     }
 
-    pub fn get_connection(&self) -> ConnectionManager {
-        self.connection.clone()
+    /// Returns the current command connection, which follows the Sentinel
+    /// primary across failovers.
+    pub async fn get_connection(&self) -> Result<ConnectionManager> {
+        self.connection().await
     }
 }
 

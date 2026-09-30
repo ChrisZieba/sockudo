@@ -351,6 +351,8 @@ client_key_path = "/etc/sockudo/tls/client.key"
 
 > **Note:** All Redis consumers inherit the native Sentinel topology when they do not define a URL override. An adapter, cache, queue, or rate-limiter URL override selects its standalone path; `master_tls` still applies to that direct data connection.
 
+Each Sentinel-backed consumer polls Sentinel once per second with `SENTINEL GET-MASTER-ADDR-BY-NAME` and follows a failover without a restart: when Sentinel promotes a new primary, cached connections are dropped and rebuilt against it, and the adapter's Pub/Sub listener resubscribes. Recovery normally completes about a second after the promotion, so health probes such as `/up` recover on their own. If you restrict the Sentinel user with ACLs, allow that command alongside the ones used for primary resolution (`SENTINEL MASTERS` and `ROLE`). Primary changes are logged at `info` as `redis sentinel primary changed, reconnecting`.
+
 ## Protocol features
 
 | Section | Purpose |

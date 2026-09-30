@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::Notify;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 /// Redis adapter configuration
@@ -255,6 +255,10 @@ impl HorizontalTransport for RedisTransport {
         tokio::spawn(async move {
             let mut retry_delay = 500u64; // Start with 500ms delay
             const MAX_RETRY_DELAY: u64 = 10_000; // Max 10 seconds
+            // Fires when the Sentinel primary moves. A subscription on the old
+            // primary can stay silently open (its host may vanish without a TCP
+            // reset), so the listener resubscribes instead of waiting on it.
+            let mut master_changes = sub_client.master_changes();
 
             loop {
                 if !is_running.load(Ordering::Relaxed) {
@@ -267,6 +271,7 @@ impl HorizontalTransport for RedisTransport {
 
                 // For Sentinel, this re-resolves the current master each reconnect,
                 // which is how the listener follows master failover.
+                master_changes.mark_seen();
                 let mut pubsub = match sub_client.pubsub().await {
                     Ok(pubsub) => {
                         retry_delay = 500;
@@ -321,6 +326,7 @@ impl HorizontalTransport for RedisTransport {
 
                 let mut message_stream = pubsub.on_message();
                 let mut connection_broken = false;
+                let mut primary_moved = false;
 
                 loop {
                     if !is_running.load(Ordering::Relaxed) {
@@ -328,6 +334,10 @@ impl HorizontalTransport for RedisTransport {
                     }
                     let next_msg = tokio::select! {
                         _ = shutdown.notified() => break,
+                        _ = master_changes.changed() => {
+                            primary_moved = true;
+                            break;
+                        }
                         msg = message_stream.next() => msg,
                     };
                     let Some(msg) = next_msg else {
@@ -418,7 +428,15 @@ impl HorizontalTransport for RedisTransport {
                     }
                 }
 
-                if connection_broken {
+                if primary_moved {
+                    if let Some(metrics) = metrics.get() {
+                        metrics.mark_horizontal_transport_reconnection("redis");
+                    }
+                    info!(
+                        adapter = "redis",
+                        "redis sentinel primary changed, resubscribing"
+                    );
+                } else if connection_broken {
                     if let Some(metrics) = metrics.get() {
                         metrics.mark_horizontal_transport_reconnection("redis");
                     }

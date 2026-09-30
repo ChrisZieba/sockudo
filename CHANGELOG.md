@@ -56,6 +56,11 @@ existing defaults.
 
 ### Fixed
 
+- Redis Sentinel deployments now follow a primary failover without a restart. Each
+  Sentinel-backed client polls Sentinel for the current primary, drops cached connections when it
+  moves, and wakes the adapter's Pub/Sub listener to resubscribe. Previously the cache (and with
+  it `/up`), rate limiter, and delta coordinator stayed pinned to the old primary, so every pod
+  became NotReady until restarted.
 - WebSocket connections now finish the peer Close handshake before cleanup, so clients receive a
   clean close instead of 1006 on the native and Ably read loops.
 - `POST /events` accepts object `data` again instead of returning 422.
