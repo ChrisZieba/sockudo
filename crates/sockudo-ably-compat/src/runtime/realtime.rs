@@ -81,9 +81,6 @@ pub async fn handle_ably_realtime_upgrade(
     Extension(runtime): Extension<Arc<AblyCompatRuntime>>,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Response {
-    if !handler.is_accepting() {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
     if handler.is_memory_pressure_shedding() {
         handler.mark_memory_pressure_rejection();
         return (

@@ -564,8 +564,8 @@ impl ConnectionHandler {
         )
     }
 
-    /// Whether the server is still accepting new connections. Returns false once
-    /// shutdown has flipped the shared running flag, signalling drain.
+    /// Whether the server is not draining. Returns false once shutdown has flipped
+    /// the shared running flag, which makes the health endpoints report `DRAINING`.
     pub fn is_accepting(&self) -> bool {
         self.running.load(std::sync::atomic::Ordering::Acquire)
     }

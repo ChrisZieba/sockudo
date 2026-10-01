@@ -50,11 +50,9 @@ pub async fn handle_ws_upgrade(
     ws: WebSocketUpgrade,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> impl IntoResponse {
-    // Reject new connections once draining so a terminating pod stops taking work
-    // and its sockudo_connected gauge can decay to zero instead of spiking.
-    if !handler.is_accepting() {
-        return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
+    // Upgrades are still accepted while draining: load balancers keep routing here
+    // until they observe /ready failing, and rejecting would surface as client 503s.
+    // Sockets accepted during the grace period are closed with 4200 by stop().
     if handler.is_memory_pressure_shedding() {
         handler.mark_memory_pressure_rejection();
         return (

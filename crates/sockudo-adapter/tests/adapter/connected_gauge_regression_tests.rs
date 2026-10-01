@@ -451,8 +451,8 @@ async fn connected_gauge_over_quota_never_increments() {
     assert_eq!(metrics.net(), 0, "gauge must remain untouched");
 }
 
-// While draining (running=false), is_accepting() is false, which is what /up and
-// the WS upgrade gate on to return 503 and stop the gauge climbing on a dying pod.
+// While draining (running=false), is_accepting() is false, which is what /up,
+// /ready and /accept-traffic gate on to return 503 DRAINING.
 #[test]
 fn drain_guard_is_accepting_false_when_running_false() {
     let handler = ConnectionHandler::builder(
@@ -466,7 +466,7 @@ fn drain_guard_is_accepting_false_when_running_false() {
 
     assert!(
         !handler.is_accepting(),
-        "is_accepting() must be false while draining so the /up and WS guards return 503"
+        "is_accepting() must be false while draining so the health endpoints return 503"
     );
 }
 
